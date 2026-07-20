@@ -1,0 +1,62 @@
+{
+  "authorized_groups": {
+    "CCM Ticket Import": {
+      "jid": "",
+      "label": "Grup yang boleh mengirim file Excel ke bot"
+    }
+  },
+  "authorized_users": {
+    "Rifqi PN": {
+      "jid": "",
+      "label": "Private user dengan JID 628xxx@s.whatsapp.net"
+    },
+    "Rifqi LID": {
+      "jid": "",
+      "label": "Private user dengan JID xxx@lid jika Baileys menampilkan LID"
+    }
+  },
+  "target_groups": {
+    "SQA": {
+      "jid": "",
+      "label": "Service Quality Assurance Sumbagut"
+    },
+    "NOP ACEH": {
+      "jid": "",
+      "label": "Network Operations and Productivity Aceh"
+    },
+    "NOP BINJAI": {
+      "jid": "",
+      "label": "Network Operations and Productivity Binjai"
+    },
+    "NOP MEDAN": {
+      "jid": "",
+      "label": "Network Operations and Productivity Medan"
+    },
+    "NOP PEMATANG SIANTAR": {
+      "jid": "",
+      "label": "Network Operations and Productivity Pematangsiantar"
+    },
+    "NOP RANTAU PRAPAT": {
+      "jid": "",
+      "label": "Network Operations and Productivity Rantau Prapat"
+    },
+    "NOP PADANG SIDEMPUAN": {
+      "jid": "",
+      "label": "Network Operations and Productivity Padang Sidempuan"
+    }
+  },
+  "mentions": {
+    "Ferry": {
+      "jid": "",
+      "label": "Bg Ferry CCM"
+    },
+    "Budi Harahap": {
+      "jid": "",
+      "label": "Bg Budi Harahap CCM"
+    },
+    "Herman": {
+      "jid": "",
+      "label": "Bg Herman PIC SQA Telkomsel"
+    }
+  }
+}

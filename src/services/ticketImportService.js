@@ -26,6 +26,7 @@ import {
   cleanTableValue,
   formatNameTag,
 } from "../utils/text.js";
+import { normalizeJid } from "../utils/jid.js";
 import { getMentionContact } from "../config/appConfig.js";
 
 const logger = createLogger("ticketImportService");
@@ -848,22 +849,56 @@ export function formatProcessingReport(result) {
   return lines.join("\n");
 }
 
+// mengambil user part JID untuk token @mention yang dikenali WhatsApp, contoh 628xx@s.whatsapp.net -> @628xx.
+function getMentionTokenFromJid(jid) {
+  const normalizedJid = normalizeJid(jid);
+  const userPart = normalizedJid.split("@")[0];
+
+  return userPart ? `@${userPart}` : "";
+}
+
 // mengambil label/JID mention dari config; fallback ke label teks biasa jika config belum lengkap.
 function resolveMentionTag(name, fallbackSuffix = "") {
   const contact = getMentionContact(name);
   const fallbackTag = formatNameTag(name, fallbackSuffix);
   const label = cleanTableValue(contact?.label || fallbackTag);
+  const jid = normalizeJid(contact?.jid);
+  const mentionToken = getMentionTokenFromJid(jid);
 
   if (label === "-") {
     return {
       text: "",
       jid: null,
+      label: "",
+      mention_token: "",
     };
   }
 
+  if (mentionToken) {
+    logger.info("Mention tag resolved with JID token", {
+      name,
+      jid,
+      label,
+      mentionToken,
+    });
+    return {
+      text: mentionToken,
+      jid,
+      label,
+      mention_token: mentionToken,
+    };
+  }
+
+  logger.warn("Mention tag resolved without JID, output will be plain text", {
+    name,
+    label,
+  });
+
   return {
     text: `@${label.replace(/^@+/, "")}`,
-    jid: contact?.jid || null,
+    jid: null,
+    label,
+    mention_token: "",
   };
 }
 
@@ -908,6 +943,7 @@ export function formatEscalationMessagePayload(ticket) {
   const mentions = uniqueMentionJids(isSqa ? [ccmTag, sqaTag] : [nopTag]);
   logger.info("Escalation message mention payload created", {
     orderId: ticket.order_id,
+    mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
     mentions,
   });
 

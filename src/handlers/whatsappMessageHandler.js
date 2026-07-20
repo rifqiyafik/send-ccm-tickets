@@ -41,7 +41,7 @@ const privateIndex = new Map();
 let reconnectTimer = null;
 let releaseSessionLock = null;
 
-// #penjelasan: melepas lock session saat proses dihentikan normal dari terminal.
+// melepas lock session saat proses dihentikan normal dari terminal.
 function bindSessionLockCleanup() {
   if (!releaseSessionLock || bindSessionLockCleanup.bound) {
     return;
@@ -88,7 +88,7 @@ function getMessageText(message) {
   ).trim();
 }
 
-// #penjelasan: memecah pesan command seperti "." atau ".help" agar bot bisa memberi respon teks.
+// memecah pesan command seperti "." atau ".help" agar bot bisa memberi respon teks.
 function parseBotCommand(text) {
   const [command = "", ...parts] = String(text || "").trim().split(/\s+/);
 
@@ -98,7 +98,7 @@ function parseBotCommand(text) {
   };
 }
 
-// #penjelasan: normalisasi keyword command agar pencarian grup/private tidak sensitif kapital.
+// normalisasi keyword command agar pencarian grup/private tidak sensitif kapital.
 function normalizeCommandKeyword(value) {
   return String(value ?? "")
     .trim()
@@ -106,7 +106,7 @@ function normalizeCommandKeyword(value) {
     .toLowerCase();
 }
 
-// #penjelasan: menyimpan metadata grup yang diketahui session agar command .groups bisa dicari cepat.
+// menyimpan metadata grup yang diketahui session agar command .groups bisa dicari cepat.
 function upsertGroup(jid, data = {}) {
   const normalizedJid = normalizeJid(jid);
   if (!isGroupJid(normalizedJid)) {
@@ -119,7 +119,7 @@ function upsertGroup(jid, data = {}) {
   });
 }
 
-// #penjelasan: menyimpan metadata private chat/kontak yang tersinkron atau pernah mengirim pesan ke bot.
+// menyimpan metadata private chat/kontak yang tersinkron atau pernah mengirim pesan ke bot.
 function upsertPrivate(jid, data = {}) {
   const normalizedJid = normalizeJid(jid);
   if (!isPrivateJid(normalizedJid)) {
@@ -140,7 +140,7 @@ function upsertPrivate(jid, data = {}) {
   });
 }
 
-// #penjelasan: mencocokkan keyword ke nama atau JID untuk command .groups/.private.
+// mencocokkan keyword ke nama atau JID untuk command .groups/.private.
 function matchesCommandSearch(item, keyword) {
   const normalizedKeyword = normalizeCommandKeyword(keyword);
   if (!normalizedKeyword) {
@@ -153,7 +153,7 @@ function matchesCommandSearch(item, keyword) {
   );
 }
 
-// #penjelasan: format output JID sama seperti kebutuhan user, maksimal BOT_COMMAND_RESULT_LIMIT baris.
+// format output JID sama seperti kebutuhan user, maksimal BOT_COMMAND_RESULT_LIMIT baris.
 function formatJidList({ label, items, keyword }) {
   const matched = items
     .filter((item) => matchesCommandSearch(item, keyword))
@@ -170,7 +170,7 @@ function formatJidList({ label, items, keyword }) {
   ].join("\n");
 }
 
-// #penjelasan: memecah pesan panjang agar output command tetap terkirim jika hasil JID cukup banyak.
+// memecah pesan panjang agar output command tetap terkirim jika hasil JID cukup banyak.
 async function sendLongText(sock, jid, text) {
   for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
     await sock.sendMessage(jid, {
@@ -179,7 +179,7 @@ async function sendLongText(sock, jid, text) {
   }
 }
 
-// #penjelasan: membuat pesan bantuan singkat saat user mengirim command "." atau ".help".
+// membuat pesan bantuan singkat saat user mengirim command "." atau ".help".
 function formatCommandHelp({ sourceJid, senderJid, allowed }) {
   return [
     "CCM Ticket Bot",
@@ -204,7 +204,7 @@ function formatCommandHelp({ sourceJid, senderJid, allowed }) {
   ].join("\n");
 }
 
-// #penjelasan: mengambil ulang daftar grup dari WhatsApp agar command .groups memakai data terbaru.
+// mengambil ulang daftar grup dari WhatsApp agar command .groups memakai data terbaru.
 async function refreshGroups(sock) {
   logger.info("Refreshing group metadata for command");
   const groups = await sock.groupFetchAllParticipating();
@@ -216,7 +216,7 @@ async function refreshGroups(sock) {
   logger.info("Group metadata refreshed for command", { groups: groupIndex.size });
 }
 
-// #penjelasan: membuat output status singkat untuk memastikan bot hidup dan membaca index lokal.
+// membuat output status singkat untuk memastikan bot hidup dan membaca index lokal.
 function formatBotStatus({ sourceJid, senderJid, allowed }) {
   return [
     "CCM Ticket Bot Status",
@@ -230,7 +230,7 @@ function formatBotStatus({ sourceJid, senderJid, allowed }) {
   ].join("\n");
 }
 
-// #penjelasan: menangani command teks di bot utama agar user mendapat output WhatsApp dan log jelas.
+// menangani command teks di bot utama agar user mendapat output WhatsApp dan log jelas.
 async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
   const { command, argument } = parseBotCommand(text);
 
@@ -318,7 +318,7 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
   });
 }
 
-// #penjelasan: menghubungkan event Baileys ke index lokal untuk command .groups/.private.
+// menghubungkan event Baileys ke index lokal untuk command .groups/.private.
 function bindCommandIndexEvents(sock) {
   sock.ev.on("contacts.update", (contacts) => {
     for (const contact of contacts) {

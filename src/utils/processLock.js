@@ -6,7 +6,7 @@ import { createLogger } from "./logger.js";
 const logger = createLogger("processLock");
 const activeLocks = new Map();
 
-// #penjelasan: cek PID masih hidup agar lock lama dari proses crash tidak memblokir startup berikutnya.
+// cek PID masih hidup agar lock lama dari proses crash tidak memblokir startup berikutnya.
 function isPidRunning(pid) {
   if (!Number.isInteger(pid) || pid <= 0) {
     return false;
@@ -24,7 +24,7 @@ function isPidRunning(pid) {
   }
 }
 
-// #penjelasan: membaca isi lock lama untuk menentukan apakah proses pemiliknya masih aktif.
+// membaca isi lock lama untuk menentukan apakah proses pemiliknya masih aktif.
 function readLock(lockPath) {
   try {
     return JSON.parse(fs.readFileSync(lockPath, "utf8"));
@@ -33,7 +33,7 @@ function readLock(lockPath) {
   }
 }
 
-// #penjelasan: membuat lock eksklusif agar satu folder session Baileys hanya dipakai satu proses.
+// membuat lock eksklusif agar satu folder session Baileys hanya dipakai satu proses.
 export function acquireProcessLock(lockDir, owner) {
   fs.mkdirSync(lockDir, { recursive: true });
   const lockPath = path.join(lockDir, ".process.lock");

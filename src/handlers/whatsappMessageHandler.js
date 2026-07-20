@@ -10,7 +10,7 @@ import makeWASocket, {
 import qrcode from "qrcode-terminal";
 import pino from "pino";
 
-import { resolveTargetJid } from "../config/whatsappRouting.js";
+import { getTargetGroupKey, resolveTargetJid } from "../config/whatsappRouting.js";
 import { createLogger } from "../utils/logger.js";
 import {
   getMessageSenderJid,
@@ -435,7 +435,31 @@ async function sendImportResult(sock, sourceJid, result) {
   }
 
   for (const ticket of result.valid_tickets) {
-    const targetJid = resolveTargetJid(ticket, sourceJid);
+    const targetJid = resolveTargetJid(ticket);
+    if (!targetJid) {
+      const targetGroupKey = getTargetGroupKey(ticket);
+      logger.warn("Escalation ticket skipped: target group JID is not configured", {
+        orderId: ticket.order_id,
+        assignmentType: ticket.assignment_type,
+        targetGroupKey,
+        pic: ticket.pic,
+      });
+      await sock.sendMessage(sourceJid, {
+        text: [
+          "Alert konfigurasi target group kosong.",
+          "",
+          `Order ID: ${ticket.order_id || "-"}`,
+          `Assignment: ${ticket.assignment_type || "-"}`,
+          `Target group key: ${targetGroupKey || "-"}`,
+          `PIC: ${ticket.pic || "-"}`,
+          "",
+          "Tiket ini tidak dikirim ke grup tujuan.",
+          "Lengkapi JID di config/whatsapp.json pada target_groups, lalu kirim ulang file jika perlu.",
+        ].join("\n"),
+      });
+      continue;
+    }
+
     logger.info("Sending escalation ticket", {
       orderId: ticket.order_id,
       assignmentType: ticket.assignment_type,

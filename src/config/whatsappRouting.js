@@ -21,17 +21,20 @@ function parseGroupMapping(value = "") {
 
 export const WHATSAPP_GROUPS = parseGroupMapping(process.env.WHATSAPP_GROUPS);
 
-// menentukan grup tujuan; prioritas target_groups di config/whatsapp.json, lalu env WHATSAPP_GROUPS, lalu chat pengirim.
-export function resolveTargetJid(ticket, fallbackJid) {
+// menentukan key grup target berdasarkan tipe assignment tiket.
+export function getTargetGroupKey(ticket) {
+  return ticket.assignment_type === "SQA" ? "SQA" : ticket.cluster_area || ticket.nsa;
+}
+
+// menentukan grup tujuan; prioritas target_groups di config/whatsapp.json, lalu env WHATSAPP_GROUPS.
+export function resolveTargetJid(ticket) {
   logger.info("Resolving WhatsApp target JID", {
     orderId: ticket.order_id,
     assignmentType: ticket.assignment_type,
     clusterArea: ticket.cluster_area,
-    fallbackJid,
   });
 
-  const configGroupKey =
-    ticket.assignment_type === "SQA" ? "SQA" : ticket.cluster_area || ticket.nsa;
+  const configGroupKey = getTargetGroupKey(ticket);
   const configGroup = getGroupConfig(configGroupKey);
   if (configGroup?.jid) {
     logger.info("Resolved target JID from target_groups config", {
@@ -51,8 +54,20 @@ export function resolveTargetJid(ticket, fallbackJid) {
     WHATSAPP_GROUPS[picKey] ||
     WHATSAPP_GROUPS[nsaKey] ||
     WHATSAPP_GROUPS[assignmentKey] ||
-    fallbackJid;
+    null;
 
-  logger.info("Resolved target JID from env/fallback", { targetJid });
+  if (!targetJid) {
+    logger.warn("Target JID not found", {
+      orderId: ticket.order_id,
+      groupKey: configGroupKey,
+      assignmentType: ticket.assignment_type,
+      clusterArea: ticket.cluster_area,
+      nsa: ticket.nsa,
+      pic: ticket.pic,
+    });
+    return null;
+  }
+
+  logger.info("Resolved target JID from env fallback", { targetJid });
   return targetJid;
 }

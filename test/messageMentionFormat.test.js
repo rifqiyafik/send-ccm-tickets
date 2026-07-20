@@ -65,3 +65,74 @@ test("formats mentions with JID tokens and full mentioned JIDs", () => {
 
   context.cleanup();
 });
+
+test("formats ReOpen tickets with short recheck message when L2 data exists", () => {
+  const context = setupMentionConfig();
+
+  const payload = formatEscalationMessagePayload({
+    order_id: "CC-20260719-00000077",
+    assignment_type: "SQA",
+    business_status: "ReOpen",
+    ccm_handling: "Ferry",
+    pic_sqa: "Herman",
+    pic_nop: "",
+    notes: "Long normal notes should not be included",
+    analysis_text: "Normal analysis should not be included",
+    problem_analysis: "Performance KPI normal",
+    resolve_target_22h_text: "Senin / 20 Jul 2026, 08:11:25 AM",
+    use_reopen_message_format: true,
+    reopen_number: "3",
+    reopen_filled_columns: ["Assign Personal(L2 Assign)"],
+  });
+
+  assert.match(payload.text, /Mohon dibantu pengecekannya kembali ya bang @35515252351004/);
+  assert.match(payload.text, /\*CC-20260719-00000077\*/);
+  assert.match(payload.text, /CC bang @628136378970/);
+  assert.match(payload.text, /\*Ticket Re-Open \(3 X\)\*/);
+  assert.match(payload.text, /_Remark Problem Analysis:_\nPerformance KPI normal\nSLA DUE DATE 24H/);
+  assert.match(payload.text, /SLA DUE DATE 24H : \*Senin \/ 20 Jul 2026, 08:11:25 AM\*/);
+  assert.doesNotMatch(payload.text, /Long normal notes/);
+  assert.doesNotMatch(payload.text, /Normal analysis/);
+  assert.deepEqual(payload.mentions, [
+    "35515252351004@lid",
+    "628136378970@s.whatsapp.net",
+  ]);
+
+  context.cleanup();
+});
+
+test("formats NOP ReOpen tickets without SQA CC line", () => {
+  const context = setupMentionConfig();
+
+  const payload = formatEscalationMessagePayload({
+    order_id: "CC-20260719-00000088",
+    assignment_type: "NOP",
+    business_status: "ReOpen",
+    ccm_handling: "",
+    pic_sqa: "",
+    pic_nop: "Ferry",
+    notes: "Long normal notes should not be included",
+    analysis_text: "Normal analysis should not be included",
+    problem_analysis:
+      "Performance KPI beberapa hari terakhir disaat kejadian terlihat Normal dan tidak ada yang Anomali.",
+    resolve_target_22h_text: "Senin / 20 Jul 2026, 08:11:25 AM",
+    use_reopen_message_format: true,
+    reopen_number: "2",
+    reopen_filled_columns: ["Site ID(L2 Assign)"],
+  });
+
+  assert.match(payload.text, /Mohon dibantu pengecekannya kembali ya bang @35515252351004/);
+  assert.match(payload.text, /\*CC-20260719-00000088\*/);
+  assert.match(payload.text, /\*Ticket Re-Open \(2 X\)\*/);
+  assert.match(
+    payload.text,
+    /_Remark Problem Analysis:_\nPerformance KPI beberapa hari terakhir disaat kejadian terlihat Normal/,
+  );
+  assert.match(payload.text, /SLA DUE DATE 24H : \*Senin \/ 20 Jul 2026, 08:11:25 AM\*/);
+  assert.doesNotMatch(payload.text, /CC bang/);
+  assert.doesNotMatch(payload.text, /Long normal notes/);
+  assert.doesNotMatch(payload.text, /Normal analysis/);
+  assert.deepEqual(payload.mentions, ["35515252351004@lid"]);
+
+  context.cleanup();
+});

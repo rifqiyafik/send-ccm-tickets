@@ -13,6 +13,7 @@ sessions/*
 
 # Local secret config
 config/whatsapp.json
+config/whatsapp-fix.json
 
 # Logs and runtime output
 logs/*

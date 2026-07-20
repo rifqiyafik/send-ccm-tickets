@@ -48,6 +48,19 @@ export const REQUIRED_COLUMNS = [
 const CCH_SUGGESTION_COLUMN = "CCH Suggestion(L1 Assign_cch_suggestion)";
 const DESCRIPTION_COLUMN =
   "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)";
+const PROBLEM_ANALYSIS_COLUMN = "Problem Analysis";
+const REOPEN_NUMBER_COLUMN = "Reopen Number(Confirm Close)";
+const REOPEN_FILLED_CHECK_COLUMNS = [
+  "Assign Personal(L2 Assign)",
+  "Resolution Categorization Tier 1",
+  "Resolution Categorization Tier 3",
+  "Resolution Categorization Tier 2(L1 Assign)",
+  "Root Caused Tier 1(L2 Assign)",
+  "Root Caused Tier 2(L2 Assign)",
+  "Root Caused Tier 3(L2 Assign)",
+  "Root Caused Tier 8(L2 Assign)",
+  "Site ID(L2 Assign)",
+];
 const EXCEL_REPLY_HEADERS = [
   "Order ID",
   "Create Time",
@@ -63,6 +76,39 @@ const EXCEL_REPLY_HEADERS = [
   "PIC SQA",
   "PIC NOP",
 ];
+const GROUP_OPENING_MESSAGE = [
+  "Assalamualaikum,",
+  "Semangat Pagi dan Semangat Sehat,",
+  "Dear Bapak Manager dan Tim,",
+  "Berikut kami infokan tiket Remedy Customer Complaint terupdate,",
+  "Mohon dibantu untuk segera di follow up.",
+  "",
+  "link: https://10.62.7.112:31943/portal-web/portal/homepage.html",
+  "",
+  "Terimakasih 🙏🏻",
+].join("\n");
+const INDONESIAN_MONTHS_FULL = [
+  "Januari",
+  "Februari",
+  "Maret",
+  "April",
+  "Mei",
+  "Juni",
+  "Juli",
+  "Agustus",
+  "September",
+  "Oktober",
+  "November",
+  "Desember",
+];
+const NOP_SHORT_NAMES = {
+  ACEH: "ACEH",
+  BINJAI: "BJI",
+  MEDAN: "MEDAN",
+  PEMATANGSIANTAR: "PMS",
+  "RANTAU PRAPAT": "RAP",
+  "PADANG SIDEMPUAN": "PSP",
+};
 
 // membaca beberapa byte awal file untuk memastikan isinya benar-benar XLSX zip, bukan sekadar nama file .xlsx.
 function inspectWorkbookBuffer(buffer) {
@@ -498,6 +544,37 @@ function getAnalysisText(row) {
   return cleanMultilineText(row["Problem Analysis NSH"]);
 }
 
+// mendeteksi nilai cell benar-benar terisi untuk rule ReOpen; null/string kosong/tanda "-" dianggap kosong.
+function isFilledCell(value) {
+  const text = String(value ?? "").trim();
+  return Boolean(text && text !== "-");
+}
+
+// mengecek apakah tiket ReOpen sudah punya data L2/resolution/root cause/site L2 sehingga perlu format khusus.
+function resolveReopenMessageRule(row) {
+  const businessStatus = String(row["Business Status"] || "")
+    .trim()
+    .toLowerCase();
+  const filledColumns = REOPEN_FILLED_CHECK_COLUMNS.filter((column) =>
+    isFilledCell(row[column]),
+  );
+  const enabled = businessStatus === "reopen" && filledColumns.length > 0;
+
+  logger.info("Resolved ReOpen message rule", {
+    orderId: row["Order ID"],
+    businessStatus: row["Business Status"],
+    enabled,
+    filledColumns,
+    reopenNumber: row[REOPEN_NUMBER_COLUMN],
+  });
+
+  return {
+    enabled,
+    reopen_number: cleanTableValue(row[REOPEN_NUMBER_COLUMN]),
+    filled_columns: filledColumns,
+  };
+}
+
 // menggabungkan data Excel, hasil search PIC, hasil search site, dan SLA menjadi object tiket final.
 function normalizeTicket(row, picResult, siteResolution) {
   logger.info("Normalizing ticket row", {
@@ -511,6 +588,7 @@ function normalizeTicket(row, picResult, siteResolution) {
   const sla = calculateSla(row["Create Time"]);
   const isSqa = assignmentType === "SQA";
   const isNop = assignmentType === "NOP";
+  const reopenRule = resolveReopenMessageRule(row);
 
   const ticket = {
     order_id: row["Order ID"],
@@ -537,6 +615,10 @@ function normalizeTicket(row, picResult, siteResolution) {
     msisdn: row["Customer MSISDN(Create Ticket_customer_msisdn)"],
     notes: cleanMultilineText(row[DESCRIPTION_COLUMN]),
     analysis_text: getAnalysisText(row),
+    problem_analysis: cleanMultilineText(row[PROBLEM_ANALYSIS_COLUMN]),
+    use_reopen_message_format: reopenRule.enabled,
+    reopen_number: reopenRule.reopen_number,
+    reopen_filled_columns: reopenRule.filled_columns,
   };
 
   logger.info("Ticket normalized", {
@@ -546,6 +628,7 @@ function normalizeTicket(row, picResult, siteResolution) {
     siteId: ticket.site_id,
     slaStatus: ticket.sla_status,
     pic: ticket.pic,
+    useReopenMessageFormat: ticket.use_reopen_message_format,
   });
 
   return ticket;
@@ -724,6 +807,9 @@ export async function processTicketExcel(buffer) {
       site_id: ticket.site_id,
       vendor: ticket.vendor,
       cluster_area: ticket.cluster_area,
+      use_reopen_message_format: ticket.use_reopen_message_format,
+      reopen_number: ticket.reopen_number,
+      reopen_filled_columns: ticket.reopen_filled_columns,
     });
   }
 
@@ -907,6 +993,192 @@ function uniqueMentionJids(items) {
   return [...new Set(items.map((item) => item?.jid).filter(Boolean))];
 }
 
+// menghitung total tiket, IN SLA, dan OUT SLA untuk reminder per grup tujuan.
+function summarizeSla(tickets) {
+  return tickets.reduce(
+    (summary, ticket) => {
+      summary.total += 1;
+      if (ticket.sla_status === "IN SLA") {
+        summary.inSla += 1;
+      }
+      if (ticket.sla_status === "OUT SLA") {
+        summary.outSla += 1;
+      }
+      return summary;
+    },
+    { total: 0, inSla: 0, outSla: 0 },
+  );
+}
+
+// mengambil tiket yang punya informasi ReOpen untuk ditampilkan pada tabel remark reminder.
+function getReopenReminderTickets(tickets) {
+  return tickets.filter(
+    (ticket) =>
+      cleanTableValue(ticket.reopen_number) !== "-" ||
+      cleanMultilineText(ticket.problem_analysis),
+  );
+}
+
+// membuat nama pendek NOP seperti BJI dari cluster area/NOP asal tiket.
+function getNopReminderName(tickets) {
+  const firstTicket = tickets[0] || {};
+  const source = cleanTableValue(
+    firstTicket.cluster_area || firstTicket.nsa || firstTicket.assignment_group,
+  )
+    .replace(/^NOP\s+/i, "")
+    .toUpperCase();
+
+  return NOP_SHORT_NAMES[source] || source || "NOP";
+}
+
+// mengambil teks remark Problem Analysis untuk tabel reminder.
+function getpreviousProblemAnalysis(ticket) {
+  return cleanTableValue(cleanMultilineText(ticket.problem_analysis));
+}
+
+// mengambil nilai Count ReOpen dari kolom Reopen Number(Confirm Close).
+function getReopenCount(ticket) {
+  return cleanTableValue(ticket.reopen_number);
+}
+
+// membuat teks reminder untuk grup SQA sebelum detail tiket dikirim.
+function formatSqaReminderMessage(tickets) {
+  const summary = summarizeSla(tickets);
+  const detailTickets = getReopenReminderTickets(tickets);
+  const lines = [
+    "Remind Ticket CX Open:",
+    "",
+    "*Group | Total Ticket | In SLA | Out SLA*",
+    `*SQA | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
+    "",
+    "Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen",
+    ...detailTickets.map(
+      (ticket) =>
+        `${cleanTableValue(ticket.nsa || ticket.city)} | ${cleanTableValue(
+          ticket.order_id,
+        )} | ${cleanTableValue(ticket.site_id)} | ${getReopenCount(
+          ticket,
+        )} | ${getpreviousProblemAnalysis(ticket)}`,
+    ),
+  ];
+
+  return lines.join("\n");
+}
+
+// membuat teks reminder untuk grup NOP sebelum detail tiket dikirim.
+function formatNopReminderMessage(tickets) {
+  const summary = summarizeSla(tickets);
+  const nopName = getNopReminderName(tickets);
+  const detailTickets = getReopenReminderTickets(tickets);
+  const mentionTags = detailTickets.map((ticket) =>
+    resolveMentionTag(ticket.pic_nop),
+  );
+  const lines = [
+    "Remind ticket CX Open :",
+    "",
+    "*NOP | Total Ticket | In SLA | Out SLA*",
+    `*${nopName} | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
+    "",
+    "PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen",
+    ...detailTickets.map((ticket, index) => {
+      const tag = mentionTags[index];
+      return `${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
+        ticket.site_id,
+      )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}`;
+    }),
+  ];
+
+  return {
+    text: lines.join("\n"),
+    mentions: uniqueMentionJids(mentionTags),
+  };
+}
+
+// pesan salam yang dikirim ke grup tujuan sebelum Excel, reminder, dan detail tiket.
+export function formatTargetGroupOpeningMessage() {
+  logger.info("Formatting target group opening message");
+  return GROUP_OPENING_MESSAGE;
+}
+
+// nama file Excel update harian, contoh: Update Ticket 20 Juli Pagi.xlsx.
+export function formatUpdateTicketFileName(now = new Date()) {
+  const period =
+    now.getHours() < 11
+      ? "Pagi"
+      : now.getHours() < 15
+        ? "Siang"
+        : now.getHours() < 18
+          ? "Sore"
+          : "Malam";
+  const fileName = `Update Ticket ${now.getDate()} ${
+    INDONESIAN_MONTHS_FULL[now.getMonth()]
+  } ${period}.xlsx`;
+
+  logger.info("Formatted update ticket file name", { fileName });
+  return fileName;
+}
+
+// membuat payload reminder berdasarkan assignment grup target.
+export function formatReminderMessagePayload(tickets) {
+  const assignmentType = tickets[0]?.assignment_type;
+  logger.info("Formatting reminder message payload", {
+    assignmentType,
+    tickets: tickets.length,
+  });
+
+  if (assignmentType === "SQA") {
+    return {
+      text: formatSqaReminderMessage(tickets),
+      mentions: [],
+    };
+  }
+
+  return formatNopReminderMessage(tickets);
+}
+
+// membuat format khusus untuk Ticket Re-Open yang sudah memiliki data L2/resolution/root cause/site L2.
+function formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag }) {
+  const isSqa = ticket.assignment_type === "SQA";
+  const reopenNumber = cleanTableValue(ticket.reopen_number);
+  const reopenLine =
+    reopenNumber === "-"
+      ? "*Ticket Re-Open*"
+      : `*Ticket Re-Open (${reopenNumber} X)*`;
+  const problemAnalysisRemark = cleanMultilineText(ticket.problem_analysis);
+  const remarkLines = problemAnalysisRemark
+    ? ["_Remark Problem Analysis:_", problemAnalysisRemark]
+    : [];
+
+  logger.info("Formatting ReOpen escalation text", {
+    orderId: ticket.order_id,
+    assignmentType: ticket.assignment_type,
+    reopenNumber,
+    hasProblemAnalysisRemark: Boolean(problemAnalysisRemark),
+    filledColumns: ticket.reopen_filled_columns,
+  });
+
+  if (isSqa) {
+    return [
+      `Mohon dibantu pengecekannya kembali ya bang ${ccmTag.text || "-"}`,
+      `*${ticket.order_id || "-"}*`,
+      `CC bang ${sqaTag.text || "-"}`,
+      "",
+      reopenLine,
+      ...remarkLines,
+      `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
+    ].join("\n");
+  }
+
+  return [
+    `Mohon dibantu pengecekannya kembali ya bang ${nopTag.text || "-"}`,
+    `*${ticket.order_id || "-"}*`,
+    "",
+    reopenLine,
+    ...remarkLines,
+    `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
+  ].join("\n");
+}
+
 // membuat teks pesan eskalasi dan daftar JID mention yang dikirim ke Baileys.
 export function formatEscalationMessagePayload(ticket) {
   logger.info("Formatting escalation message", {
@@ -917,6 +1189,22 @@ export function formatEscalationMessagePayload(ticket) {
   const sqaTag = resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel");
   const nopTag = resolveMentionTag(ticket.pic_nop);
   const isSqa = ticket.assignment_type === "SQA";
+
+  if (ticket.use_reopen_message_format) {
+    const mentions = uniqueMentionJids(isSqa ? [ccmTag, sqaTag] : [nopTag]);
+    const text = formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag });
+
+    logger.info("ReOpen escalation message mention payload created", {
+      orderId: ticket.order_id,
+      mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
+      mentions,
+    });
+
+    return {
+      text,
+      mentions,
+    };
+  }
 
   const intro = isSqa
     ? [

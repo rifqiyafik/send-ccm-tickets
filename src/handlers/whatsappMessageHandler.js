@@ -10,7 +10,11 @@ import makeWASocket, {
 import qrcode from "qrcode-terminal";
 import pino from "pino";
 
-import { getTargetGroupKey, resolveTargetJid } from "../config/whatsappRouting.js";
+import {
+  getTargetGroupKey,
+  resolveTargetJid,
+} from "../config/whatsappRouting.js";
+import { getGroupConfig } from "../config/appConfig.js";
 import { createLogger } from "../utils/logger.js";
 import {
   getMessageSenderJid,
@@ -27,6 +31,9 @@ import {
   formatEscalationMessagePayload,
   formatImportSummary,
   formatProcessingReport,
+  formatReminderMessagePayload,
+  formatTargetGroupOpeningMessage,
+  formatUpdateTicketFileName,
   processTicketExcel,
 } from "../services/ticketImportService.js";
 
@@ -65,7 +72,9 @@ function parseWaWebVersion(value) {
     .split(".")
     .map((item) => Number(item.trim()));
 
-  return version.length === 3 && version.every(Number.isInteger) ? version : null;
+  return version.length === 3 && version.every(Number.isInteger)
+    ? version
+    : null;
 }
 
 // mengambil object dokumen dari pesan WhatsApp biasa atau dokumen yang di-quote.
@@ -90,7 +99,9 @@ function getMessageText(message) {
 
 // memecah pesan command seperti "." atau ".help" agar bot bisa memberi respon teks.
 function parseBotCommand(text) {
-  const [command = "", ...parts] = String(text || "").trim().split(/\s+/);
+  const [command = "", ...parts] = String(text || "")
+    .trim()
+    .split(/\s+/);
 
   return {
     command: command.toLowerCase(),
@@ -115,7 +126,9 @@ function upsertGroup(jid, data = {}) {
 
   groupIndex.set(normalizedJid, {
     jid: normalizedJid,
-    name: cleanInlineText(data.subject || data.name || data.notify || normalizedJid),
+    name: cleanInlineText(
+      data.subject || data.name || data.notify || normalizedJid,
+    ),
   });
 }
 
@@ -213,7 +226,9 @@ async function refreshGroups(sock) {
     upsertGroup(jid, metadata);
   }
 
-  logger.info("Group metadata refreshed for command", { groups: groupIndex.size });
+  logger.info("Group metadata refreshed for command", {
+    groups: groupIndex.size,
+  });
 }
 
 // membuat output status singkat untuk memastikan bot hidup dan membaca index lokal.
@@ -324,7 +339,9 @@ function bindCommandIndexEvents(sock) {
     for (const contact of contacts) {
       upsertPrivate(contact.id, contact);
     }
-    logger.info("Contacts indexed for command", { privateChats: privateIndex.size });
+    logger.info("Contacts indexed for command", {
+      privateChats: privateIndex.size,
+    });
   });
 
   sock.ev.on("chats.upsert", (chats) => {
@@ -369,7 +386,8 @@ function isSupportedExcelFile(documentMessage) {
 
   return (
     fileName.endsWith(".xlsx") ||
-    mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    mimetype ===
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   );
 }
 
@@ -391,7 +409,129 @@ async function downloadDocumentBuffer(documentMessage) {
   return buffer;
 }
 
-// mengirim summary, report, Excel balasan, dan pesan eskalasi ke grup tujuan.
+// mengirim alert ke pengirim jika target group belum dikonfigurasi.
+async function sendMissingTargetGroupAlert(sock, sourceJid, ticket) {
+  const targetGroupKey = getTargetGroupKey(ticket);
+  logger.warn("Escalation ticket skipped: target group JID is not configured", {
+    orderId: ticket.order_id,
+    assignmentType: ticket.assignment_type,
+    targetGroupKey,
+    pic: ticket.pic,
+  });
+  await sock.sendMessage(sourceJid, {
+    text: [
+      "Alert konfigurasi target group kosong.",
+      "",
+      `Order ID: ${ticket.order_id || "-"}`,
+      `Assignment: ${ticket.assignment_type || "-"}`,
+      `Target group key: ${targetGroupKey || "-"}`,
+      `PIC: ${ticket.pic || "-"}`,
+      "",
+      "Tiket ini tidak dikirim ke grup tujuan.",
+      "Lengkapi JID di config/whatsapp.json pada target_groups, lalu kirim ulang file jika perlu.",
+    ].join("\n"),
+  });
+}
+
+// mengelompokkan tiket valid berdasarkan JID grup tujuan agar pembuka/reminder dikirim sekali per grup.
+async function groupTicketsByTarget(sock, sourceJid, tickets) {
+  const groups = new Map();
+
+  for (const ticket of tickets) {
+    const targetJid = resolveTargetJid(ticket);
+    if (!targetJid) {
+      await sendMissingTargetGroupAlert(sock, sourceJid, ticket);
+      continue;
+    }
+
+    const group = groups.get(targetJid) || [];
+    group.push(ticket);
+    groups.set(targetJid, group);
+  }
+
+  logger.info("Tickets grouped by target JID", {
+    targetGroups: groups.size,
+    tickets: tickets.length,
+  });
+
+  return groups;
+}
+
+// mengirim salam, file Excel, dan reminder ke grup tujuan sebelum tiket detail dikirim satu per satu.
+async function sendTargetGroupPreamble(sock, targetJid, tickets) {
+  logger.info("Sending target group preamble", {
+    targetJid,
+    tickets: tickets.length,
+    assignmentType: tickets[0]?.assignment_type,
+  });
+
+  await sock.sendMessage(targetJid, {
+    text: formatTargetGroupOpeningMessage(),
+  });
+
+  const workbookBuffer = await createFilteredTicketsExcel({
+    valid_tickets: tickets,
+  });
+  await sock.sendMessage(targetJid, {
+    document: workbookBuffer,
+    mimetype:
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    fileName: formatUpdateTicketFileName(),
+    caption: "File Excel berisi tiket yang dikirim ke grup ini.",
+  });
+
+  await sock.sendMessage(targetJid, formatReminderMessagePayload(tickets));
+}
+
+// mengirim salam, Excel, dan reminder summary ke MAIN SQA tanpa mengirim detail tiket satu per satu.
+async function sendMainSqaSummaryOnly(
+  sock,
+  sourceJid,
+  ticketsByTarget,
+  validTickets,
+) {
+  const sqaTickets = validTickets.filter(
+    (ticket) => ticket.assignment_type === "SQA",
+  );
+  if (sqaTickets.length === 0) {
+    logger.info("MAIN SQA summary skipped: no SQA tickets");
+    return;
+  }
+
+  const mainSqaGroup = getGroupConfig("MAIN SQA");
+  if (!mainSqaGroup?.jid) {
+    logger.warn("MAIN SQA summary skipped: target group JID is not configured", {
+      sqaTickets: sqaTickets.length,
+    });
+    await sock.sendMessage(sourceJid, {
+      text: [
+        "Alert konfigurasi MAIN SQA kosong.",
+        "",
+        `Total tiket SQA: ${sqaTickets.length}`,
+        "",
+        "Salam, Excel, dan reminder summary MAIN SQA tidak dikirim.",
+        "Lengkapi JID di config/whatsapp.json pada target_groups dengan key MAIN SQA.",
+      ].join("\n"),
+    });
+    return;
+  }
+
+  if (ticketsByTarget.has(mainSqaGroup.jid)) {
+    logger.warn("MAIN SQA summary skipped: JID is already used by detail target group", {
+      mainSqaJid: mainSqaGroup.jid,
+      sqaTickets: sqaTickets.length,
+    });
+    return;
+  }
+
+  logger.info("Sending MAIN SQA summary-only preamble", {
+    targetJid: mainSqaGroup.jid,
+    sqaTickets: sqaTickets.length,
+  });
+  await sendTargetGroupPreamble(sock, mainSqaGroup.jid, sqaTickets);
+}
+
+// mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 async function sendImportResult(sock, sourceJid, result) {
   logger.info("Sending import summary", {
     sourceJid,
@@ -428,53 +568,47 @@ async function sendImportResult(sock, sourceJid, result) {
     const workbookBuffer = await createFilteredTicketsExcel(result);
     await sock.sendMessage(sourceJid, {
       document: workbookBuffer,
-      mimetype: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      mimetype:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       fileName: "filtered_ccm_tickets.xlsx",
       caption: "File Excel hasil filter tiket.",
     });
   }
 
-  for (const ticket of result.valid_tickets) {
-    const targetJid = resolveTargetJid(ticket);
-    if (!targetJid) {
-      const targetGroupKey = getTargetGroupKey(ticket);
-      logger.warn("Escalation ticket skipped: target group JID is not configured", {
-        orderId: ticket.order_id,
-        assignmentType: ticket.assignment_type,
-        targetGroupKey,
-        pic: ticket.pic,
-      });
-      await sock.sendMessage(sourceJid, {
-        text: [
-          "Alert konfigurasi target group kosong.",
-          "",
-          `Order ID: ${ticket.order_id || "-"}`,
-          `Assignment: ${ticket.assignment_type || "-"}`,
-          `Target group key: ${targetGroupKey || "-"}`,
-          `PIC: ${ticket.pic || "-"}`,
-          "",
-          "Tiket ini tidak dikirim ke grup tujuan.",
-          "Lengkapi JID di config/whatsapp.json pada target_groups, lalu kirim ulang file jika perlu.",
-        ].join("\n"),
-      });
-      continue;
-    }
+  const ticketsByTarget = await groupTicketsByTarget(
+    sock,
+    sourceJid,
+    result.valid_tickets,
+  );
 
-    logger.info("Sending escalation ticket", {
-      orderId: ticket.order_id,
-      assignmentType: ticket.assignment_type,
-      targetJid,
-      pic: ticket.pic,
-    });
-    await enqueueTicketMessage(
-      () => sock.sendMessage(targetJid, formatEscalationMessagePayload(ticket)),
-      {
+  await sendMainSqaSummaryOnly(
+    sock,
+    sourceJid,
+    ticketsByTarget,
+    result.valid_tickets,
+  );
+
+  for (const [targetJid, tickets] of ticketsByTarget.entries()) {
+    await sendTargetGroupPreamble(sock, targetJid, tickets);
+
+    for (const ticket of tickets) {
+      logger.info("Sending escalation ticket", {
         orderId: ticket.order_id,
         assignmentType: ticket.assignment_type,
         targetJid,
         pic: ticket.pic,
-      },
-    );
+      });
+      await enqueueTicketMessage(
+        () =>
+          sock.sendMessage(targetJid, formatEscalationMessagePayload(ticket)),
+        {
+          orderId: ticket.order_id,
+          assignmentType: ticket.assignment_type,
+          targetJid,
+          pic: ticket.pic,
+        },
+      );
+    }
   }
 }
 
@@ -571,7 +705,9 @@ export async function startBot() {
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const envVersion = parseWaWebVersion(process.env.WA_WEB_VERSION);
-  const { version: latestVersion } = envVersion ? { version: envVersion } : await fetchLatestBaileysVersion();
+  const { version: latestVersion } = envVersion
+    ? { version: envVersion }
+    : await fetchLatestBaileysVersion();
   const version = envVersion || latestVersion;
 
   logger.info("Starting WhatsApp socket", {
@@ -591,7 +727,9 @@ export async function startBot() {
 
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
     if (qr) {
-      logger.info("QR login received. Scan from WhatsApp > Linked devices > Link a device");
+      logger.info(
+        "QR login received. Scan from WhatsApp > Linked devices > Link a device",
+      );
       qrcode.generate(qr, { small: true });
     }
 
@@ -601,7 +739,9 @@ export async function startBot() {
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const reason = lastDisconnect?.error?.output?.payload?.message || lastDisconnect?.error?.message;
+      const reason =
+        lastDisconnect?.error?.output?.payload?.message ||
+        lastDisconnect?.error?.message;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
@@ -616,9 +756,12 @@ export async function startBot() {
           });
         }, 5000);
       } else {
-        logger.warn("WhatsApp logged out. Delete auth dir and start again to scan a new QR", {
-          authDir: AUTH_DIR,
-        });
+        logger.warn(
+          "WhatsApp logged out. Delete auth dir and start again to scan a new QR",
+          {
+            authDir: AUTH_DIR,
+          },
+        );
       }
     }
   });

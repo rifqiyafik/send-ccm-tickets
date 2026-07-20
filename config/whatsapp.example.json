@@ -16,6 +16,10 @@
     }
   },
   "target_groups": {
+    "MAIN SQA": {
+      "jid": "",
+      "label": "Service Quality Assurance Sumbagut"
+    },
     "SQA": {
       "jid": "",
       "label": "Service Quality Assurance Sumbagut"

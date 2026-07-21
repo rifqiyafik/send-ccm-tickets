@@ -14,6 +14,7 @@ src/
     telegramCommandHandler.js      # routing command /start, /help, /status, /login, /logout
     whatsappMessageHandler.js      # handler WhatsApp untuk file Excel dan pengiriman tiket
   services/
+    telegramAccessService.js       # whitelist group/private Telegram dan approval register
     whatsappSessionService.js      # kontrol start/logout session WhatsApp dari Telegram
 ```
 
@@ -23,6 +24,7 @@ src/
 TELEGRAM_BOT_TOKEN=isi_token_dari_botfather
 TELEGRAM_ADMIN_CHAT_IDS=123456789
 TELEGRAM_POLL_TIMEOUT_SECONDS=30
+TELEGRAM_ACCESS_CONFIG_PATH=config/telegram.json
 WA_AUTH_DIR=sessions/baileys
 WA_AUTO_START=false
 ```
@@ -38,6 +40,22 @@ Bot akan membalas `Chat ID kamu`, lalu masukkan ID tersebut ke `.env`.
 - `/logout`: logout WhatsApp dan menghapus folder session lokal.
 - `/groups [keyword]`: mencari JID grup WhatsApp dari session aktif.
 - `/private [keyword]`: mencari JID private chat/kontak yang sudah ter-index.
+- `/register`: request whitelist Telegram dari chat/group yang belum terdaftar.
+- `/register <chat_id> [label]`: admin mendaftarkan chat/group Telegram ke whitelist.
+- `/whitelist`: admin melihat daftar whitelist Telegram.
+
+## Flow Whitelist Telegram
+
+1. User mengirim `/register` dari group/private Telegram.
+2. Bot mengirim request approval ke semua admin di `TELEGRAM_ADMIN_CHAT_IDS`.
+3. Admin approve dengan command:
+
+```text
+/register -1001234567890 Nama Grup Telegram
+```
+
+4. Data disimpan ke `config/telegram.json`.
+5. File Excel Telegram hanya diterima dari group/private yang sudah ada di whitelist.
 
 ## Flow Login
 

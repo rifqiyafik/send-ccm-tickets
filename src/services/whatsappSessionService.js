@@ -3,6 +3,7 @@ import qrcode from "qrcode-terminal";
 
 import { startBot } from "../handlers/whatsappMessageHandler.js";
 import { createLogger } from "../utils/logger.js";
+import { escapeTelegramHtml } from "../utils/telegramFormat.js";
 
 const logger = createLogger("whatsappSessionService");
 const AUTH_DIR = process.env.WA_AUTH_DIR || "sessions/baileys";
@@ -15,21 +16,14 @@ function formatQrText(qr) {
   return qrText;
 }
 
-function escapeHtml(value) {
-  return String(value || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-}
-
 // #penjelasan: membungkus lifecycle WhatsApp agar bisa dikontrol dari Telegram tanpa command terminal.
 export function createWhatsAppSessionService({ sendTelegramMessage }) {
   let controller = null;
   const qrSubscribers = new Set();
 
-  async function notifySubscribers(text) {
+  async function notifySubscribers(text, options = {}) {
     for (const chatId of qrSubscribers) {
-      await sendTelegramMessage(chatId, text);
+      await sendTelegramMessage(chatId, text, options);
     }
   }
 
@@ -43,7 +37,7 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
         "WhatsApp login QR diterima.",
         "Scan dari WhatsApp > Linked devices > Link a device.",
         "",
-        `<pre>${escapeHtml(qrText)}</pre>`,
+        `<pre>${escapeTelegramHtml(qrText)}</pre>`,
       ].join("\n"),
       { parse_mode: "HTML" },
     );
@@ -68,23 +62,29 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
       onQr: notifyQr,
       onConnectionUpdate: async ({ connection }) => {
         if (connection === "open") {
-          await notifySubscribers("WhatsApp bot connected.");
+          await notifySubscribers("✅ WhatsApp Bot Connected");
         }
         if (connection === "close") {
-          await notifySubscribers("WhatsApp connection closed.");
+          await notifySubscribers("❌ WhatsApp Connection Closed");
         }
       },
     });
 
     return [
-      "WhatsApp login dimulai.",
-      "Jika session belum aktif, QR akan dikirim ke chat Telegram ini.",
-      `Auth dir: ${AUTH_DIR}`,
+      "🔐 **WhatsApp Login Dimulai**",
+      "",
+      "⏳ Jika session belum aktif, QR akan dikirim ke chat Telegram ini.",
+      `📂 Auth Directory: ${AUTH_DIR}`,
+      "",
+      "---",
+      "ℹ️ Scan QR segera untuk mengaktifkan session WhatsApp.",
     ].join("\n");
   }
 
   async function logout() {
-    logger.info("WhatsApp logout requested from Telegram", { authDir: AUTH_DIR });
+    logger.info("WhatsApp logout requested from Telegram", {
+      authDir: AUTH_DIR,
+    });
     if (controller?.logout) {
       await controller.logout("Telegram /logout");
     }
@@ -92,7 +92,7 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
     await fs.rm(AUTH_DIR, { recursive: true, force: true });
 
     return [
-      "WhatsApp session sudah logout.",
+      "❌ WhatsApp Session Logout",
       `Folder session dibersihkan: ${AUTH_DIR}`,
       "Jalankan /login untuk scan QR baru.",
     ].join("\n");
@@ -111,7 +111,12 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
     };
   }
 
+  function getSocket() {
+    return controller?.sock || null;
+  }
+
   return {
+    getSocket,
     getStatus,
     login,
     logout,

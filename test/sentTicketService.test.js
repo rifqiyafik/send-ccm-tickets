@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   createSentTicketPlan,
   formatSentTicketPlanReport,
+  formatSqaAreaFollowUpMessage,
   markTicketAsSent,
 } from "../src/services/sentTicketService.js";
 
@@ -82,6 +83,7 @@ test("skips duplicate IN SLA ticket when business status is not ReOpen transitio
   assert.equal(plan.sendable_tickets.length, 0);
   assert.equal(plan.duplicate_tickets.length, 1);
   assert.match(formatSentTicketPlanReport(plan), /Tiket duplicate dilewati: 1/);
+  assert.match(formatSentTicketPlanReport(plan), /```\n\+-+/);
 
   context.cleanup();
 });
@@ -160,4 +162,55 @@ test("cleans sent ticket records older than retention days", async () => {
   assert.equal(store.tickets.RECENT.order_id, "RECENT");
 
   context.cleanup();
+});
+
+test("formats SQA area follow-up message from sendable tickets", () => {
+  const message = formatSqaAreaFollowUpMessage([
+    ticket({ nsa: "ACEH", pic_sqa: "Herman" }),
+    ticket({ nsa: "ACEH", pic_sqa: "Herman" }),
+    ticket({ nsa: "MEDAN", pic_sqa: "Ahsan" }),
+    ticket({ assignment_type: "NOP", nsa: "BINJAI", pic_nop: "Rizlul" }),
+  ]);
+
+  assert.match(message, /Assalamualaikum/);
+  assert.match(message, /2 tiket SQA area Aceh \(Bg Herman\)/);
+  assert.match(message, /1 tiket SQA area Medan \(Bg Ahsan\)/);
+  assert.doesNotMatch(message, /BINJAI/);
+});
+
+test("formats SQA area follow-up message like the requested template", () => {
+  const tickets = [
+    ...Array.from({ length: 5 }, () => ticket({ nsa: "ACEH", pic_sqa: "Herman" })),
+    ...Array.from({ length: 1 }, () => ticket({ nsa: "BINJAI", pic_sqa: "Herman" })),
+    ...Array.from({ length: 4 }, () => ticket({ nsa: "MEDAN", pic_sqa: "Ahsan" })),
+    ...Array.from({ length: 2 }, () =>
+      ticket({ nsa: "PADANG SIDEMPUAN", pic_sqa: "Ahsan" }),
+    ),
+    ...Array.from({ length: 6 }, () =>
+      ticket({ nsa: "PEMATANG SIANTAR", pic_sqa: "Fernando" }),
+    ),
+    ...Array.from({ length: 4 }, () =>
+      ticket({ nsa: "RANTAU PRAPAT", pic_sqa: "Fernando" }),
+    ),
+  ];
+
+  assert.equal(
+    formatSqaAreaFollowUpMessage(tickets),
+    [
+      "Assalamualaikum,",
+      "Semangat Pagi dan Semangat Sehat,",
+      "Dear Bapak Manager dan SQA Team ,",
+      "Berikut kami infokan tiket Remedy Customer Complaint yg masih open di SQA,",
+      "",
+      "Mohon dibantu untuk segera di follow up.",
+      "5 tiket SQA area Aceh (Bg Herman)",
+      "1 tiket SQA area Binjai (Bg Herman)",
+      "4 tiket SQA area Medan (Bg Ahsan)",
+      "2 tiket SQA area Padang Sidempuan (Bg Ahsan)",
+      "6 tiket SQA area Pematang Siantar (Bg Fernando)",
+      "4 tiket SQA area Rantau Prapat (Bg Fernando)",
+      "",
+      "Terimakasih sebelumnya 🙏🏻😇",
+    ].join("\n"),
+  );
 });

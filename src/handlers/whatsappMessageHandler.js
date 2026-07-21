@@ -29,6 +29,7 @@ import { isAllowedBotAccess } from "../services/accessControlService.js";
 import {
   createSentTicketPlan,
   formatSentTicketPlanReport,
+  formatSqaAreaFollowUpMessage,
   markTicketAsSent,
 } from "../services/sentTicketService.js";
 import {
@@ -44,7 +45,7 @@ import {
 
 const AUTH_DIR = process.env.WA_AUTH_DIR || "sessions/baileys";
 const BAILEYS_LOG_LEVEL = process.env.BAILEYS_LOG_LEVEL || "silent";
-const UNAUTHORIZED_TEXT = "sorry, you are not in our system\nbye bye \u{1F44B}";
+const UNAUTHORIZED_TEXT = "sorry, you are not in our system\nbye bye 👋";
 const MAX_COMMAND_RESULT = Number(process.env.BOT_COMMAND_RESULT_LIMIT || 10);
 const MAX_MESSAGE_LENGTH = 3500;
 const logger = createLogger("whatsappMessageHandler");
@@ -119,7 +120,11 @@ function parseBotCommand(text) {
 
 // membaca caption command pada dokumen Excel; .update berarti hanya kirim detail tiket.
 function getDocumentImportOptions(text) {
-  if (!String(text || "").trim().startsWith(".")) {
+  if (
+    !String(text || "")
+      .trim()
+      .startsWith(".")
+  ) {
     return {
       command: "",
       supported: true,
@@ -284,14 +289,17 @@ export function formatWhatsAppPrivateCommand(keyword = "") {
 // membuat output status singkat untuk memastikan bot hidup dan membaca index lokal.
 function formatBotStatus({ sourceJid, senderJid, allowed }) {
   return [
-    "CCM Ticket Bot Status",
+    "📊 **CCM Ticket Bot Status**",
     "",
-    `Access: ${allowed ? "ALLOWED" : "DENIED"}`,
-    `Source JID: ${sourceJid || "-"}`,
-    `Sender JID: ${senderJid || "-"}`,
-    `Indexed groups: ${groupIndex.size}`,
-    `Indexed private chats: ${privateIndex.size}`,
-    `Result limit: ${MAX_COMMAND_RESULT}`,
+    `🔐 Access: ${allowed ? "✅ ALLOWED" : "❌ DENIED"}`,
+    `📡 Source JID: ${sourceJid || "-"}`,
+    `👤 Sender JID: ${senderJid || "-"}`,
+    `👥 Indexed Groups: ${groupIndex.size}`,
+    `💬 Indexed Private Chats: ${privateIndex.size}`,
+    `📏 Result Limit: ${MAX_COMMAND_RESULT}`,
+    "",
+    "---",
+    "ℹ️ Gunakan command sesuai izin akses yang berlaku.",
   ].join("\n");
 }
 
@@ -345,10 +353,15 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
   if (command === ".update") {
     await sock.sendMessage(sourceJid, {
       text: [
-        "Mode .update digunakan sebagai caption file Excel.",
+        "⚙️ **Mode .update**",
         "",
-        "Kirim file Excel dengan caption .update untuk hanya mengirim detail tiket ke grup target.",
-        "Salam pembuka, Excel target, dan reminder summary tidak dikirim pada mode ini.",
+        "📌 Digunakan sebagai *caption* file Excel.",
+        "",
+        "➡️ Kirim file Excel dengan caption `.update` untuk hanya mengirim **detail tiket** ke grup target.",
+        "🚫 Salam pembuka, Excel target, dan reminder summary **tidak dikirim** pada mode ini.",
+        "",
+        "---",
+        "ℹ️ Mode ini cocok untuk update cepat tanpa format tambahan.",
       ].join("\n"),
     });
   }
@@ -485,15 +498,15 @@ async function sendMissingTargetGroupAlert(sock, sourceJid, ticket) {
   });
   await sock.sendMessage(sourceJid, {
     text: [
-      "Alert konfigurasi target group kosong.",
+      "⚠️ **Alert: Target Group Kosong**",
       "",
-      `Order ID: ${ticket.order_id || "-"}`,
-      `Assignment: ${ticket.assignment_type || "-"}`,
-      `Target group key: ${targetGroupKey || "-"}`,
-      `PIC: ${ticket.pic || "-"}`,
+      `🆔 Order ID: ${ticket.order_id || "-"}`,
+      `📌 Assignment: ${ticket.assignment_type || "-"}`,
+      `🔑 Target Group Key: ${targetGroupKey || "-"}`,
+      `👤 PIC: ${ticket.pic || "-"}`,
       "",
-      "Tiket ini tidak dikirim ke grup tujuan.",
-      "Lengkapi JID di config/whatsapp.json pada target_groups, lalu kirim ulang file jika perlu.",
+      "🚫 Tiket ini **tidak dikirim** ke grup tujuan.",
+      "👉 Lengkapi JID di `config/whatsapp.json` pada `target_groups`, lalu kirim ulang file jika perlu.",
     ].join("\n"),
   });
 }
@@ -542,7 +555,7 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
     mimetype:
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     fileName: formatUpdateTicketFileName(),
-    caption: "File Excel berisi tiket yang dikirim ke grup ini.",
+    // caption: "File Excel berisi tiket yang dikirim ke grup ini.",
   });
 
   await sock.sendMessage(targetJid, formatReminderMessagePayload(tickets));
@@ -565,27 +578,33 @@ async function sendMainSqaSummaryOnly(
 
   const mainSqaGroup = getGroupConfig("MAIN SQA");
   if (!mainSqaGroup?.jid) {
-    logger.warn("MAIN SQA summary skipped: target group JID is not configured", {
-      sqaTickets: sqaTickets.length,
-    });
+    logger.warn(
+      "MAIN SQA summary skipped: target group JID is not configured",
+      {
+        sqaTickets: sqaTickets.length,
+      },
+    );
     await sock.sendMessage(sourceJid, {
       text: [
-        "Alert konfigurasi MAIN SQA kosong.",
+        "⚠️ **Alert: MAIN SQA Kosong**",
         "",
-        `Total tiket SQA: ${sqaTickets.length}`,
+        `📊 Total Tiket SQA: ${sqaTickets.length}`,
         "",
-        "Salam, Excel, dan reminder summary MAIN SQA tidak dikirim.",
-        "Lengkapi JID di config/whatsapp.json pada target_groups dengan key MAIN SQA.",
+        "🚫 Salam, Excel, dan reminder summary **MAIN SQA tidak dikirim**.",
+        "👉 Lengkapi JID di `config/whatsapp.json` pada `target_groups` dengan key **MAIN SQA**.",
       ].join("\n"),
     });
     return;
   }
 
   if (ticketsByTarget.has(mainSqaGroup.jid)) {
-    logger.warn("MAIN SQA summary skipped: JID is already used by detail target group", {
-      mainSqaJid: mainSqaGroup.jid,
-      sqaTickets: sqaTickets.length,
-    });
+    logger.warn(
+      "MAIN SQA summary skipped: JID is already used by detail target group",
+      {
+        mainSqaJid: mainSqaGroup.jid,
+        sqaTickets: sqaTickets.length,
+      },
+    );
     return;
   }
 
@@ -597,7 +616,7 @@ async function sendMainSqaSummaryOnly(
 }
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
-async function sendImportResult(sock, sourceJid, result, options = {}) {
+export async function sendImportResult(sock, sourceJid, result, options = {}) {
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   logger.info("Sending import summary", {
     sourceJid,
@@ -627,9 +646,13 @@ async function sendImportResult(sock, sourceJid, result, options = {}) {
     });
     await sock.sendMessage(sourceJid, {
       text: [
-        "Mode .update aktif.",
-        "Bot hanya mengirim detail tiket ke grup target.",
-        "Salam pembuka, Excel target, dan reminder summary dilewati.",
+        "⚙️ **Mode .update Aktif**",
+        "",
+        "➡️ Bot hanya mengirim **detail tiket** ke grup target.",
+        "🚫 Salam pembuka, Excel target, dan reminder summary **dilewati**.",
+        "",
+        "---",
+        "ℹ️ Gunakan mode ini untuk update cepat tanpa format tambahan.",
       ].join("\n"),
     });
   }
@@ -651,7 +674,7 @@ async function sendImportResult(sock, sourceJid, result, options = {}) {
       document: workbookBuffer,
       mimetype:
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      fileName: "filtered_ccm_tickets.xlsx",
+      fileName: formatUpdateTicketFileName(),
       caption: "File Excel hasil filter tiket.",
     });
   }
@@ -660,6 +683,22 @@ async function sendImportResult(sock, sourceJid, result, options = {}) {
   await sock.sendMessage(sourceJid, {
     text: formatSentTicketPlanReport(sentTicketPlan),
   });
+
+  const sqaAreaFollowUpMessage = formatSqaAreaFollowUpMessage(
+    result.valid_tickets,
+  );
+  if (sqaAreaFollowUpMessage) {
+    logger.info("Sending SQA area follow-up message", {
+      sourceJid,
+      sqaTickets: result.valid_tickets.filter(
+        (ticket) => ticket.assignment_type === "SQA",
+      ).length,
+      source: "valid_tickets",
+    });
+    await sock.sendMessage(sourceJid, {
+      text: sqaAreaFollowUpMessage,
+    });
+  }
 
   if (sentTicketPlan.sendable_tickets.length === 0) {
     logger.info("No tickets left to send after deduplication/SLA checks", {
@@ -691,10 +730,13 @@ async function sendImportResult(sock, sourceJid, result, options = {}) {
 
   for (const [targetJid, tickets] of ticketsByTarget.entries()) {
     if (ticketOnlyMode) {
-      logger.info("Skipping target group preamble in .update ticket-only mode", {
-        targetJid,
-        tickets: tickets.length,
-      });
+      logger.info(
+        "Skipping target group preamble in .update ticket-only mode",
+        {
+          targetJid,
+          tickets: tickets.length,
+        },
+      );
     } else {
       await sendTargetGroupPreamble(sock, targetJid, tickets);
     }
@@ -773,10 +815,15 @@ async function handleIncomingMessage(sock, messageEvent) {
     });
     await sock.sendMessage(sourceJid, {
       text: [
-        `Command caption tidak dikenal: ${importOptions.command}`,
+        "❓ **Command Caption Tidak Dikenal**",
         "",
-        "Untuk kirim normal, kosongkan caption file Excel.",
-        "Untuk mode update tiket saja, gunakan caption .update.",
+        `⚙️ Caption yang diterima: ${importOptions.command}`,
+        "",
+        "➡️ Untuk kirim normal: kosongkan caption file Excel.",
+        "📌 Untuk mode update tiket saja: gunakan caption `.update`.",
+        "",
+        "---",
+        "ℹ️ Pastikan caption sesuai agar bot bisa memproses file dengan benar.",
       ].join("\n"),
     });
     return;
@@ -808,8 +855,16 @@ async function handleIncomingMessage(sock, messageEvent) {
 
   await sock.sendMessage(sourceJid, {
     text: importOptions.ticketOnlyMode
-      ? "File Excel diterima dengan mode .update. Sedang memproses tiket..."
-      : "File Excel diterima. Sedang memproses tiket...",
+      ? [
+          "📂 **File Excel Diterima (Mode .update)**",
+          "",
+          "⏳ Sedang memproses **detail tiket saja**...",
+        ].join("\n")
+      : [
+          "📂 **File Excel Diterima**",
+          "",
+          "⏳ Sedang memproses **tiket lengkap**...",
+        ].join("\n"),
   });
 
   try {
@@ -828,7 +883,13 @@ async function handleIncomingMessage(sock, messageEvent) {
   } catch (error) {
     logger.error("Failed to process incoming Excel", error);
     await sock.sendMessage(sourceJid, {
-      text: `Gagal memproses file Excel: ${error.message}`,
+      text: [
+        "❌ **Gagal Memproses File Excel**",
+        "",
+        `🛑 Error: ${error.message}`,
+        "",
+        "👉 Pastikan format file sesuai sebelum mengirim ulang.",
+      ].join("\n"),
     });
   }
 }

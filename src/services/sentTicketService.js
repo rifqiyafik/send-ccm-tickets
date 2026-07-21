@@ -5,7 +5,11 @@ import { createLogger } from "../utils/logger.js";
 import { cleanTableValue } from "../utils/text.js";
 
 const logger = createLogger("sentTicketService");
-const DEFAULT_STORE_PATH = path.join(process.cwd(), "data", "sent_tickets.json");
+const DEFAULT_STORE_PATH = path.join(
+  process.cwd(),
+  "data",
+  "sent_tickets.json",
+);
 const DEFAULT_RETENTION_DAYS = 7;
 
 function getStorePath() {
@@ -25,6 +29,33 @@ function normalizeBusinessStatus(value) {
   return cleanTableValue(value)
     .toUpperCase()
     .replace(/[\s_-]+/g, "");
+}
+
+function toTitleCase(value) {
+  return cleanTableValue(value)
+    .toLowerCase()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatPicLabel(value) {
+  const pic = cleanTableValue(value);
+  if (!pic || pic === "-") {
+    return "-";
+  }
+  return pic.toLowerCase().startsWith("bg ") ? pic : `Bg ${pic}`;
+}
+
+function createOrderIdCodeTable(tickets) {
+  const orderIds = tickets.map((ticket) => cleanTableValue(ticket.order_id));
+  const width = Math.max(
+    "Order ID".length,
+    ...orderIds.map((orderId) => orderId.length),
+  );
+  const border = `+${"-".repeat(width + 2)}+`;
+  const header = `| ${"Order ID".padEnd(width)} |`;
+  const rows = orderIds.map((orderId) => `| ${orderId.padEnd(width)} |`);
+
+  return ["```", border, header, border, ...rows, border, "```"].join("\n");
 }
 
 function isInProgress(value) {
@@ -67,7 +98,11 @@ async function writeStore(store) {
   const storePath = getStorePath();
   try {
     await fs.mkdir(path.dirname(storePath), { recursive: true });
-    await fs.writeFile(storePath, `${JSON.stringify(store, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      storePath,
+      `${JSON.stringify(store, null, 2)}\n`,
+      "utf8",
+    );
     logger.info("Sent ticket store saved", {
       storePath,
       tickets: Object.keys(store.tickets || {}).length,
@@ -131,7 +166,10 @@ function resolveTicketSendDecision(ticket, existingRecord) {
     };
   }
 
-  if (isInProgress(existingRecord.business_status) && isReopen(ticket.business_status)) {
+  if (
+    isInProgress(existingRecord.business_status) &&
+    isReopen(ticket.business_status)
+  ) {
     return {
       send: true,
       reason: "REOPEN_AFTER_IN_PROGRESS",
@@ -239,37 +277,81 @@ export async function markTicketAsSent(ticket, metadata = {}) {
 
 export function formatSentTicketPlanReport(plan) {
   const lines = [
-    "Deduplication report:",
-    `Tiket baru dikirim: ${plan.sendable_tickets.length}`,
-    `Tiket duplicate dilewati: ${plan.duplicate_tickets.length}`,
-    `Tiket OUT SLA dilewati: ${plan.out_sla_tickets.length}`,
-    `Tiket ReOpen dikirim ulang: ${plan.reopened_tickets.length}`,
-    `Retensi riwayat lokal: ${plan.retention_days} hari`,
+    "📊 Deduplication Report",
+    "",
+    `🆕 Tiket baru dikirim: ${plan.sendable_tickets.length}`,
+    `🔁 Tiket duplicate dilewati: ${plan.duplicate_tickets.length}`,
+    `⏱️ Tiket OUT SLA dilewati: ${plan.out_sla_tickets.length}`,
+    `♻️ Tiket ReOpen dikirim ulang: ${plan.reopened_tickets.length}`,
+    `🗄️ Retensi riwayat lokal: ${plan.retention_days} hari`,
   ];
 
   if (plan.duplicate_tickets.length > 0) {
     lines.push(
       "",
-      "Duplicate Order ID:",
-      ...plan.duplicate_tickets.map((ticket) => `- ${ticket.order_id || "-"}`),
+      "🔁 Duplicate Order ID:",
+      "",
+      createOrderIdCodeTable(plan.duplicate_tickets),
     );
   }
 
   if (plan.out_sla_tickets.length > 0) {
     lines.push(
       "",
-      "OUT SLA Order ID:",
-      ...plan.out_sla_tickets.map((ticket) => `- ${ticket.order_id || "-"}`),
+      "⏱️ OUT SLA Order ID:",
+      "",
+      createOrderIdCodeTable(plan.out_sla_tickets),
     );
   }
 
   if (plan.reopened_tickets.length > 0) {
     lines.push(
       "",
-      "ReOpen dikirim ulang:",
-      ...plan.reopened_tickets.map((ticket) => `- ${ticket.order_id || "-"}`),
+      "♻️ ReOpen dikirim ulang:",
+      "",
+      createOrderIdCodeTable(plan.reopened_tickets),
     );
   }
 
   return lines.join("\n");
+}
+
+export function formatSqaAreaFollowUpMessage(tickets) {
+  const sqaTickets = tickets.filter((ticket) => ticket.assignment_type === "SQA");
+  if (sqaTickets.length === 0) {
+    return "";
+  }
+
+  const areaMap = new Map();
+  for (const ticket of sqaTickets) {
+    const area = cleanTableValue(ticket.nsa || ticket.city || "UNKNOWN");
+    const key = area.toUpperCase();
+    const existing = areaMap.get(key) || {
+      area: toTitleCase(area),
+      pic: formatPicLabel(ticket.pic_sqa || ticket.pic),
+      count: 0,
+    };
+
+    existing.count += 1;
+    if (existing.pic === "-" && (ticket.pic_sqa || ticket.pic)) {
+      existing.pic = formatPicLabel(ticket.pic_sqa || ticket.pic);
+    }
+    areaMap.set(key, existing);
+  }
+
+  const areaLines = [...areaMap.values()]
+    .sort((a, b) => a.area.localeCompare(b.area))
+    .map((item) => `${item.count} tiket SQA area ${item.area} (${item.pic})`);
+
+  return [
+    "Assalamualaikum,",
+    "Semangat Pagi dan Semangat Sehat,",
+    "Dear Bapak Manager dan SQA Team ,",
+    "Berikut kami infokan tiket Remedy Customer Complaint yg masih open di SQA,",
+    "",
+    "Mohon dibantu untuk segera di follow up.",
+    ...areaLines,
+    "",
+    "Terimakasih sebelumnya 🙏🏻😇",
+  ].join("\n");
 }

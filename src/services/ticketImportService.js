@@ -26,6 +26,7 @@ import {
   cleanTableValue,
   formatNameTag,
 } from "../utils/text.js";
+import { createCodeBlock, formatAsciiTable } from "../utils/asciiTable.js";
 import { normalizeJid } from "../utils/jid.js";
 import { getMentionContact } from "../config/appConfig.js";
 
@@ -876,15 +877,15 @@ export function formatImportSummary(result) {
   }
 
   return [
-    "Import tiket selesai.",
+    "✅ Import tiket selesai.",
     "",
-    `Total row: ${result.total_rows}`,
-    `Tiket valid: ${result.valid_count}`,
-    `Tiket dilewati: ${result.skipped_count}`,
+    `📊 Total row: ${result.total_rows}`,
+    `✔️ Tiket valid: ${result.valid_count}`,
+    `⏭️ Tiket dilewati: ${result.skipped_count}`,
   ].join("\n");
 }
 
-// membuat report detail alasan tiket valid/dilewati agar proses filter bisa diaudit dari WhatsApp.
+// membuat report detail alasan tiket valid/dilewati agar proses filter bisa diaudit dari WhatsApp/Telegram.
 export function formatProcessingReport(result) {
   logger.info("Formatting processing report", { ok: result.ok });
   if (!result.ok) {
@@ -892,31 +893,69 @@ export function formatProcessingReport(result) {
   }
 
   const lines = [
-    "Report proses import",
+    "📊 Report Proses Import",
     "",
-    "Valid per assignment:",
-    ...Object.entries(result.valid_by_assignment_type).map(
-      ([key, count]) => `- ${key}: ${count}`,
+    "🗂️ Valid per Assignment:",
+    createCodeBlock(
+      formatAsciiTable(
+        [
+          { key: "assignment_type", header: "Assignment Type", minWidth: 15 },
+          { key: "count", header: "Count", minWidth: 5 },
+        ],
+        Object.entries(result.valid_by_assignment_type).map(([key, count]) => ({
+          assignment_type: key,
+          count,
+        })),
+      ),
     ),
     "",
-    "Valid per PIC:",
-    ...Object.entries(result.valid_by_pic).map(
-      ([key, count]) => `- ${key}: ${count}`,
+    "👤 Valid per PIC:",
+    createCodeBlock(
+      formatAsciiTable(
+        [
+          { key: "pic", header: "PIC", minWidth: 12, maxWidth: 24 },
+          { key: "count", header: "Count", minWidth: 5 },
+        ],
+        Object.entries(result.valid_by_pic).map(([key, count]) => ({
+          pic: key,
+          count,
+        })),
+      ),
     ),
   ];
 
   if (result.skipped_tickets.length > 0) {
     lines.push(
       "",
-      "Dilewati per alasan:",
+      "",
+      "⏭️ Alasan dilewati:",
       ...Object.entries(result.skipped_by_reason).map(
         ([key, count]) => `- ${key}: ${count}`,
       ),
       "",
-      "Detail dilewati:",
-      ...result.skipped_tickets.map(
-        (ticket) =>
-          `- Order ID ${getTicketRef(ticket)} | ${ticket.reason} | ${ticket.city || "-"} | ${ticket.assignment_group || "-"}${ticket.site_id ? ` | Site ID: ${ticket.site_id}` : ""}`,
+      "📋 Detail tiket yang dilewati:",
+      createCodeBlock(
+        formatAsciiTable(
+          [
+            { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 24 },
+            { key: "reason", header: "Reason", minWidth: 22, maxWidth: 32 },
+            { key: "city", header: "City", minWidth: 12, maxWidth: 18 },
+            {
+              key: "assignment_group",
+              header: "Assignment Group",
+              minWidth: 18,
+              maxWidth: 34,
+            },
+            // { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
+          ],
+          result.skipped_tickets.map((ticket) => ({
+            order_id: getTicketRef(ticket),
+            reason: ticket.reason,
+            city: ticket.city || "-",
+            assignment_group: ticket.assignment_group || "-",
+            // site_id: ticket.site_id || "-",
+          })),
+        ),
       ),
     );
   }
@@ -924,10 +963,30 @@ export function formatProcessingReport(result) {
   if (result.valid_tickets.length > 0) {
     lines.push(
       "",
-      "Detail valid:",
-      ...result.valid_tickets.map(
-        (ticket) =>
-          `- Order ID ${getTicketRef(ticket)} | ${ticket.assignment_type} | ${ticket.city} | ${ticket.sla_status} | PIC: ${ticket.pic}${ticket.site_id ? ` | Site ID: ${ticket.site_id}` : ""}`,
+      "📋 Detail tiket yang valid:",
+      createCodeBlock(
+        formatAsciiTable(
+          [
+            { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 24 },
+            {
+              key: "assignment_type",
+              header: "Assignment Type",
+              minWidth: 15,
+            },
+            { key: "city", header: "City", minWidth: 12, maxWidth: 18 },
+            { key: "sla_status", header: "SLA Status", minWidth: 10 },
+            { key: "pic", header: "PIC", minWidth: 12, maxWidth: 24 },
+            { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
+          ],
+          result.valid_tickets.map((ticket) => ({
+            order_id: getTicketRef(ticket),
+            assignment_type: ticket.assignment_type,
+            city: ticket.city || "-",
+            sla_status: ticket.sla_status || "-",
+            pic: ticket.pic || "-",
+            site_id: ticket.site_id || "-",
+          })),
+        ),
       ),
     );
   }
@@ -1231,7 +1290,7 @@ export function formatEscalationMessagePayload(ticket) {
     ...repeatedOrderId,
     ticket.notes || "-",
     "",
-    "========",
+    "====================",
     "",
     ticket.analysis_text || "-",
     "",

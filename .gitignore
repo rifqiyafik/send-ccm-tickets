@@ -26,6 +26,7 @@ pnpm-debug.log*
 
 # Generated files
 filtered_ccm_tickets.xlsx
+data/sent_tickets.json
 downloads/*
 !downloads/.gitkeep
 tmp/

@@ -47,6 +47,9 @@ const groupIndex = new Map();
 const privateIndex = new Map();
 let reconnectTimer = null;
 let releaseSessionLock = null;
+let activeSock = null;
+let activeController = null;
+let stoppingRequested = false;
 
 // melepas lock session saat proses dihentikan normal dari terminal.
 function bindSessionLockCleanup() {
@@ -228,6 +231,28 @@ async function refreshGroups(sock) {
 
   logger.info("Group metadata refreshed for command", {
     groups: groupIndex.size,
+  });
+}
+
+// #penjelasan: dipakai Telegram command center untuk menampilkan daftar grup dari session WhatsApp aktif.
+export async function formatWhatsAppGroupsCommand(keyword = "") {
+  if (activeSock) {
+    await refreshGroups(activeSock);
+  }
+
+  return formatJidList({
+    label: "WhatsApp groups",
+    items: [...groupIndex.values()],
+    keyword,
+  });
+}
+
+// #penjelasan: dipakai Telegram command center untuk menampilkan private chat/kontak yang sudah ter-index.
+export function formatWhatsAppPrivateCommand(keyword = "") {
+  return formatJidList({
+    label: "WhatsApp private chats",
+    items: [...privateIndex.values()],
+    keyword,
   });
 }
 
@@ -698,7 +723,13 @@ async function handleIncomingMessage(sock, messageEvent) {
 }
 
 // membuat koneksi Baileys, menangani QR login, reconnect, dan event pesan masuk.
-export async function startBot() {
+export async function startBot(options = {}) {
+  if (activeController) {
+    logger.info("WhatsApp bot already started, returning active controller");
+    return activeController;
+  }
+
+  stoppingRequested = false;
   logger.info("Starting WhatsApp bot auth state", { authDir: AUTH_DIR });
   releaseSessionLock = acquireProcessLock(AUTH_DIR, "whatsapp-bot");
   bindSessionLockCleanup();
@@ -721,15 +752,58 @@ export async function startBot() {
     version,
     logger: pino({ level: BAILEYS_LOG_LEVEL }),
   });
+  activeSock = sock;
+
+  activeController = {
+    sock,
+    getStatus() {
+      return {
+        running: Boolean(activeSock),
+        user: activeSock?.user || null,
+        authDir: AUTH_DIR,
+      };
+    },
+    async stop(reason = "Manual stop") {
+      logger.info("Stopping WhatsApp bot socket", { reason });
+      stoppingRequested = true;
+      clearTimeout(reconnectTimer);
+      try {
+        activeSock?.end?.(new Error(reason));
+      } catch (error) {
+        logger.warn("WhatsApp socket stop raised an error", {
+          message: error.message,
+        });
+      }
+      activeSock = null;
+      activeController = null;
+      releaseSessionLock?.();
+      releaseSessionLock = null;
+    },
+    async logout(reason = "Telegram logout") {
+      logger.info("Logging out WhatsApp bot", { reason });
+      stoppingRequested = true;
+      clearTimeout(reconnectTimer);
+      if (activeSock?.logout) {
+        await activeSock.logout(reason);
+      }
+      activeSock = null;
+      activeController = null;
+      releaseSessionLock?.();
+      releaseSessionLock = null;
+    },
+  };
 
   sock.ev.on("creds.update", saveCreds);
   bindCommandIndexEvents(sock);
 
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+    options.onConnectionUpdate?.({ connection, lastDisconnect, qr });
+
     if (qr) {
       logger.info(
         "QR login received. Scan from WhatsApp > Linked devices > Link a device",
       );
+      options.onQr?.(qr);
       qrcode.generate(qr, { small: true });
     }
 
@@ -742,7 +816,8 @@ export async function startBot() {
       const reason =
         lastDisconnect?.error?.output?.payload?.message ||
         lastDisconnect?.error?.message;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      const shouldReconnect =
+        !stoppingRequested && statusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
         logger.warn("WhatsApp connection closed, reconnecting in 5 seconds", {
@@ -751,11 +826,19 @@ export async function startBot() {
         });
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
-          startBot().catch((error) => {
+          activeSock = null;
+          activeController = null;
+          releaseSessionLock?.();
+          releaseSessionLock = null;
+          startBot(options).catch((error) => {
             logger.error("Failed to reconnect WhatsApp bot", error);
           });
         }, 5000);
       } else {
+        activeSock = null;
+        activeController = null;
+        releaseSessionLock?.();
+        releaseSessionLock = null;
         logger.warn(
           "WhatsApp logged out. Delete auth dir and start again to scan a new QR",
           {
@@ -771,4 +854,6 @@ export async function startBot() {
       logger.error("Failed to handle incoming message", error);
     });
   });
+
+  return activeController;
 }

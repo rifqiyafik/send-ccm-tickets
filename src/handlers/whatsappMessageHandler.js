@@ -27,6 +27,11 @@ import { acquireProcessLock } from "../utils/processLock.js";
 import { enqueueTicketMessage } from "../services/messageQueueService.js";
 import { isAllowedBotAccess } from "../services/accessControlService.js";
 import {
+  createSentTicketPlan,
+  formatSentTicketPlanReport,
+  markTicketAsSent,
+} from "../services/sentTicketService.js";
+import {
   createFilteredTicketsExcel,
   formatEscalationMessagePayload,
   formatImportSummary,
@@ -109,6 +114,24 @@ function parseBotCommand(text) {
   return {
     command: command.toLowerCase(),
     argument: parts.join(" ").trim(),
+  };
+}
+
+// membaca caption command pada dokumen Excel; .update berarti hanya kirim detail tiket.
+function getDocumentImportOptions(text) {
+  if (!String(text || "").trim().startsWith(".")) {
+    return {
+      command: "",
+      supported: true,
+      ticketOnlyMode: false,
+    };
+  }
+
+  const { command } = parseBotCommand(text);
+  return {
+    command,
+    supported: command === ".update",
+    ticketOnlyMode: command === ".update",
   };
 }
 
@@ -212,9 +235,11 @@ function formatCommandHelp({ sourceJid, senderJid, allowed }) {
     ".groups nop",
     ".private",
     ".private ferry",
+    ".update + file Excel",
     "",
     "Import tiket:",
     "- Kirim file Excel .xlsx ke grup/private yang sudah di whitelist.",
+    "- Caption .update pada file Excel: hanya kirim detail tiket tanpa salam, Excel target, dan reminder summary ke grup target.",
     "- Grup sumber harus ada di authorized_groups.",
     "- Private chat harus ada di authorized_users atau OWNER_JIDS.",
   ].join("\n");
@@ -281,7 +306,11 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
     argument,
   });
 
-  if (![".", ".help", ".status", ".groups", ".private"].includes(command)) {
+  if (
+    ![".", ".help", ".status", ".groups", ".private", ".update"].includes(
+      command,
+    )
+  ) {
     logger.warn("Bot command ignored: unsupported command", {
       sourceJid,
       senderJid,
@@ -310,6 +339,17 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
   if (command === ".status") {
     await sock.sendMessage(sourceJid, {
       text: formatBotStatus({ sourceJid, senderJid, allowed }),
+    });
+  }
+
+  if (command === ".update") {
+    await sock.sendMessage(sourceJid, {
+      text: [
+        "Mode .update digunakan sebagai caption file Excel.",
+        "",
+        "Kirim file Excel dengan caption .update untuk hanya mengirim detail tiket ke grup target.",
+        "Salam pembuka, Excel target, dan reminder summary tidak dikirim pada mode ini.",
+      ].join("\n"),
     });
   }
 
@@ -557,13 +597,15 @@ async function sendMainSqaSummaryOnly(
 }
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
-async function sendImportResult(sock, sourceJid, result) {
+async function sendImportResult(sock, sourceJid, result, options = {}) {
+  const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   logger.info("Sending import summary", {
     sourceJid,
     ok: result.ok,
     total: result.total_rows,
     valid: result.valid_count,
     skipped: result.skipped_count,
+    ticketOnlyMode,
   });
 
   await sock.sendMessage(sourceJid, {
@@ -576,6 +618,20 @@ async function sendImportResult(sock, sourceJid, result) {
       missingColumns: result.missing_columns,
     });
     return;
+  }
+
+  if (ticketOnlyMode) {
+    logger.info("Import is running in .update ticket-only mode", {
+      sourceJid,
+      validTickets: result.valid_tickets.length,
+    });
+    await sock.sendMessage(sourceJid, {
+      text: [
+        "Mode .update aktif.",
+        "Bot hanya mengirim detail tiket ke grup target.",
+        "Salam pembuka, Excel target, dan reminder summary dilewati.",
+      ].join("\n"),
+    });
   }
 
   const processingReport = formatProcessingReport(result);
@@ -600,21 +656,48 @@ async function sendImportResult(sock, sourceJid, result) {
     });
   }
 
+  const sentTicketPlan = await createSentTicketPlan(result.valid_tickets);
+  await sock.sendMessage(sourceJid, {
+    text: formatSentTicketPlanReport(sentTicketPlan),
+  });
+
+  if (sentTicketPlan.sendable_tickets.length === 0) {
+    logger.info("No tickets left to send after deduplication/SLA checks", {
+      sourceJid,
+      duplicate: sentTicketPlan.duplicate_tickets.length,
+      outSla: sentTicketPlan.out_sla_tickets.length,
+    });
+    return;
+  }
+
   const ticketsByTarget = await groupTicketsByTarget(
     sock,
     sourceJid,
-    result.valid_tickets,
+    sentTicketPlan.sendable_tickets,
   );
 
-  await sendMainSqaSummaryOnly(
-    sock,
-    sourceJid,
-    ticketsByTarget,
-    result.valid_tickets,
-  );
+  if (ticketOnlyMode) {
+    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
+      sourceJid,
+    });
+  } else {
+    await sendMainSqaSummaryOnly(
+      sock,
+      sourceJid,
+      ticketsByTarget,
+      sentTicketPlan.sendable_tickets,
+    );
+  }
 
   for (const [targetJid, tickets] of ticketsByTarget.entries()) {
-    await sendTargetGroupPreamble(sock, targetJid, tickets);
+    if (ticketOnlyMode) {
+      logger.info("Skipping target group preamble in .update ticket-only mode", {
+        targetJid,
+        tickets: tickets.length,
+      });
+    } else {
+      await sendTargetGroupPreamble(sock, targetJid, tickets);
+    }
 
     for (const ticket of tickets) {
       logger.info("Sending escalation ticket", {
@@ -624,8 +707,13 @@ async function sendImportResult(sock, sourceJid, result) {
         pic: ticket.pic,
       });
       await enqueueTicketMessage(
-        () =>
-          sock.sendMessage(targetJid, formatEscalationMessagePayload(ticket)),
+        async () => {
+          await sock.sendMessage(
+            targetJid,
+            formatEscalationMessagePayload(ticket),
+          );
+          await markTicketAsSent(ticket, { sourceJid, targetJid });
+        },
         {
           orderId: ticket.order_id,
           assignmentType: ticket.assignment_type,
@@ -664,15 +752,33 @@ async function handleIncomingMessage(sock, messageEvent) {
   });
 
   const text = getMessageText(message.message);
-  if (text.startsWith(".")) {
+  const documentMessage = getDocumentMessage(message.message);
+  if (text.startsWith(".") && !documentMessage) {
     await handleBotCommand(sock, { sourceJid, senderJid, text });
     return;
   }
 
-  const documentMessage = getDocumentMessage(message.message);
-
   if (!documentMessage) {
     logger.debug("Incoming message has no document, ignoring");
+    return;
+  }
+
+  const importOptions = getDocumentImportOptions(text);
+  if (!importOptions.supported) {
+    logger.warn("Incoming document rejected: unsupported caption command", {
+      sourceJid,
+      senderJid,
+      command: importOptions.command,
+      fileName: documentMessage.fileName,
+    });
+    await sock.sendMessage(sourceJid, {
+      text: [
+        `Command caption tidak dikenal: ${importOptions.command}`,
+        "",
+        "Untuk kirim normal, kosongkan caption file Excel.",
+        "Untuk mode update tiket saja, gunakan caption .update.",
+      ].join("\n"),
+    });
     return;
   }
 
@@ -701,19 +807,24 @@ async function handleIncomingMessage(sock, messageEvent) {
   }
 
   await sock.sendMessage(sourceJid, {
-    text: "File Excel diterima. Sedang memproses tiket...",
+    text: importOptions.ticketOnlyMode
+      ? "File Excel diterima dengan mode .update. Sedang memproses tiket..."
+      : "File Excel diterima. Sedang memproses tiket...",
   });
 
   try {
     const buffer = await downloadDocumentBuffer(documentMessage);
-    logger.info("Starting ticket Excel process");
+    logger.info("Starting ticket Excel process", {
+      ticketOnlyMode: importOptions.ticketOnlyMode,
+    });
     const result = await processTicketExcel(buffer);
     logger.info("Ticket Excel process completed", {
       total: result.total_rows,
       valid: result.valid_count || 0,
       skipped: result.skipped_count || 0,
+      ticketOnlyMode: importOptions.ticketOnlyMode,
     });
-    await sendImportResult(sock, sourceJid, result);
+    await sendImportResult(sock, sourceJid, result, importOptions);
   } catch (error) {
     logger.error("Failed to process incoming Excel", error);
     await sock.sendMessage(sourceJid, {

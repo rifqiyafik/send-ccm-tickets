@@ -116,3 +116,27 @@ test("formats NOP reminder with PIC mention", () => {
 
   context.cleanup();
 });
+
+test("omits NOP ReOpen detail table when there are no ReOpen details", () => {
+  const payload = formatReminderMessagePayload([
+    {
+      assignment_type: "NOP",
+      sla_status: "IN SLA",
+      cluster_area: "NOP PEMATANGSIANTAR",
+      order_id: "CC-20260721-00000001",
+      site_id: "PMS001",
+      reopen_number: "",
+      problem_analysis: "",
+      pic_nop: "Jonthala MK Tambunan",
+    },
+  ]);
+
+  assert.match(payload.text, /Remind ticket CX Open :/);
+  assert.match(payload.text, /NOP \| Total Ticket \| In SLA \| Out SLA/);
+  assert.match(payload.text, /PMS \| 1 \| 1 \| 0/);
+  assert.doesNotMatch(
+    payload.text,
+    /PIC NOP \| Nomor Ticket \| Site ID \| Count ReOpen \| Remark ReOpen/,
+  );
+  assert.deepEqual(payload.mentions, []);
+});

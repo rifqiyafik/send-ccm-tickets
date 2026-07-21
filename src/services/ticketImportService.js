@@ -1050,17 +1050,22 @@ function formatSqaReminderMessage(tickets) {
     "",
     "*Group | Total Ticket | In SLA | Out SLA*",
     `*SQA | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
-    "",
-    "Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen",
-    ...detailTickets.map(
-      (ticket) =>
-        `${cleanTableValue(ticket.nsa || ticket.city)} | ${cleanTableValue(
-          ticket.order_id,
-        )} | ${cleanTableValue(ticket.site_id)} | ${getReopenCount(
-          ticket,
-        )} | ${getpreviousProblemAnalysis(ticket)}`,
-    ),
   ];
+
+  if (detailTickets.length > 0) {
+    lines.push(
+      "",
+      "Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen",
+      ...detailTickets.map(
+        (ticket) =>
+          `${cleanTableValue(ticket.nsa || ticket.city)} | ${cleanTableValue(
+            ticket.order_id,
+          )} | ${cleanTableValue(ticket.site_id)} | ${getReopenCount(
+            ticket,
+          )} | ${getpreviousProblemAnalysis(ticket)}`,
+      ),
+    );
+  }
 
   return lines.join("\n");
 }
@@ -1078,15 +1083,20 @@ function formatNopReminderMessage(tickets) {
     "",
     "*NOP | Total Ticket | In SLA | Out SLA*",
     `*${nopName} | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
-    "",
-    "PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen",
-    ...detailTickets.map((ticket, index) => {
-      const tag = mentionTags[index];
-      return `${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
-        ticket.site_id,
-      )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}`;
-    }),
   ];
+
+  if (detailTickets.length > 0) {
+    lines.push(
+      "",
+      "PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen",
+      ...detailTickets.map((ticket, index) => {
+        const tag = mentionTags[index];
+        return `${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
+          ticket.site_id,
+        )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}`;
+      }),
+    );
+  }
 
   return {
     text: lines.join("\n"),

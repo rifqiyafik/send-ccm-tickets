@@ -629,6 +629,48 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
   await sock.sendMessage(targetJid, formatReminderMessagePayload(tickets));
 }
 
+function getSummaryReminderGroupKey(ticket) {
+  const assignmentType = String(ticket.assignment_type || "")
+    .trim()
+    .toUpperCase();
+  if (assignmentType === "SQA") {
+    return "SQA";
+  }
+
+  return formatTargetProgressLabel([ticket]);
+}
+
+function groupTicketsForSummaryReminder(tickets) {
+  const groups = new Map();
+  for (const ticket of tickets) {
+    const key = getSummaryReminderGroupKey(ticket);
+    const group = groups.get(key) || [];
+    group.push(ticket);
+    groups.set(key, group);
+  }
+  return groups;
+}
+
+async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
+  const groups = groupTicketsForSummaryReminder(tickets);
+  logger.info("Sending .summary reminder messages to source", {
+    sourceJid,
+    reminderGroups: groups.size,
+    tickets: tickets.length,
+  });
+
+  for (const [groupKey, groupTickets] of groups.entries()) {
+    const payload = formatReminderMessagePayload(groupTickets);
+    logger.info("Sending .summary reminder message", {
+      sourceJid,
+      groupKey,
+      tickets: groupTickets.length,
+      assignmentType: groupTickets[0]?.assignment_type,
+    });
+    await sock.sendMessage(sourceJid, payload);
+  }
+}
+
 function getErrorMessage(error) {
   return error?.message || String(error || "Unknown error");
 }
@@ -878,6 +920,11 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
   }
 
   if (summaryOnlyMode) {
+    await sendSummaryOnlyReminderMessages(
+      sock,
+      sourceJid,
+      result.valid_tickets,
+    );
     logger.info("Stopping import flow after summary-only report", {
       sourceJid,
       validTickets: result.valid_tickets.length,

@@ -4,6 +4,7 @@ import JSZip from "jszip";
 
 import {
   SITE_ID1_COLUMN,
+  extractSiteCover,
   resolveCityFromTicketRow,
   resolveSiteFromTicketRow,
 } from "./siteSearchService.js";
@@ -1087,17 +1088,87 @@ function getNopReminderName(tickets) {
     .replace(/^NOP\s+/i, "")
     .toUpperCase();
 
-  return NOP_SHORT_NAMES[source] || source || "NOP";
+  return normalizeNopAreaName(source) || "NOP";
+}
+
+function normalizeNopAreaName(value) {
+  const source = cleanTableValue(value)
+    .replace(/^NOP\s+/i, "")
+    .toUpperCase()
+    .trim();
+  const compactSource = source.replace(/\s+/g, "");
+
+  return NOP_SHORT_NAMES[source] || NOP_SHORT_NAMES[compactSource] || source;
+}
+
+function getReminderDepartmentName(ticket) {
+  const department = cleanTableValue(
+    ticket.departement_ns ||
+      ticket.departemen_ns ||
+      ticket.cluster_area ||
+      ticket.nsa ||
+      ticket.city,
+  );
+
+  return normalizeNopAreaName(department) || "-";
 }
 
 // mengambil teks remark Problem Analysis untuk tabel reminder.
 function getpreviousProblemAnalysis(ticket) {
-  return cleanTableValue(cleanMultilineText(ticket.problem_analysis));
+  const text = cleanTableValue(cleanMultilineText(ticket.problem_analysis));
+  if (!text || text === "-") {
+    return "-";
+  }
+
+  const stopPatterns = [
+    /\bberdasarkan\s+dominant\s+cell\b/i,
+    /\bberdasarkan\s+the\s+dominant\s+cell\b/i,
+    /\bperkiraan\s+site\s+(?:cover\s+)?pelanggan\b/i,
+    /\bperkiraan\s+site\s+cover\b/i,
+    /\bpotensial\s+problem\b/i,
+    /\bcategori\s+problem\b/i,
+    /\bcategory\s+problem\b/i,
+  ];
+  const stopIndexes = stopPatterns
+    .map((pattern) => text.search(pattern))
+    .filter((index) => index >= 0);
+  const trimmed =
+    stopIndexes.length > 0 ? text.slice(0, Math.min(...stopIndexes)) : text;
+
+  return trimmed
+    .replace(/\s+/g, " ")
+    .replace(/\s+[.,;:]+$/g, "")
+    .trim() || "-";
 }
 
 // mengambil nilai Count ReOpen dari kolom Reopen Number(Confirm Close).
 function getReopenCount(ticket) {
-  return cleanTableValue(ticket.reopen_number);
+  const value = cleanTableValue(ticket.reopen_number);
+  const numericValue = Number(value);
+  if (Number.isFinite(numericValue) && Number.isInteger(numericValue)) {
+    return String(numericValue);
+  }
+  return value;
+}
+
+function extractReminderSiteIdFromProblemAnalysis(ticket) {
+  const problemAnalysis = cleanMultilineText(ticket.problem_analysis);
+  const siteCover = extractSiteCover(problemAnalysis);
+  if (siteCover) {
+    return siteCover;
+  }
+
+  const text = cleanTableValue(problemAnalysis);
+  const match = text.match(
+    /\b(?:site\s+cover|di\s+cover|cover)\s+([A-Z]{2,5}\d{2,5})\b/i,
+  );
+  return match ? match[1].toUpperCase() : "";
+}
+
+function getReminderSiteId(ticket) {
+  return cleanTableValue(
+    extractReminderSiteIdFromProblemAnalysis(ticket) || ticket.site_id,
+  );
 }
 
 // membuat teks reminder untuk grup SQA sebelum detail tiket dikirim.
@@ -1117,9 +1188,9 @@ function formatSqaReminderMessage(tickets) {
       "*Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen*",
       ...detailTickets.map(
         (ticket) =>
-          `*${cleanTableValue(ticket.nsa || ticket.city)} | ${cleanTableValue(
+          `*${getReminderDepartmentName(ticket)} | ${cleanTableValue(
             ticket.order_id,
-          )} | ${cleanTableValue(ticket.site_id)} | ${getReopenCount(
+          )} | ${getReminderSiteId(ticket)} | ${getReopenCount(
             ticket,
           )} | ${getpreviousProblemAnalysis(ticket)}*`,
       ),
@@ -1151,7 +1222,7 @@ function formatNopReminderMessage(tickets) {
       ...detailTickets.map((ticket, index) => {
         const tag = mentionTags[index];
         return `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
-          ticket.site_id,
+          getReminderSiteId(ticket),
         )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}`;
       }),
     );
@@ -1208,11 +1279,11 @@ export function formatReminderMessagePayload(tickets) {
 // membuat format khusus untuk Ticket Re-Open yang sudah memiliki data L2/resolution/root cause/site L2.
 function formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag }) {
   const isSqa = ticket.assignment_type === "SQA";
-  const reopenNumber = cleanTableValue(ticket.reopen_number);
+  const reopenNumber = getReopenCount(ticket);
   const reopenLine =
     reopenNumber === "-"
       ? "*Ticket Re-Open*"
-      : `*Ticket Re-Open (${reopenNumber} X)*`;
+      : `*Ticket Re-Open (${reopenNumber}X)*`;
   const problemAnalysisRemark = cleanMultilineText(ticket.problem_analysis);
   const remarkLines = problemAnalysisRemark
     ? ["_Remark Problem Analysis:_", problemAnalysisRemark]

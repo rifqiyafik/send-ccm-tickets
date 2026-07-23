@@ -90,6 +90,45 @@ test("formats SQA reminder summary and ReOpen details", () => {
   assert.deepEqual(payload.mentions, []);
 });
 
+test("formats SQA reminder using department, remark site, integer reopen count, and short remark", () => {
+  const payload = formatReminderMessagePayload([
+    {
+      assignment_type: "SQA",
+      sla_status: "OUT SLA",
+      departement_ns: "NOP PEMATANGSIANTAR",
+      city: "TOBA SAMOSIR",
+      order_id: "CC-20260721-00000037",
+      site_id: "BGE291",
+      reopen_number: "3.0",
+      problem_analysis:
+        "Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport/TNL yang cukup tinggi, sehingga performance tidak maksimal. Dan saat ini sudah normal kembali. Berdasarkan Dominant Cell yang tertera Perkiraan site pelanggan di cover BGE291 Sek-2. Potensial Problem : Closed",
+    },
+    {
+      assignment_type: "SQA",
+      sla_status: "IN SLA",
+      departement_ns: "NOP ACEH",
+      city: "ACEH BARAT",
+      order_id: "CC-20260721-00000268",
+      site_id: "MBO155",
+      reopen_number: "2.0",
+      problem_analysis:
+        "Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport/TNL yang cukup tinggi, sehingga performance tidak maksimal. Dan saat ini sudah normal kembali. Berdasarkan Dominant Cell yang tertera Perkiraan site pelanggan di cover MBO052 Sek-1. Potensial Problem : Closed",
+    },
+  ]);
+
+  assert.match(
+    payload.text,
+    /PMS \| CC-20260721-00000037 \| BGE291 \| 3 \| Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport\/TNL yang cukup tinggi, sehingga performance tidak maksimal\. Dan saat ini sudah normal kembali/,
+  );
+  assert.match(
+    payload.text,
+    /ACEH \| CC-20260721-00000268 \| MBO052 \| 2 \| Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport\/TNL yang cukup tinggi, sehingga performance tidak maksimal\. Dan saat ini sudah normal kembali/,
+  );
+  assert.doesNotMatch(payload.text, /TOBA SAMOSIR/);
+  assert.doesNotMatch(payload.text, /ACEH BARAT/);
+  assert.doesNotMatch(payload.text, /Potensial Problem/);
+});
+
 test("formats NOP reminder with PIC mention", () => {
   const context = setupReminderConfig();
   const payload = formatReminderMessagePayload([

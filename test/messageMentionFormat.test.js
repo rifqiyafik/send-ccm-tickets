@@ -81,14 +81,15 @@ test("formats ReOpen tickets with short recheck message when L2 data exists", ()
     problem_analysis: "Performance KPI normal",
     resolve_target_22h_text: "Senin / 20 Jul 2026, 08:11:25 AM",
     use_reopen_message_format: true,
-    reopen_number: "3",
+    reopen_number: "3.0",
     reopen_filled_columns: ["Assign Personal(L2 Assign)"],
   });
 
   assert.match(payload.text, /Mohon dibantu pengecekannya kembali ya bang @35515252351004/);
   assert.match(payload.text, /\*CC-20260719-00000077\*/);
   assert.match(payload.text, /CC bang @628136378970/);
-  assert.match(payload.text, /\*Ticket Re-Open \(3 X\)\*/);
+  assert.match(payload.text, /\*Ticket Re-Open \(3X\)\*/);
+  assert.doesNotMatch(payload.text, /3\.0 X/);
   assert.match(payload.text, /_Remark Problem Analysis:_\nPerformance KPI normal\nSLA DUE DATE 24H/);
   assert.match(payload.text, /SLA DUE DATE 24H : \*Senin \/ 20 Jul 2026, 08:11:25 AM\*/);
   assert.doesNotMatch(payload.text, /Long normal notes/);
@@ -123,7 +124,7 @@ test("formats NOP ReOpen tickets without SQA CC line", () => {
 
   assert.match(payload.text, /Mohon dibantu pengecekannya kembali ya bang @35515252351004/);
   assert.match(payload.text, /\*CC-20260719-00000088\*/);
-  assert.match(payload.text, /\*Ticket Re-Open \(2 X\)\*/);
+  assert.match(payload.text, /\*Ticket Re-Open \(2X\)\*/);
   assert.match(
     payload.text,
     /_Remark Problem Analysis:_\nPerformance KPI beberapa hari terakhir disaat kejadian terlihat Normal/,

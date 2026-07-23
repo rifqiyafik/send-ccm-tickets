@@ -266,6 +266,27 @@ async function sendToAdmins(sendMessage, config, text) {
   return true;
 }
 
+async function sendTelegramCommandError(sendMessage, chatId, command, error) {
+  logger.error("Telegram command failed", {
+    chatId,
+    command,
+    message: error.message,
+    stack: error.stack,
+  });
+  await sendRichMessage(
+    sendMessage,
+    chatId,
+    [
+      "❌ **Command gagal diproses**",
+      "",
+      `📝 Command: \`${command}\``,
+      `🛑 Error: \`${error.message}\``,
+      "",
+      "👉 Cek log container jika error masih berulang.",
+    ].join("\n"),
+  );
+}
+
 // semua command operasional diarahkan ke Telegram agar WhatsApp fokus menerima Excel dan kirim tiket.
 export function createTelegramCommandHandler({ config, whatsappSession }) {
   return async function handleTelegramUpdate(
@@ -647,49 +668,81 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
     }
 
     if (command === "/sessions") {
-      await sendRichMessage(sendMessage, chatId, await whatsappSession.listSessions());
+      try {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          await whatsappSession.listSessions(),
+        );
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 
     if (command === "/login") {
-      const result = await whatsappSession.login(chatId, argument);
-      await sendRichMessage(sendMessage, chatId, result);
+      try {
+        const result = await whatsappSession.login(chatId, argument);
+        await sendRichMessage(sendMessage, chatId, result);
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 
     if (command === "/stop") {
-      const result = await whatsappSession.stop(argument);
-      await sendRichMessage(sendMessage, chatId, result);
+      try {
+        const result = await whatsappSession.stop(argument);
+        await sendRichMessage(sendMessage, chatId, result);
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 
     if (command === "/logout") {
-      const result = await whatsappSession.logout(argument);
-      await sendRichMessage(sendMessage, chatId, result);
+      try {
+        const result = await whatsappSession.logout(argument);
+        await sendRichMessage(sendMessage, chatId, result);
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 
     if (command === "/delete_session") {
-      const result = await whatsappSession.deleteSession(argument);
-      await sendRichMessage(sendMessage, chatId, result);
+      try {
+        const result = await whatsappSession.deleteSession(argument);
+        await sendRichMessage(sendMessage, chatId, result);
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 
     if (command === "/groups") {
-      await sendRichMessage(
-        sendMessage,
-        chatId,
-        await formatWhatsAppGroupsCommand(argument),
-      );
+      try {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          await formatWhatsAppGroupsCommand(argument),
+        );
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 
     if (command === "/private") {
-      await sendRichMessage(
-        sendMessage,
-        chatId,
-        formatWhatsAppPrivateCommand(argument),
-      );
+      try {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          formatWhatsAppPrivateCommand(argument),
+        );
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
       return;
     }
 

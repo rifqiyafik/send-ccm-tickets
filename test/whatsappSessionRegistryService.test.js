@@ -14,16 +14,15 @@ import {
 
 function setupRegistry(name) {
   const basePath = path.join("tmp", name);
+  const registryPath = path.join(basePath, "whatsapp_sessions.json");
   fs.rmSync(basePath, { recursive: true, force: true });
   fs.mkdirSync(basePath, { recursive: true });
 
-  process.env.WA_SESSION_REGISTRY_PATH = path.join(
-    basePath,
-    "whatsapp_sessions.json",
-  );
+  process.env.WA_SESSION_REGISTRY_PATH = registryPath;
   process.env.WA_SESSION_ROOT = path.join(basePath, "sessions");
 
   return {
+    registryPath,
     cleanup() {
       fs.rmSync(basePath, { recursive: true, force: true });
       delete process.env.WA_SESSION_REGISTRY_PATH;
@@ -64,6 +63,30 @@ test("stores, resolves, lists, and deletes WhatsApp session registry entries", a
   const deleted = await deleteWhatsAppSession("1");
   assert.equal(deleted.id, "6282160478546");
   assert.equal((await listWhatsAppSessions()).length, 0);
+
+  context.cleanup();
+});
+
+test("recovers from empty WhatsApp session registry file", async () => {
+  const context = setupRegistry("whatsapp-session-empty-registry");
+  fs.writeFileSync(context.registryPath, "", "utf8");
+
+  const sessions = await listWhatsAppSessions();
+  assert.deepEqual(sessions, []);
+
+  context.cleanup();
+});
+
+test("backs up invalid WhatsApp session registry file and starts empty", async () => {
+  const context = setupRegistry("whatsapp-session-invalid-registry");
+  fs.writeFileSync(context.registryPath, "{", "utf8");
+
+  const sessions = await listWhatsAppSessions();
+  assert.deepEqual(sessions, []);
+  const backupFiles = fs
+    .readdirSync(path.dirname(context.registryPath))
+    .filter((file) => file.startsWith("whatsapp_sessions.json.invalid-"));
+  assert.equal(backupFiles.length, 1);
 
   context.cleanup();
 });

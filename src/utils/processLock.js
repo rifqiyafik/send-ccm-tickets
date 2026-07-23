@@ -59,6 +59,16 @@ export function acquireProcessLock(lockDir, owner) {
     }
 
     const currentLock = readLock(lockPath);
+    if (currentLock?.pid === process.pid) {
+      logger.warn("Removing orphan process lock for current PID", {
+        lockPath,
+        currentLock,
+        pid: process.pid,
+      });
+      fs.unlinkSync(lockPath);
+      return acquireProcessLock(lockDir, owner);
+    }
+
     if (isPidRunning(currentLock?.pid)) {
       const message = [
         `Session WhatsApp sedang dipakai proses lain (${currentLock.owner || "unknown"}, PID ${currentLock.pid}).`,

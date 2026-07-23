@@ -38,7 +38,7 @@ function createTextUpdate({ chatId, text, type = "private" }) {
   };
 }
 
-function createMockRuntime() {
+function createMockRuntime(overrides = {}) {
   const sentMessages = [];
   const whatsappSession = {
     async completePendingLoginName() {
@@ -68,6 +68,7 @@ function createMockRuntime() {
         qr_subscribers: 0,
       };
     },
+    ...overrides.whatsappSession,
   };
   const handler = createTelegramCommandHandler({
     config: {
@@ -160,6 +161,37 @@ test("keeps logout admin-only for authorized Telegram chat", async () => {
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0].text, /hanya untuk admin/i);
   assert.doesNotMatch(sentMessages[0].text, /logout called/);
+
+  context.cleanup();
+});
+
+test("returns command error message when authorized login fails", async () => {
+  const context = setupTelegramAccessConfig("handler-login-error-reply");
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const { handler, sentMessages, tools } = createMockRuntime({
+    whatsappSession: {
+      async login() {
+        throw new Error("Session lock failed");
+      },
+    },
+  });
+  await handler(
+    createTextUpdate({
+      chatId: "123456789",
+      text: "/login 1",
+    }),
+    tools,
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /Command gagal diproses/);
+  assert.match(sentMessages[0].text, /Session lock failed/);
 
   context.cleanup();
 });

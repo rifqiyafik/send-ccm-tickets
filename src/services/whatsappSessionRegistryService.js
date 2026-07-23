@@ -49,6 +49,13 @@ async function readRegistry() {
   try {
     logger.info("Loading WhatsApp session registry", { registryPath });
     const raw = await fs.readFile(registryPath, "utf8");
+    if (!raw.trim()) {
+      logger.warn("WhatsApp session registry is empty, using empty registry", {
+        registryPath,
+      });
+      return createEmptyRegistry();
+    }
+
     const parsed = JSON.parse(raw);
     return {
       version: parsed.version || 1,
@@ -60,6 +67,29 @@ async function readRegistry() {
       logger.warn("WhatsApp session registry not found, using empty registry", {
         registryPath,
       });
+      return createEmptyRegistry();
+    }
+
+    if (error instanceof SyntaxError) {
+      const backupPath = `${registryPath}.invalid-${Date.now()}`;
+      logger.error("WhatsApp session registry is invalid JSON", {
+        message: error.message,
+        registryPath,
+        backupPath,
+      });
+      try {
+        await fs.rename(registryPath, backupPath);
+        logger.warn("Invalid WhatsApp session registry moved to backup", {
+          registryPath,
+          backupPath,
+        });
+      } catch (backupError) {
+        logger.error("Failed to backup invalid WhatsApp session registry", {
+          message: backupError.message,
+          registryPath,
+          backupPath,
+        });
+      }
       return createEmptyRegistry();
     }
 

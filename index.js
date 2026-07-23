@@ -37,7 +37,7 @@ async function main() {
   });
 
   if (telegramConfig.wa_auto_start) {
-    await whatsappSession.login(telegramConfig.admin_chat_ids[0]);
+    await whatsappSession.startSavedSession(telegramConfig.admin_chat_ids[0]);
   }
 
   await telegramBot.start();

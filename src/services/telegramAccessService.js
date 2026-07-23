@@ -72,18 +72,50 @@ async function saveConfig(config) {
 // #penjelasan: mengecek apakah chat Telegram boleh mengirim file/command operasional selain request register.
 export async function isAuthorizedTelegramChat(chatId) {
   const normalizedChatId = normalizeChatId(chatId);
-  const config = await loadConfig();
-  const allowed = Boolean(
-    config.authorized_groups[normalizedChatId] ||
-      config.authorized_users[normalizedChatId],
-  );
+  const decision = await getTelegramAccessDecision(normalizedChatId);
 
   logger.info("Telegram access checked", {
     chatId: normalizedChatId,
-    allowed,
+    allowed: decision.allowed,
+    reason: decision.reason,
+    sourceType: decision.source_type,
   });
 
-  return allowed;
+  return decision.allowed;
+}
+
+// #penjelasan: mengembalikan keputusan akses lengkap untuk log dan pemisahan admin/user/group.
+export async function getTelegramAccessDecision(chatId, { admin = false } = {}) {
+  const normalizedChatId = normalizeChatId(chatId);
+  const config = await loadConfig();
+  const sourceType = normalizedChatId.startsWith("-") ? "group" : "private";
+  const authorizedGroup =
+    sourceType === "group" && Boolean(config.authorized_groups[normalizedChatId]);
+  const authorizedUser =
+    sourceType === "private" && Boolean(config.authorized_users[normalizedChatId]);
+  const allowed = Boolean(admin || authorizedGroup || authorizedUser);
+  const reason = admin
+    ? "ADMIN"
+    : authorizedGroup
+      ? "AUTHORIZED_GROUP"
+      : authorizedUser
+        ? "AUTHORIZED_USER"
+        : sourceType === "group"
+          ? "GROUP_NOT_AUTHORIZED"
+          : "PRIVATE_USER_NOT_AUTHORIZED";
+  const decision = {
+    allowed,
+    admin: Boolean(admin),
+    platform: "telegram",
+    source_type: sourceType,
+    reason,
+    chat_id: normalizedChatId,
+    authorized_group: authorizedGroup,
+    authorized_user: authorizedUser,
+  };
+
+  logger.info("Telegram access decision resolved", decision);
+  return decision;
 }
 
 // #penjelasan: admin memakai ini untuk mendaftarkan group/private chat Telegram ke whitelist lokal.

@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  getWhatsAppAccessDecision,
   isAllowedBotAccess,
   isAllowedGroup,
   isAllowedPrivateUser,
@@ -76,6 +77,61 @@ test("allows only whitelisted private users or owners", () => {
 
   process.env.OWNER_JIDS = "109638183825591@lid";
   assert.equal(isAllowedPrivateUser("109638183825591@lid"), true);
+
+  context.cleanup();
+});
+
+test("reports detailed WhatsApp access decision reasons", () => {
+  const context = setupAccessConfig("decision-reasons");
+
+  assert.deepEqual(
+    getWhatsAppAccessDecision({
+      sourceJid: "120363408099585884@g.us",
+      senderJid: "628000000000@s.whatsapp.net",
+    }),
+    {
+      allowed: true,
+      platform: "whatsapp",
+      source_type: "group",
+      reason: "AUTHORIZED_GROUP",
+      source_jid: "120363408099585884@g.us",
+      sender_jid: "628000000000@s.whatsapp.net",
+      owner: false,
+    },
+  );
+
+  assert.equal(
+    getWhatsAppAccessDecision({
+      sourceJid: "120363000000000000@g.us",
+      senderJid: "628000000000@s.whatsapp.net",
+    }).reason,
+    "GROUP_NOT_AUTHORIZED",
+  );
+
+  process.env.OWNER_JIDS = "109638183825591@lid";
+  assert.equal(
+    getWhatsAppAccessDecision({
+      sourceJid: "109638183825591@lid",
+      senderJid: "109638183825591@lid",
+    }).reason,
+    "OWNER",
+  );
+
+  assert.equal(
+    getWhatsAppAccessDecision({
+      sourceJid: "6282160478546@s.whatsapp.net",
+      senderJid: "6282160478546@s.whatsapp.net",
+    }).reason,
+    "AUTHORIZED_USER",
+  );
+
+  assert.equal(
+    getWhatsAppAccessDecision({
+      sourceJid: "628000000000@s.whatsapp.net",
+      senderJid: "628000000000@s.whatsapp.net",
+    }).reason,
+    "PRIVATE_USER_NOT_AUTHORIZED",
+  );
 
   context.cleanup();
 });

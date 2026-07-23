@@ -6,6 +6,7 @@ import {
 import {
   formatRegisteredTelegramChatsList,
   formatTelegramRegisterRequest,
+  getTelegramAccessDecision,
   isAuthorizedTelegramChat,
   listAuthorizedTelegramChats,
   registerTelegramChat,
@@ -22,6 +23,10 @@ const TELEGRAM_SOURCE_PREFIX = "telegram:";
 
 function getMessageText(update) {
   return String(update.message?.text || "").trim();
+}
+
+function getMessageCaption(update) {
+  return String(update.message?.caption || "").trim();
 }
 
 function getChatId(update) {
@@ -47,6 +52,41 @@ function parseCommand(text) {
   return {
     command: command.toLowerCase(),
     argument: args.join(" ").trim(),
+  };
+}
+
+function getTelegramDocumentImportOptions(caption) {
+  const text = String(caption || "").trim();
+  if (!text) {
+    return {
+      command: "",
+      supported: false,
+      missingCommand: true,
+      ticketOnlyMode: false,
+      summaryOnlyMode: false,
+    };
+  }
+
+  if (!text.startsWith(".")) {
+    return {
+      command: text,
+      supported: false,
+      missingCommand: false,
+      ticketOnlyMode: false,
+      summaryOnlyMode: false,
+    };
+  }
+
+  const { command } = parseCommand(text);
+  const normalMode = [".import", ".send"].includes(command);
+  const ticketOnlyMode = command === ".update";
+  const summaryOnlyMode = command === ".summary";
+  return {
+    command,
+    supported: normalMode || ticketOnlyMode || summaryOnlyMode,
+    missingCommand: false,
+    ticketOnlyMode,
+    summaryOnlyMode,
   };
 }
 
@@ -140,8 +180,15 @@ function formatHelp() {
     "- `/register` → Request whitelist chat/group Telegram",
     "",
     "### 🔐 Session Management",
-    "- `/login` → Nyalakan session WhatsApp & kirim QR ke Telegram",
-    "- `/logout` → Putus session WhatsApp & hapus folder session lokal",
+    "- `/sessions` → Lihat daftar session WhatsApp tersimpan",
+    "- `/login` → Lihat pilihan login session",
+    "- `/login 1` → Jalankan session berdasarkan nomor urut",
+    "- `/login 6282160478546` → Buat session baru, lalu bot minta nama session",
+    "- `/stop` → Lihat info stop session aktif",
+    "- `/stop 1` → Matikan koneksi session aktif tanpa hapus credential",
+    "- `/logout` → Putus linked device session aktif dari WhatsApp",
+    "- `/logout 1` → Logout session nomor urut jika sedang aktif",
+    "- `/delete_session 1` → Hapus credential lokal session",
     "",
     "### 📂 Group & Private Access",
     "- `/groups [keyword]` → Lihat daftar grup WhatsApp aktif",
@@ -151,8 +198,9 @@ function formatHelp() {
     "",
     "---",
     "📝 **Notes:**",
-    "- `/login` menyalakan session WhatsApp dan mengirim QR ke Telegram.",
-    "- `/logout` memutus session WhatsApp dan menghapus folder session lokal.",
+    "- `Stop session` hanya mematikan socket, credential tetap aman.",
+    "- `Logout session` memutus linked device dari WhatsApp.",
+    "- `Delete session` menghapus file credential lokal.",
     "- `/groups` dan `/private` membaca index dari session WhatsApp aktif.",
     "- File Excel Telegram hanya boleh dikirim dari group/private Telegram yang sudah whitelist.",
     "- File Excel WhatsApp tetap mengikuti whitelist WhatsApp.",
@@ -160,12 +208,14 @@ function formatHelp() {
 }
 
 function formatStatus(whatsappStatus) {
+  const activeSession = whatsappStatus.active_session;
   return [
     "📊 **Bot Status**",
     "",
     `🟢 WhatsApp Running: ${whatsappStatus.running ? "✅ YES" : "❌ NO"}`,
     `👤 WhatsApp User: ${whatsappStatus.user?.id || whatsappStatus.user?.name || "-"}`,
-    `📂 Auth Directory: ${whatsappStatus.authDir}`,
+    `📱 Active Session: ${activeSession ? `${activeSession.label} (${activeSession.phone})` : "-"}`,
+    `📂 Auth Directory: ${whatsappStatus.authDir || "-"}`,
     `👥 QR Subscribers: ${whatsappStatus.qr_subscribers}`,
     "",
     "---",
@@ -219,17 +269,32 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
     const from = getFrom(update);
     const document = getDocument(update);
     const text = getMessageText(update);
+    const caption = getMessageCaption(update);
 
     if (chatId && document) {
+      const importOptions = getTelegramDocumentImportOptions(caption);
       const admin = isAdminChat(chatId, config);
-      const authorized = admin || (await isAuthorizedTelegramChat(chatId));
+      const accessDecision = await getTelegramAccessDecision(chatId, { admin });
       logger.info("Incoming Telegram document", {
         chatId,
         fileName: document.file_name,
-        authorized,
+        authorized: accessDecision.allowed,
+        accessReason: accessDecision.reason,
+        sourceType: accessDecision.source_type,
+        caption,
+        ticketOnlyMode: importOptions.ticketOnlyMode,
+        summaryOnlyMode: importOptions.summaryOnlyMode,
       });
 
-      if (!authorized) {
+      if (importOptions.missingCommand) {
+        logger.info("Telegram document ignored: caption command is required", {
+          chatId,
+          fileName: document.file_name,
+        });
+        return;
+      }
+
+      if (!accessDecision.allowed) {
         await sendRichMessage(
           sendMessage,
           chatId,
@@ -241,6 +306,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             "📋 **Detail:**",
             `🆔 Chat ID: \`${chatId}\``,
             `📄 File: \`${document.file_name || "-"}\``,
+            `🔎 Reason: \`${accessDecision.reason}\``,
             "",
             "👉 Kirim `/register` untuk minta approval admin.",
           ].join("\n"),
@@ -248,6 +314,31 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
 
+      if (!importOptions.supported) {
+        logger.warn("Telegram document rejected: unsupported caption command", {
+          chatId,
+          fileName: document.file_name,
+          caption,
+          command: importOptions.command,
+        });
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "❓ **Command Caption Tidak Dikenal**",
+            "",
+            `⚙️ Caption yang diterima: \`${importOptions.command || "-"}\``,
+            "",
+            "➡️ Flow normal: gunakan caption `.import` atau `.send`.",
+            "📌 Update tiket saja: gunakan caption `.update`.",
+            "📊 Summary saja: gunakan caption `.summary`.",
+            "",
+            "---",
+            "ℹ️ File tanpa caption command akan diabaikan.",
+          ].join("\n"),
+        );
+        return;
+      }
       if (!isSupportedTelegramExcelFile(document)) {
         logger.warn("Telegram document rejected: unsupported format", {
           chatId,
@@ -295,20 +386,36 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       await sendRichMessage(
         sendMessage,
         chatId,
-        [
-          "📂 **File Excel Diterima**",
-          "",
-          "⏳ Sedang memproses tiket dan meneruskan ke grup WhatsApp target...",
-          `📄 File Name: \`${document.file_name || "-"}\``,
-        ].join("\n"),
+        importOptions.summaryOnlyMode
+          ? [
+              "📂 **File Excel Diterima (Mode .summary)**",
+              "",
+              "⏳ Sedang memproses report dan summary saja...",
+              `📄 File Name: \`${document.file_name || "-"}\``,
+            ].join("\n")
+          : importOptions.ticketOnlyMode
+            ? [
+                "📂 **File Excel Diterima (Mode .update)**",
+                "",
+                "⏳ Sedang memproses detail tiket saja dan meneruskan ke grup WhatsApp target...",
+                "🚫 Salam pembuka, Excel target, dan reminder summary akan dilewati.",
+                `📄 File Name: \`${document.file_name || "-"}\``,
+              ].join("\n")
+            : [
+                "📂 **File Excel Diterima**",
+                "",
+                "⏳ Sedang memproses tiket dan meneruskan ke grup WhatsApp target...",
+                `📄 File Name: \`${document.file_name || "-"}\``,
+              ].join("\n"),
       );
-
       try {
         const buffer = await downloadFile(document.file_id);
         logger.info("Starting Telegram ticket Excel process", {
           chatId,
           fileName: document.file_name,
           bytes: buffer.length,
+          ticketOnlyMode: importOptions.ticketOnlyMode,
+          summaryOnlyMode: importOptions.summaryOnlyMode,
         });
         const result = await processTicketExcel(buffer);
         logger.info("Telegram ticket Excel process completed", {
@@ -316,6 +423,8 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           total: result.total_rows,
           valid: result.valid_count || 0,
           skipped: result.skipped_count || 0,
+          ticketOnlyMode: importOptions.ticketOnlyMode,
+          summaryOnlyMode: importOptions.summaryOnlyMode,
         });
 
         const adapter = createTelegramWhatsAppAdapter({
@@ -324,7 +433,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           sendMessage,
           whatsappSock,
         });
-        await sendImportResult(adapter, adapter.sourceJid, result);
+        await sendImportResult(adapter, adapter.sourceJid, result, importOptions);
       } catch (error) {
         logger.error("Failed to process Telegram Excel", error);
         await sendRichMessage(
@@ -342,6 +451,17 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
+    const admin = isAdminChat(chatId, config);
+
+    if (chatId && text && !text.startsWith("/") && admin) {
+      const pendingLoginResult =
+        await whatsappSession.completePendingLoginName(chatId, text);
+      if (pendingLoginResult) {
+        await sendRichMessage(sendMessage, chatId, pendingLoginResult);
+        return;
+      }
+    }
+
     if (!chatId || !text.startsWith("/")) {
       return;
     }
@@ -352,8 +472,6 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       command,
       argument,
     });
-
-    const admin = isAdminChat(chatId, config);
 
     if (command === "/register" && !argument && admin) {
       await sendRichMessage(
@@ -416,12 +534,14 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
-    const authorized = admin || (await isAuthorizedTelegramChat(chatId));
+    const accessDecision = await getTelegramAccessDecision(chatId, { admin });
 
-    if (!authorized) {
+    if (!accessDecision.allowed) {
       logger.warn("Telegram command rejected: unauthorized chat", {
         chatId,
         command,
+        reason: accessDecision.reason,
+        sourceType: accessDecision.source_type,
       });
       await sendRichMessage(
         sendMessage,
@@ -433,6 +553,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           "",
           "📋 **Detail:**",
           `🆔 Chat ID: \`${chatId}\``,
+          `🔎 Reason: \`${accessDecision.reason}\``,
           "⚠️ Status: **Belum whitelist Telegram**",
           "",
           "👉 Kirim `/register` untuk minta approval admin.",
@@ -511,14 +632,31 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
+    if (command === "/sessions") {
+      await sendRichMessage(sendMessage, chatId, await whatsappSession.listSessions());
+      return;
+    }
+
     if (command === "/login") {
-      const result = await whatsappSession.login(chatId);
+      const result = await whatsappSession.login(chatId, argument);
+      await sendRichMessage(sendMessage, chatId, result);
+      return;
+    }
+
+    if (command === "/stop") {
+      const result = await whatsappSession.stop(argument);
       await sendRichMessage(sendMessage, chatId, result);
       return;
     }
 
     if (command === "/logout") {
-      const result = await whatsappSession.logout();
+      const result = await whatsappSession.logout(argument);
+      await sendRichMessage(sendMessage, chatId, result);
+      return;
+    }
+
+    if (command === "/delete_session") {
+      const result = await whatsappSession.deleteSession(argument);
       await sendRichMessage(sendMessage, chatId, result);
       return;
     }

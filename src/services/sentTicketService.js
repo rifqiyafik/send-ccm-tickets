@@ -11,6 +11,7 @@ const DEFAULT_STORE_PATH = path.join(
   "sent_tickets.json",
 );
 const DEFAULT_RETENTION_DAYS = 7;
+const LOCAL_TIME_ZONE = process.env.APP_TIME_ZONE || "Asia/Jakarta";
 
 function getStorePath() {
   return process.env.SENT_TICKET_STORE_PATH || DEFAULT_STORE_PATH;
@@ -31,6 +32,18 @@ function normalizeBusinessStatus(value) {
     .replace(/[\s_-]+/g, "");
 }
 
+function formatLocalDate(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: LOCAL_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
 function toTitleCase(value) {
   return cleanTableValue(value)
     .toLowerCase()
@@ -43,6 +56,18 @@ function formatPicLabel(value) {
     return "-";
   }
   return pic.toLowerCase().startsWith("bg ") ? pic : `Bg ${pic}`;
+}
+
+function resolveSqaFollowUpDepartment(ticket) {
+  const department = cleanTableValue(
+    ticket.departemen_ns || ticket.departement_ns || ticket.cluster_area,
+  )
+    .replace(/^NOP\s+/i, "")
+    .trim();
+
+  return department && department !== "-"
+    ? department
+    : cleanTableValue(ticket.nsa || "UNKNOWN");
 }
 
 function createOrderIdCodeTable(tickets) {
@@ -58,12 +83,108 @@ function createOrderIdCodeTable(tickets) {
   return ["```", border, header, border, ...rows, border, "```"].join("\n");
 }
 
+function createInvalidMessageDataCodeTable(tickets) {
+  const rows = tickets.map((ticket) => ({
+    orderId: cleanTableValue(ticket.order_id),
+    missingData: cleanTableValue((ticket.missing_fields || []).join(", ")),
+  }));
+  const orderWidth = Math.max(
+    "Order ID".length,
+    ...rows.map((row) => row.orderId.length),
+  );
+  const missingWidth = Math.max(
+    "Missing Data".length,
+    ...rows.map((row) => row.missingData.length),
+  );
+  const border = `+${"-".repeat(orderWidth + 2)}+${"-".repeat(
+    missingWidth + 2,
+  )}+`;
+  const header = `| ${"Order ID".padEnd(orderWidth)} | ${"Missing Data".padEnd(
+    missingWidth,
+  )} |`;
+  const tableRows = rows.map(
+    (row) =>
+      `| ${row.orderId.padEnd(orderWidth)} | ${row.missingData.padEnd(
+        missingWidth,
+      )} |`,
+  );
+
+  return ["```", border, header, border, ...tableRows, border, "```"].join(
+    "\n",
+  );
+}
+
 function isInProgress(value) {
   return normalizeBusinessStatus(value) === "INPROGRESS";
 }
 
 function isReopen(value) {
   return normalizeBusinessStatus(value) === "REOPEN";
+}
+
+function isOutSla(ticket) {
+  return cleanTableValue(ticket.sla_status).toUpperCase() === "OUT SLA";
+}
+
+function isTicketValueEmpty(value) {
+  const cleaned = cleanTableValue(value);
+  return !cleaned || cleaned === "-";
+}
+
+function getExistingSentDate(record) {
+  if (record?.sent_date) {
+    return record.sent_date;
+  }
+
+  if (record?.sent_at) {
+    return formatLocalDate(record.sent_at);
+  }
+
+  return "";
+}
+
+function getRequiredMessageFields(ticket) {
+  const isSqa = ticket.assignment_type === "SQA";
+  const isNop = ticket.assignment_type === "NOP";
+  const required = ["order_id", "resolve_target_22h_text"];
+
+  if (isSqa) {
+    required.push("ccm_handling");
+  }
+
+  if (isNop) {
+    required.push("pic_nop");
+  }
+
+  if (ticket.use_reopen_message_format) {
+    required.push("reopen_number");
+    if (isSqa) {
+      required.push("pic_sqa");
+    }
+    return required;
+  }
+
+  if (isOutSla(ticket) && isInProgress(ticket.business_status)) {
+    return required;
+  }
+
+  required.push("notes", "analysis_text");
+  if (isSqa) {
+    required.push("pic_sqa");
+  }
+
+  return required;
+}
+
+function validateTicketMessageData(ticket) {
+  const missingFields = getRequiredMessageFields(ticket).filter((field) =>
+    isTicketValueEmpty(ticket[field]),
+  );
+
+  return {
+    ok: missingFields.length === 0,
+    missing_fields: missingFields,
+  };
 }
 
 function createEmptyStore() {
@@ -142,29 +263,34 @@ function cleanupExpiredRecords(store, now = new Date()) {
   };
 }
 
-function resolveTicketSendDecision(ticket, existingRecord) {
+function resolveTicketSendDecision(ticket, existingRecord, today) {
   const orderId = normalizeOrderId(ticket.order_id);
 
   if (!orderId || orderId === "-") {
     return {
-      send: true,
-      reason: "NO_ORDER_ID",
+      send: false,
+      reason: "INVALID_MESSAGE_DATA",
+      missing_fields: ["order_id"],
     };
   }
 
-  if (ticket.sla_status !== "IN SLA") {
+  const validation = validateTicketMessageData(ticket);
+  if (!validation.ok) {
     return {
       send: false,
-      reason: "OUT_SLA",
+      reason: "INVALID_MESSAGE_DATA",
+      missing_fields: validation.missing_fields,
     };
   }
 
   if (!existingRecord) {
     return {
       send: true,
-      reason: "NEW_IN_SLA",
+      reason: isOutSla(ticket) ? "OUT_SLA_REMINDER_TODAY" : "NEW_TODAY",
     };
   }
+
+  const existingSentDate = getExistingSentDate(existingRecord);
 
   if (
     isInProgress(existingRecord.business_status) &&
@@ -176,9 +302,16 @@ function resolveTicketSendDecision(ticket, existingRecord) {
     };
   }
 
+  if (existingSentDate !== today) {
+    return {
+      send: true,
+      reason: isOutSla(ticket) ? "OUT_SLA_REMINDER_TODAY" : "SENT_PREVIOUS_DAY",
+    };
+  }
+
   return {
     send: false,
-    reason: "DUPLICATE_ORDER_ID",
+    reason: "DUPLICATE_TODAY",
   };
 }
 
@@ -187,24 +320,29 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
   const rawStore = await readStore();
   const store = cleanupExpiredRecords(rawStore, now);
   await writeStore(store);
+  const today = formatLocalDate(now);
 
   const sendableTickets = [];
   const duplicateTickets = [];
   const outSlaTickets = [];
   const reopenedTickets = [];
+  const invalidMessageTickets = [];
 
   for (const ticket of tickets) {
     const orderId = normalizeOrderId(ticket.order_id);
     const existingRecord = store.tickets[orderId];
-    const decision = resolveTicketSendDecision(ticket, existingRecord);
+    const decision = resolveTicketSendDecision(ticket, existingRecord, today);
 
     logger.info("Sent ticket decision resolved", {
       orderId: ticket.order_id,
       slaStatus: ticket.sla_status,
       businessStatus: ticket.business_status,
       existingBusinessStatus: existingRecord?.business_status,
+      existingSentDate: getExistingSentDate(existingRecord),
+      today,
       decision: decision.reason,
       send: decision.send,
+      missingFields: decision.missing_fields,
     });
 
     if (decision.send) {
@@ -212,11 +350,17 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
       if (decision.reason === "REOPEN_AFTER_IN_PROGRESS") {
         reopenedTickets.push(ticket);
       }
+      if (decision.reason === "OUT_SLA_REMINDER_TODAY") {
+        outSlaTickets.push(ticket);
+      }
       continue;
     }
 
-    if (decision.reason === "OUT_SLA") {
-      outSlaTickets.push(ticket);
+    if (decision.reason === "INVALID_MESSAGE_DATA") {
+      invalidMessageTickets.push({
+        ...ticket,
+        missing_fields: decision.missing_fields,
+      });
       continue;
     }
 
@@ -228,7 +372,9 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     duplicate_tickets: duplicateTickets,
     out_sla_tickets: outSlaTickets,
     reopened_tickets: reopenedTickets,
+    invalid_message_tickets: invalidMessageTickets,
     retention_days: getRetentionDays(),
+    sent_date: today,
   };
 
   logger.info("Sent ticket plan created", {
@@ -237,6 +383,8 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     duplicate: duplicateTickets.length,
     outSla: outSlaTickets.length,
     reopened: reopenedTickets.length,
+    invalidMessageData: invalidMessageTickets.length,
+    sentDate: today,
     retentionDays: plan.retention_days,
   });
 
@@ -255,6 +403,7 @@ export async function markTicketAsSent(ticket, metadata = {}) {
 
   const rawStore = await readStore();
   const store = cleanupExpiredRecords(rawStore);
+  const now = new Date();
   store.tickets[orderId] = {
     order_id: ticket.order_id,
     assignment_type: ticket.assignment_type,
@@ -262,7 +411,8 @@ export async function markTicketAsSent(ticket, metadata = {}) {
     sla_status: ticket.sla_status,
     target_jid: metadata.targetJid || "",
     source_jid: metadata.sourceJid || "",
-    sent_at: new Date().toISOString(),
+    sent_at: now.toISOString(),
+    sent_date: formatLocalDate(now),
   };
 
   logger.info("Marking ticket as sent", {
@@ -276,58 +426,80 @@ export async function markTicketAsSent(ticket, metadata = {}) {
 }
 
 export function formatSentTicketPlanReport(plan) {
-  const lines = [
-    "📊 Deduplication Report",
+  const invalidMessageTickets = plan.invalid_message_tickets || [];
+  const newTicketCount = Math.max(
+    0,
+    plan.sendable_tickets.length -
+      plan.out_sla_tickets.length -
+      plan.reopened_tickets.length,
+  );
+  const reportLines = [
+    "📊 Rekapitulasi Tiket",
     "",
-    `🆕 Tiket baru dikirim: ${plan.sendable_tickets.length}`,
-    `🔁 Tiket duplicate dilewati: ${plan.duplicate_tickets.length}`,
-    `⏱️ Tiket OUT SLA dilewati: ${plan.out_sla_tickets.length}`,
+    `🆕 Tiket Baru Terkirim: ${newTicketCount}`,
+    `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
+    `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,
+    `⚠️ Data Tidak Lengkap: ${invalidMessageTickets.length}`,
     `♻️ Tiket ReOpen dikirim ulang: ${plan.reopened_tickets.length}`,
-    `🗄️ Retensi riwayat lokal: ${plan.retention_days} hari`,
+    `🗄️ Retensi Data Lokal: ${plan.retention_days} hari`,
   ];
 
   if (plan.duplicate_tickets.length > 0) {
-    lines.push(
+    reportLines.push(
       "",
-      "🔁 Duplicate Order ID:",
+      "🔁 Tiket Sudah Pernah Dikirim Hari Ini:",
       "",
       createOrderIdCodeTable(plan.duplicate_tickets),
     );
   }
 
   if (plan.out_sla_tickets.length > 0) {
-    lines.push(
+    reportLines.push(
       "",
-      "⏱️ OUT SLA Order ID:",
+      "⏱️ Tiket OUT SLA (Reminding):",
       "",
       createOrderIdCodeTable(plan.out_sla_tickets),
     );
   }
 
-  if (plan.reopened_tickets.length > 0) {
-    lines.push(
+  if (invalidMessageTickets.length > 0) {
+    reportLines.push(
       "",
-      "♻️ ReOpen dikirim ulang:",
+      "⚠️ Tiket dengan Data Tidak Lengkap:",
+      "",
+      createInvalidMessageDataCodeTable(invalidMessageTickets),
+    );
+  }
+
+  if (plan.reopened_tickets.length > 0) {
+    reportLines.push(
+      "",
+      "♻️ Tiket ReOpen dikirim ulang:",
       "",
       createOrderIdCodeTable(plan.reopened_tickets),
     );
   }
 
-  return lines.join("\n");
+  return reportLines.join("\n");
 }
 
 export function formatSqaAreaFollowUpMessage(tickets) {
-  const sqaTickets = tickets.filter((ticket) => ticket.assignment_type === "SQA");
+  const sqaTickets = tickets.filter(
+    (ticket) => ticket.assignment_type === "SQA",
+  );
   if (sqaTickets.length === 0) {
     return "";
   }
 
   const areaMap = new Map();
   for (const ticket of sqaTickets) {
-    const area = cleanTableValue(ticket.nsa || ticket.city || "UNKNOWN");
-    const key = area.toUpperCase();
+    const department = resolveSqaFollowUpDepartment(ticket);
+    const key = [
+      department.toUpperCase(),
+      cleanTableValue(ticket.pic_sqa || ticket.pic).toUpperCase(),
+    ].join("|");
     const existing = areaMap.get(key) || {
-      area: toTitleCase(area),
+      department: toTitleCase(department),
       pic: formatPicLabel(ticket.pic_sqa || ticket.pic),
       count: 0,
     };
@@ -340,8 +512,13 @@ export function formatSqaAreaFollowUpMessage(tickets) {
   }
 
   const areaLines = [...areaMap.values()]
-    .sort((a, b) => a.area.localeCompare(b.area))
-    .map((item) => `${item.count} tiket SQA area ${item.area} (${item.pic})`);
+    .sort(
+      (a, b) =>
+        a.department.localeCompare(b.department) || a.pic.localeCompare(b.pic),
+    )
+    .map(
+      (item) => `${item.count} tiket SQA area ${item.department} (${item.pic})`,
+    );
 
   return [
     "Assalamualaikum,",

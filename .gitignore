@@ -15,6 +15,7 @@ sessions/*
 config/whatsapp.json
 config/whatsapp-fix.json
 config/telegram.json
+config/whatsapp_sessions.json
 
 # Logs and runtime output
 logs/*

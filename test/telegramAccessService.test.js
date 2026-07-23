@@ -5,6 +5,7 @@ import test from "node:test";
 
 import {
   formatTelegramRegisterRequest,
+  getTelegramAccessDecision,
   isAuthorizedTelegramChat,
   listAuthorizedTelegramChats,
   registerTelegramChat,
@@ -81,4 +82,76 @@ test("formats Telegram register request with approve command", () => {
   assert.match(text, /Telegram Whitelist Request/);
   assert.match(text, /Chat ID: `-1001234567890`/);
   assert.match(text, /\/register -1001234567890 Import Ticket Group/);
+});
+
+test("reports detailed Telegram access decision reasons", async () => {
+  const context = setupTelegramAccessConfig("telegram-decision-reasons");
+
+  await registerTelegramChat({
+    chatId: "-1001234567890",
+    label: "Approved Group",
+    type: "group",
+    registeredBy: "999",
+  });
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const adminDecision = await getTelegramAccessDecision("999", {
+    admin: true,
+  });
+  assert.equal(adminDecision.allowed, true);
+  assert.equal(adminDecision.reason, "ADMIN");
+  assert.equal(adminDecision.source_type, "private");
+
+  const groupDecision = await getTelegramAccessDecision("-1001234567890");
+  assert.equal(groupDecision.allowed, true);
+  assert.equal(groupDecision.reason, "AUTHORIZED_GROUP");
+  assert.equal(groupDecision.source_type, "group");
+
+  const userDecision = await getTelegramAccessDecision("123456789");
+  assert.equal(userDecision.allowed, true);
+  assert.equal(userDecision.reason, "AUTHORIZED_USER");
+  assert.equal(userDecision.source_type, "private");
+
+  const unknownGroupDecision = await getTelegramAccessDecision("-1000000000000");
+  assert.equal(unknownGroupDecision.allowed, false);
+  assert.equal(unknownGroupDecision.reason, "GROUP_NOT_AUTHORIZED");
+
+  const unknownUserDecision = await getTelegramAccessDecision("555");
+  assert.equal(unknownUserDecision.allowed, false);
+  assert.equal(unknownUserDecision.reason, "PRIVATE_USER_NOT_AUTHORIZED");
+
+  context.cleanup();
+});
+
+test("does not authorize Telegram private id from group bucket", async () => {
+  const context = setupTelegramAccessConfig("telegram-type-bucket");
+  fs.writeFileSync(
+    context.configPath,
+    JSON.stringify(
+      {
+        authorized_groups: {
+          "8477611126": {
+            id: "8477611126",
+            label: "Wrong Bucket",
+            type: "group",
+          },
+        },
+        authorized_users: {},
+      },
+      null,
+      2,
+    ),
+  );
+
+  const decision = await getTelegramAccessDecision("8477611126");
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.source_type, "private");
+  assert.equal(decision.reason, "PRIVATE_USER_NOT_AUTHORIZED");
+
+  context.cleanup();
 });

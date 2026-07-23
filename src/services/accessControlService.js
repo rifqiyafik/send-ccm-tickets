@@ -56,14 +56,53 @@ export function isAllowedPrivateUser(senderJid) {
   return allowed;
 }
 
-// aturan utama akses bot: source grup harus whitelisted, source private harus user whitelisted.
-export function isAllowedBotAccess({ sourceJid, senderJid }) {
+// #penjelasan: mengembalikan keputusan akses lengkap agar handler bisa log alasan allow/deny.
+export function getWhatsAppAccessDecision({ sourceJid, senderJid }) {
   const normalizedSource = normalizeJid(sourceJid);
   const normalizedSender = normalizeJid(senderJid);
+  const ownerJids = getOwnerJids();
+  const owner = ownerJids.has(normalizedSender);
 
   if (isGroupJid(normalizedSource)) {
-    return isAllowedGroup(normalizedSource);
+    const authorizedGroups = getConfigJids("authorized_groups");
+    const allowed = authorizedGroups.includes(normalizedSource);
+    const decision = {
+      allowed,
+      platform: "whatsapp",
+      source_type: "group",
+      reason: allowed ? "AUTHORIZED_GROUP" : "GROUP_NOT_AUTHORIZED",
+      source_jid: normalizedSource,
+      sender_jid: normalizedSender,
+      owner,
+    };
+
+    logger.info("WhatsApp access decision resolved", decision);
+    return decision;
   }
 
-  return isAllowedPrivateUser(normalizedSender);
+  const authorizedUsers = getConfigJids("authorized_users");
+  const authorizedUser = authorizedUsers.includes(normalizedSender);
+  const allowed = owner || authorizedUser;
+  const decision = {
+    allowed,
+    platform: "whatsapp",
+    source_type: "private",
+    reason: owner
+      ? "OWNER"
+      : authorizedUser
+        ? "AUTHORIZED_USER"
+        : "PRIVATE_USER_NOT_AUTHORIZED",
+    source_jid: normalizedSource,
+    sender_jid: normalizedSender,
+    owner,
+    authorized_user: authorizedUser,
+  };
+
+  logger.info("WhatsApp access decision resolved", decision);
+  return decision;
+}
+
+// aturan utama akses bot: source grup harus whitelisted, source private harus user whitelisted.
+export function isAllowedBotAccess({ sourceJid, senderJid }) {
+  return getWhatsAppAccessDecision({ sourceJid, senderJid }).allowed;
 }

@@ -1105,7 +1105,7 @@ function formatSqaReminderMessage(tickets) {
   const summary = summarizeSla(tickets);
   const detailTickets = getReopenReminderTickets(tickets);
   const lines = [
-    "Remind Ticket CX Open:",
+    "*Remind Ticket CX Open:*",
     "",
     "*Group | Total Ticket | In SLA | Out SLA*",
     `*SQA | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
@@ -1114,14 +1114,14 @@ function formatSqaReminderMessage(tickets) {
   if (detailTickets.length > 0) {
     lines.push(
       "",
-      "Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen",
+      "*Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen*",
       ...detailTickets.map(
         (ticket) =>
-          `${cleanTableValue(ticket.nsa || ticket.city)} | ${cleanTableValue(
+          `*${cleanTableValue(ticket.nsa || ticket.city)} | ${cleanTableValue(
             ticket.order_id,
           )} | ${cleanTableValue(ticket.site_id)} | ${getReopenCount(
             ticket,
-          )} | ${getpreviousProblemAnalysis(ticket)}`,
+          )} | ${getpreviousProblemAnalysis(ticket)}*`,
       ),
     );
   }
@@ -1138,7 +1138,7 @@ function formatNopReminderMessage(tickets) {
     resolveMentionTag(ticket.pic_nop),
   );
   const lines = [
-    "Remind ticket CX Open :",
+    "*Remind ticket CX Open :*",
     "",
     "*NOP | Total Ticket | In SLA | Out SLA*",
     `*${nopName} | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
@@ -1147,10 +1147,10 @@ function formatNopReminderMessage(tickets) {
   if (detailTickets.length > 0) {
     lines.push(
       "",
-      "PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen",
+      "*PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen*",
       ...detailTickets.map((ticket, index) => {
         const tag = mentionTags[index];
-        return `${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
+        return `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
           ticket.site_id,
         )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}`;
       }),
@@ -1248,6 +1248,32 @@ function formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag }) {
   ].join("\n");
 }
 
+function isOutSlaInProgressTicket(ticket) {
+  const slaStatus = cleanTableValue(ticket.sla_status).toUpperCase();
+  const businessStatus = cleanTableValue(ticket.business_status)
+    .toUpperCase()
+    .replace(/[\s_-]+/g, "");
+
+  return slaStatus === "OUT SLA" && businessStatus === "INPROGRESS";
+}
+
+function formatOutSlaInProgressEscalationText(ticket, { ccmTag, nopTag }) {
+  const isSqa = ticket.assignment_type === "SQA";
+  const assigneeTag = isSqa ? ccmTag : nopTag;
+
+  logger.info("Formatting OUT SLA In Progress reminder text", {
+    orderId: ticket.order_id,
+    assignmentType: ticket.assignment_type,
+  });
+
+  return [
+    `Mohon dibantu bang ${assigneeTag.text || "-"}`,
+    ticket.order_id || "-",
+    "",
+    `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
+  ].join("\n");
+}
+
 // membuat teks pesan eskalasi dan daftar JID mention yang dikirim ke Baileys.
 export function formatEscalationMessagePayload(ticket) {
   logger.info("Formatting escalation message", {
@@ -1266,6 +1292,25 @@ export function formatEscalationMessagePayload(ticket) {
     logger.info("ReOpen escalation message mention payload created", {
       orderId: ticket.order_id,
       mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
+      mentions,
+    });
+
+    return {
+      text,
+      mentions,
+    };
+  }
+
+  if (isOutSlaInProgressTicket(ticket)) {
+    const mentions = uniqueMentionJids(isSqa ? [ccmTag] : [nopTag]);
+    const text = formatOutSlaInProgressEscalationText(ticket, {
+      ccmTag,
+      nopTag,
+    });
+
+    logger.info("OUT SLA In Progress reminder mention payload created", {
+      orderId: ticket.order_id,
+      mentionDetails: isSqa ? [ccmTag] : [nopTag],
       mentions,
     });
 

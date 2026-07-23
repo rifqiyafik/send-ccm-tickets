@@ -38,6 +38,11 @@ function ticket(overrides = {}) {
     assignment_type: "SQA",
     business_status: "In Progress",
     sla_status: "IN SLA",
+    resolve_target_22h_text: "Rabu / 22 Jul 2026, 11:50:38 PM",
+    ccm_handling: "Budi",
+    pic_sqa: "Ahsan",
+    notes: "Keluhan pelanggan",
+    analysis_text: "Analisis tiket",
     ...overrides,
   };
 }
@@ -71,6 +76,7 @@ test("skips duplicate IN SLA ticket when business status is not ReOpen transitio
         business_status: "In Progress",
         sla_status: "IN SLA",
         sent_at: "2026-07-21T00:00:00.000Z",
+        sent_date: "2026-07-21",
       },
     },
   });
@@ -97,12 +103,19 @@ test("resends ticket when previous business status was IN PROGRESS and current s
         business_status: "IN PROGRESS",
         sla_status: "IN SLA",
         sent_at: "2026-07-21T00:00:00.000Z",
+        sent_date: "2026-07-21",
       },
     },
   });
 
   const plan = await createSentTicketPlan(
-    [ticket({ business_status: "ReOpen" })],
+    [
+      ticket({
+        business_status: "ReOpen",
+        use_reopen_message_format: true,
+        reopen_number: "2",
+      }),
+    ],
     new Date("2026-07-21T01:00:00.000Z"),
   );
 
@@ -113,7 +126,7 @@ test("resends ticket when previous business status was IN PROGRESS and current s
   context.cleanup();
 });
 
-test("skips OUT SLA ticket before duplicate business-status check", async () => {
+test("sends OUT SLA In Progress ticket as daily reminder", async () => {
   const context = setupStore("out-sla-ticket", {
     version: 1,
     tickets: {
@@ -121,19 +134,64 @@ test("skips OUT SLA ticket before duplicate business-status check", async () => 
         order_id: "CC-1",
         business_status: "IN PROGRESS",
         sla_status: "IN SLA",
-        sent_at: "2026-07-21T00:00:00.000Z",
+        sent_at: "2026-07-20T00:00:00.000Z",
+        sent_date: "2026-07-20",
       },
     },
   });
 
   const plan = await createSentTicketPlan(
-    [ticket({ business_status: "ReOpen", sla_status: "OUT SLA" })],
+    [ticket({ business_status: "In Progress", sla_status: "OUT SLA" })],
+    new Date("2026-07-21T01:00:00.000Z"),
+  );
+
+  assert.equal(plan.sendable_tickets.length, 1);
+  assert.equal(plan.reopened_tickets.length, 0);
+  assert.equal(plan.out_sla_tickets.length, 1);
+
+  context.cleanup();
+});
+
+test("skips ticket already sent today with same business status", async () => {
+  const context = setupStore("duplicate-today-ticket", {
+    version: 1,
+    tickets: {
+      "CC-1": {
+        order_id: "CC-1",
+        business_status: "IN PROGRESS",
+        sla_status: "OUT SLA",
+        sent_at: "2026-07-21T00:00:00.000Z",
+        sent_date: "2026-07-21",
+      },
+    },
+  });
+
+  const plan = await createSentTicketPlan(
+    [ticket({ business_status: "In Progress", sla_status: "OUT SLA" })],
     new Date("2026-07-21T01:00:00.000Z"),
   );
 
   assert.equal(plan.sendable_tickets.length, 0);
-  assert.equal(plan.reopened_tickets.length, 0);
-  assert.equal(plan.out_sla_tickets.length, 1);
+  assert.equal(plan.duplicate_tickets.length, 1);
+  assert.equal(plan.out_sla_tickets.length, 0);
+
+  context.cleanup();
+});
+
+test("skips ticket when required message data is empty", async () => {
+  const context = setupStore("invalid-message-ticket");
+
+  const plan = await createSentTicketPlan([
+    ticket({ notes: "", analysis_text: "" }),
+  ]);
+
+  assert.equal(plan.sendable_tickets.length, 0);
+  assert.equal(plan.invalid_message_tickets.length, 1);
+  assert.deepEqual(plan.invalid_message_tickets[0].missing_fields, [
+    "notes",
+    "analysis_text",
+  ]);
+  assert.match(formatSentTicketPlanReport(plan), /Tiket data kosong dilewati: 1/);
 
   context.cleanup();
 });
@@ -176,6 +234,78 @@ test("formats SQA area follow-up message from sendable tickets", () => {
   assert.match(message, /2 tiket SQA area Aceh \(Bg Herman\)/);
   assert.match(message, /1 tiket SQA area Medan \(Bg Ahsan\)/);
   assert.doesNotMatch(message, /BINJAI/);
+});
+
+test("formats SQA area follow-up message sorted by departemen ns", () => {
+  const message = formatSqaAreaFollowUpMessage([
+    ticket({
+      city: "KOTA MEDAN",
+      nsa: "MEDAN",
+      cluster_area: "NOP MEDAN",
+      pic_sqa: "Ahsan",
+    }),
+    ticket({
+      city: "ACEH BARAT",
+      nsa: "ACEH",
+      cluster_area: "NOP ACEH",
+      pic_sqa: "Herman",
+    }),
+    ticket({
+      city: "DELI SERDANG",
+      nsa: "MEDAN",
+      cluster_area: "NOP MEDAN",
+      pic_sqa: "Ahsan",
+    }),
+  ]);
+
+  assert.match(message, /1 tiket SQA area Aceh \(Bg Herman\)/);
+  assert.match(message, /2 tiket SQA area Medan \(Bg Ahsan\)/);
+  assert.doesNotMatch(message, /Aceh Barat/);
+  assert.doesNotMatch(message, /Deli Serdang/);
+  assert.doesNotMatch(message, /Kota Medan/);
+  assert.ok(message.indexOf("Aceh") < message.indexOf("Medan"));
+});
+
+test("formats SQA area follow-up message from departemen ns instead of city", () => {
+  const message = formatSqaAreaFollowUpMessage([
+    ticket({
+      city: "ACEH BESAR",
+      nsa: "ACEH",
+      departemen_ns: "NOP ACEH",
+      pic_sqa: "Herman",
+    }),
+    ticket({
+      city: "ACEH JAYA",
+      nsa: "ACEH",
+      departemen_ns: "NOP ACEH",
+      pic_sqa: "Herman",
+    }),
+    ticket({
+      city: "GAYO LUES",
+      nsa: "ACEH",
+      departement_ns: "NOP ACEH",
+      pic_sqa: "Herman",
+    }),
+    ticket({
+      city: "KOTA MEDAN",
+      nsa: "MEDAN",
+      cluster_area: "NOP MEDAN",
+      pic_sqa: "Ahsan",
+    }),
+    ticket({
+      city: "DELI SERDANG",
+      nsa: "MEDAN",
+      cluster_area: "NOP MEDAN",
+      pic_sqa: "Ahsan",
+    }),
+  ]);
+
+  assert.match(message, /3 tiket SQA area Aceh \(Bg Herman\)/);
+  assert.match(message, /2 tiket SQA area Medan \(Bg Ahsan\)/);
+  assert.doesNotMatch(message, /Aceh Besar/);
+  assert.doesNotMatch(message, /Aceh Jaya/);
+  assert.doesNotMatch(message, /Gayo Lues/);
+  assert.doesNotMatch(message, /Deli Serdang/);
 });
 
 test("formats SQA area follow-up message like the requested template", () => {

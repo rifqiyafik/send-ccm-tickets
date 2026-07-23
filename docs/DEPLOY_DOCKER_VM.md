@@ -69,6 +69,8 @@ WA_AUTH_DIR=sessions/baileys
 WA_SESSION_ROOT=sessions/whatsapp
 WA_SESSION_REGISTRY_PATH=config/whatsapp_sessions.json
 WA_AUTO_START=false
+CCM_HANDLING_DATA_PATH=
+NOP_SITE_DATA_PATH=
 
 TELEGRAM_BOT_TOKEN=ISI_TOKEN_BOT_TELEGRAM
 TELEGRAM_ADMIN_CHAT_IDS=ISI_CHAT_ID_ADMIN_TELEGRAM
@@ -182,14 +184,23 @@ Catatan:
 
 Tidak perlu membuat file reference manual di VM.
 
-File berikut sudah harus masuk repository dan ikut image Docker:
+File berikut sudah masuk repository dan ikut image Docker:
 
 ```text
 data/pic_nop_region_sumbagut.json
 data/ccm_handling_sqa_region_sumbagut.json
 ```
 
-Jangan mount seluruh folder `data` ke container, karena itu akan menimpa file reference bawaan image. Compose hanya mount:
+Saat build image, dua file itu juga disalin ke:
+
+```text
+/app/reference-data/pic_nop_region_sumbagut.json
+/app/reference-data/ccm_handling_sqa_region_sumbagut.json
+```
+
+Ini membuat aplikasi tetap aman walaupun ada mount lama yang menimpa `/app/data`.
+
+Tetap jangan mount seluruh folder `data` ke container. Compose hanya mount:
 
 ```text
 ./data/runtime:/app/data/runtime

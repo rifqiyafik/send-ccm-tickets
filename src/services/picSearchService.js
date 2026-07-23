@@ -1,14 +1,29 @@
 import path from "path";
+import fs from "fs";
 import { createLogger } from "../utils/logger.js";
 import { readJsonArray } from "../utils/jsonFile.js";
 import { normalizeSearchKey } from "../utils/text.js";
 
 const logger = createLogger("picSearchService");
 
-const DEFAULT_CCM_HANDLING_PATH = path.resolve(
-  process.cwd(),
-  "data/ccm_handling_sqa_region_sumbagut.json"
-);
+const CCM_HANDLING_FILE_NAME = "ccm_handling_sqa_region_sumbagut.json";
+
+function resolveCcmHandlingPath() {
+  const candidates = [
+    process.env.CCM_HANDLING_DATA_PATH,
+    path.resolve(process.cwd(), "data", CCM_HANDLING_FILE_NAME),
+    path.resolve(process.cwd(), "reference-data", CCM_HANDLING_FILE_NAME),
+  ].filter(Boolean);
+
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  const filePath = found || candidates[0];
+  logger.info("Resolved CCM handling data path", {
+    filePath,
+    candidates,
+    found: Boolean(found),
+  });
+  return filePath;
+}
 
 const SQA_ASSIGNMENT_GROUP = "SERVICE QUALITY ASSURANCE SUMBAGUT";
 const NOP_ASSIGNMENT_PREFIX = "NETWORK OPERATIONS AND PRODUCTIVITY ";
@@ -73,7 +88,7 @@ function buildCityIndex(rows) {
 }
 
 // membaca database CCM handling yang berisi PIC CCM, PIC SQA, dan PIC NOP per city.
-export function loadCcmHandlingRows(filePath = DEFAULT_CCM_HANDLING_PATH) {
+export function loadCcmHandlingRows(filePath = resolveCcmHandlingPath()) {
   try {
     logger.info("Loading CCM handling data", { filePath });
     const rows = readJsonArray(filePath, "CCM handling data");

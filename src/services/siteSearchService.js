@@ -1,4 +1,5 @@
 import path from "path";
+import fs from "fs";
 
 import { CITY_COLUMN, normalizeText } from "./picSearchService.js";
 import { createLogger } from "../utils/logger.js";
@@ -9,10 +10,24 @@ const logger = createLogger("siteSearchService");
 export const PROBLEM_ANALYSIS_NSH_COLUMN = "Problem Analysis NSH";
 export const SITE_ID1_COLUMN = "site_id1(L1 Assign)";
 
-const DEFAULT_NOP_SITE_PATH = path.resolve(
-  process.cwd(),
-  "data/pic_nop_region_sumbagut.json"
-);
+const NOP_SITE_FILE_NAME = "pic_nop_region_sumbagut.json";
+
+function resolveNopSitePath() {
+  const candidates = [
+    process.env.NOP_SITE_DATA_PATH,
+    path.resolve(process.cwd(), "data", NOP_SITE_FILE_NAME),
+    path.resolve(process.cwd(), "reference-data", NOP_SITE_FILE_NAME),
+  ].filter(Boolean);
+
+  const found = candidates.find((candidate) => fs.existsSync(candidate));
+  const filePath = found || candidates[0];
+  logger.info("Resolved NOP site data path", {
+    filePath,
+    candidates,
+    found: Boolean(found),
+  });
+  return filePath;
+}
 const defaultNopSiteRows = loadNopSiteRows();
 const defaultSiteIndex = buildSiteIndex(defaultNopSiteRows);
 
@@ -38,7 +53,7 @@ function buildSiteIndex(rows) {
 }
 
 // membaca database site NOP yang dipakai untuk city fallback, vendor, cluster area, dan site detail.
-export function loadNopSiteRows(filePath = DEFAULT_NOP_SITE_PATH) {
+export function loadNopSiteRows(filePath = resolveNopSitePath()) {
   try {
     logger.info("Loading NOP site data", { filePath });
     const rows = readJsonArray(filePath, "NOP site data");

@@ -167,6 +167,14 @@ function detectTelegramChatType(chatId) {
     : "private";
 }
 
+function isAdminOnlyCommand(command) {
+  return ["/logout", "/delete_session", "/whitelist"].includes(command);
+}
+
+function isAdminOnlyRegisterCommand(command, argument) {
+  return command === "/register" && Boolean(String(argument || "").trim());
+}
+
 function formatHelp() {
   return [
     "🤖 **CCM Ticket Bot - Telegram Command Center**",
@@ -452,8 +460,11 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
     }
 
     const admin = isAdminChat(chatId, config);
+    const accessDecision = chatId
+      ? await getTelegramAccessDecision(chatId, { admin })
+      : { allowed: false };
 
-    if (chatId && text && !text.startsWith("/") && admin) {
+    if (chatId && text && !text.startsWith("/") && accessDecision.allowed) {
       const pendingLoginResult =
         await whatsappSession.completePendingLoginName(chatId, text);
       if (pendingLoginResult) {
@@ -534,8 +545,6 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
-    const accessDecision = await getTelegramAccessDecision(chatId, { admin });
-
     if (!accessDecision.allowed) {
       logger.warn("Telegram command rejected: unauthorized chat", {
         chatId,
@@ -567,10 +576,15 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
-    if (!admin && !["/start", "/help", "/status"].includes(command)) {
+    if (
+      !admin &&
+      (isAdminOnlyCommand(command) ||
+        isAdminOnlyRegisterCommand(command, argument))
+    ) {
       logger.warn("Telegram admin command rejected from non-admin chat", {
         chatId,
         command,
+        accessReason: accessDecision.reason,
       });
       await sendRichMessage(
         sendMessage,

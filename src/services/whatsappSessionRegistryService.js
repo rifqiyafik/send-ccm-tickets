@@ -6,7 +6,8 @@ import { createLogger } from "../utils/logger.js";
 const logger = createLogger("whatsappSessionRegistryService");
 const DEFAULT_REGISTRY_PATH = path.join(
   process.cwd(),
-  "config",
+  "data",
+  "runtime",
   "whatsapp_sessions.json",
 );
 const DEFAULT_SESSION_ROOT = path.join(process.cwd(), "sessions", "whatsapp");

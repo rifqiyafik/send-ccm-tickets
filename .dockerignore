@@ -24,6 +24,7 @@ logs
 tmp
 temp
 data/sent_tickets.json
+data/runtime
 filtered_ccm_tickets.xlsx
 
 # Local private config. Keep examples in the image.

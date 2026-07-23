@@ -8,6 +8,7 @@ const logger = createLogger("sentTicketService");
 const DEFAULT_STORE_PATH = path.join(
   process.cwd(),
   "data",
+  "runtime",
   "sent_tickets.json",
 );
 const DEFAULT_RETENTION_DAYS = 7;

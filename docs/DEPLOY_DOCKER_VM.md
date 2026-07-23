@@ -59,6 +59,8 @@ Paste template berikut, lalu isi nilai yang diperlukan:
 
 ```env
 APP_IMAGE=ghcr.io/USERNAME/send-ccm-ticket:latest
+APP_UID=1000
+APP_GID=1000
 
 LOG_LEVEL=info
 LOG_COLOR=false
@@ -67,7 +69,7 @@ WA_WEB_VERSION=
 
 WA_AUTH_DIR=sessions/baileys
 WA_SESSION_ROOT=sessions/whatsapp
-WA_SESSION_REGISTRY_PATH=config/whatsapp_sessions.json
+WA_SESSION_REGISTRY_PATH=data/runtime/whatsapp_sessions.json
 WA_AUTO_START=false
 CCM_HANDLING_DATA_PATH=
 NOP_SITE_DATA_PATH=
@@ -92,8 +94,31 @@ WHATSAPP_GROUPS=
 Wajib dicek:
 
 - `APP_IMAGE` harus sesuai image GHCR.
+- `APP_UID` dan `APP_GID` harus sesuai user VM kamu.
 - `TELEGRAM_BOT_TOKEN` harus diisi.
 - `TELEGRAM_ADMIN_CHAT_IDS` harus diisi dengan chat ID admin Telegram.
+
+Ambil nilai UID/GID di VM:
+
+```bash
+id -u
+id -g
+```
+
+Lalu isi ke `.env`, contoh:
+
+```env
+APP_UID=1002
+APP_GID=1002
+```
+
+Ini penting karena bot perlu menulis file seperti:
+
+```text
+sessions/whatsapp/*
+data/runtime/whatsapp_sessions.json
+data/runtime/sent_tickets.json
+```
 
 ## 4. Buat `docker-compose.yml`
 
@@ -112,6 +137,7 @@ services:
     container_name: send-ccm-ticket
     restart: unless-stopped
     init: true
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     env_file:
       - .env
     environment:
@@ -248,6 +274,23 @@ Pull image:
 docker compose pull
 ```
 
+Pastikan semua folder mount bisa ditulis oleh user VM:
+
+```bash
+mkdir -p config sessions data/runtime downloads logs
+chmod -R u+rwX config sessions data downloads logs
+touch config/.write-test sessions/.write-test data/runtime/.write-test downloads/.write-test logs/.write-test
+rm -f config/.write-test sessions/.write-test data/runtime/.write-test downloads/.write-test logs/.write-test
+```
+
+Pastikan container juga berjalan memakai UID/GID user VM dan bisa menulis ke mount:
+
+```bash
+docker compose run --rm ccm-ticket-bot sh -lc "id && touch /app/config/.write-test /app/sessions/.write-test /app/data/runtime/.write-test /app/downloads/.write-test /app/logs/.write-test && rm -f /app/config/.write-test /app/sessions/.write-test /app/data/runtime/.write-test /app/downloads/.write-test /app/logs/.write-test && echo MOUNT_WRITE_OK"
+```
+
+Jika command ini gagal `permission denied`, cek ulang `APP_UID`, `APP_GID`, dan ownership folder di dalam `~/sqa-sumbagut/send-ccm-ticket`.
+
 Jalankan container:
 
 ```bash
@@ -292,7 +335,7 @@ Jika berhasil, session tersimpan di:
 
 ```text
 ~/sqa-sumbagut/send-ccm-ticket/sessions
-~/sqa-sumbagut/send-ccm-ticket/config/whatsapp_sessions.json
+~/sqa-sumbagut/send-ccm-ticket/data/runtime/whatsapp_sessions.json
 ```
 
 ## 11. Test Flow Program
@@ -363,6 +406,49 @@ permission denied
 ```
 
 Berarti user VM belum punya akses Docker. Ini perlu admin VM yang memperbaiki permission Docker. Dari user terbatas, tidak bisa diselesaikan tanpa bantuan admin.
+
+Jika muncul error permission seperti:
+
+```text
+EACCES: permission denied, open 'config/whatsapp_sessions.json'
+```
+
+Ini berarti registry session masih diarahkan ke folder `config` atau folder mount tidak writable. Registry session adalah data runtime, jadi arahkan ke `data/runtime`.
+
+Pastikan `.env` berisi:
+
+```env
+WA_SESSION_REGISTRY_PATH=data/runtime/whatsapp_sessions.json
+```
+
+Pastikan juga `.env` berisi UID/GID user VM:
+
+```bash
+id -u
+id -g
+nano .env
+```
+
+Set:
+
+```env
+APP_UID=hasil_id_u
+APP_GID=hasil_id_g
+```
+
+Pastikan folder runtime writable oleh user kamu:
+
+```bash
+chmod -R u+rwX config sessions data downloads logs
+```
+
+Lalu restart:
+
+```bash
+docker compose down
+docker compose up -d
+docker compose logs -f ccm-ticket-bot
+```
 
 Jika `docker compose pull` gagal unauthorized:
 

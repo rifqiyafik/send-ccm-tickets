@@ -17,6 +17,11 @@ config/whatsapp-fix.json
 config/telegram.json
 config/whatsapp_sessions.json
 
+# 
+data/reference
+data/registered_user.json
+data/registered_user.json
+
 # Logs and runtime output
 logs/*
 !logs/.gitkeep

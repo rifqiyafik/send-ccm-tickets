@@ -1,9 +1,6 @@
 services:
   ccm-ticket-bot:
     image: ${APP_IMAGE:-send-ccm-ticket:latest}
-    build:
-      context: .
-      dockerfile: Dockerfile
     container_name: send-ccm-ticket
     restart: unless-stopped
     init: true
@@ -15,6 +12,6 @@ services:
     volumes:
       - ./config:/app/config
       - ./sessions:/app/sessions
-      - ./data:/app/data
+      - ./data/runtime:/app/data/runtime
       - ./downloads:/app/downloads
       - ./logs:/app/logs

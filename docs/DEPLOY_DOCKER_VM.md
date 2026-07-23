@@ -1,229 +1,399 @@
 # Deploy Docker ke VM
 
-Panduan ini memakai Docker image agar bot bisa dipindahkan ke VM tanpa install dependency Node.js manual.
+Panduan ini untuk menjalankan bot di VM dengan akses terbatas:
 
-CI/CD project ini disiapkan dari branch `master`. Push atau merge ke `master` akan menjalankan test, build Docker image, push image ke GHCR, lalu deploy ke VM jika secret VM sudah diisi.
+- Tidak memakai `sudo`.
+- Tidak memakai `scp`.
+- Semua file dibuat hanya di dalam folder `sqa-sumbagut`.
+- VM hanya melakukan `docker pull` image dari GHCR, bukan build source code.
+- Runtime data tetap persistent lewat folder `config`, `sessions`, `data/runtime`, `downloads`, dan `logs`.
+- File reference `data/pic_nop_region_sumbagut.json` dan `data/ccm_handling_sqa_region_sumbagut.json` sudah ikut repository dan image Docker, jadi tidak perlu dibuat manual di VM.
 
-## 1. Siapkan File Lokal
+CI/CD project disiapkan dari branch `master`. Push atau merge ke `master` akan menjalankan test, build image Docker, dan push image ke GHCR. Untuk saat ini deploy VM dilakukan manual.
 
-Pastikan file runtime lokal sudah siap:
+## 1. Pastikan Image Sudah Ada di GHCR
 
-- `.env`
-- `config/whatsapp.json`
-- `config/telegram.json`
-- `data/` berisi file reference PIC/site
+Contoh image:
 
-Folder berikut akan dibuat dan dipakai sebagai data persistent:
-
-- `sessions/` untuk credential WhatsApp Baileys
-- `config/` untuk whitelist, target group, mention, dan registry session
-- `data/` untuk reference dan `sent_tickets.json`
-- `downloads/` untuk file/media runtime
-- `logs/` untuk log runtime
-
-## 2. Build Image Lokal
-
-Jalankan dari root project:
-
-```bash
-docker build -t send-ccm-ticket:latest .
+```text
+ghcr.io/USERNAME/send-ccm-ticket:latest
 ```
 
-Tes image tanpa menjalankan bot:
+Ganti `USERNAME` dengan owner GitHub/GHCR kamu. Nama image harus lowercase.
+
+## 2. Masuk ke Folder yang Diizinkan di VM
+
+Semua file dibuat di dalam `sqa-sumbagut`.
 
 ```bash
-docker run --rm send-ccm-ticket:latest node --check index.js
+cd ~/sqa-sumbagut
+mkdir -p send-ccm-ticket
+cd send-ccm-ticket
+mkdir -p config sessions data downloads logs
+mkdir -p data/runtime
 ```
 
-## 3. Jalankan Lokal dengan Compose
+Struktur akhirnya:
+
+```text
+~/sqa-sumbagut/send-ccm-ticket/
+├── .env
+├── docker-compose.yml
+├── config/
+├── sessions/
+├── data/
+│   └── runtime/
+├── downloads/
+└── logs/
+```
+
+## 3. Buat File `.env`
+
+Jalankan:
 
 ```bash
+nano .env
+```
+
+Paste template berikut, lalu isi nilai yang diperlukan:
+
+```env
+APP_IMAGE=ghcr.io/USERNAME/send-ccm-ticket:latest
+
+LOG_LEVEL=info
+LOG_COLOR=false
+BAILEYS_LOG_LEVEL=silent
+WA_WEB_VERSION=
+
+WA_AUTH_DIR=sessions/baileys
+WA_SESSION_ROOT=sessions/whatsapp
+WA_SESSION_REGISTRY_PATH=config/whatsapp_sessions.json
+WA_AUTO_START=false
+
+TELEGRAM_BOT_TOKEN=ISI_TOKEN_BOT_TELEGRAM
+TELEGRAM_ADMIN_CHAT_IDS=ISI_CHAT_ID_ADMIN_TELEGRAM
+TELEGRAM_POLL_TIMEOUT_SECONDS=30
+TELEGRAM_ACCESS_CONFIG_PATH=config/telegram.json
+
+OWNER_JIDS=
+JID_SEARCH_LIMIT=50
+
+WA_SEND_DELAY_MS=5000
+WA_BATCH_SIZE=10
+WA_BATCH_EXTRA_DELAY_MS=5000
+SENT_TICKET_STORE_PATH=data/runtime/sent_tickets.json
+SENT_TICKET_RETENTION_DAYS=7
+
+WHATSAPP_GROUPS=
+```
+
+Wajib dicek:
+
+- `APP_IMAGE` harus sesuai image GHCR.
+- `TELEGRAM_BOT_TOKEN` harus diisi.
+- `TELEGRAM_ADMIN_CHAT_IDS` harus diisi dengan chat ID admin Telegram.
+
+## 4. Buat `docker-compose.yml`
+
+Jalankan:
+
+```bash
+nano docker-compose.yml
+```
+
+Paste:
+
+```yaml
+services:
+  ccm-ticket-bot:
+    image: ${APP_IMAGE:-send-ccm-ticket:latest}
+    container_name: send-ccm-ticket
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      TZ: Asia/Jakarta
+    volumes:
+      - ./config:/app/config
+      - ./sessions:/app/sessions
+      - ./data/runtime:/app/data/runtime
+      - ./downloads:/app/downloads
+      - ./logs:/app/logs
+```
+
+Compose ini tidak punya `build:` karena VM hanya menjalankan image yang sudah dipush ke GHCR.
+
+## 5. Buat Config WhatsApp
+
+Jalankan:
+
+```bash
+nano config/whatsapp.json
+```
+
+Paste isi file lokal `config/whatsapp.json`.
+
+Minimal struktur:
+
+```json
+{
+  "authorized_groups": {},
+  "authorized_users": {},
+  "target_groups": {},
+  "mentions": {}
+}
+```
+
+Pastikan bagian berikut sudah benar:
+
+- `authorized_groups`: grup WA yang boleh menjalankan bot.
+- `authorized_users`: akun private WA yang boleh memakai bot langsung.
+- `target_groups`: grup tujuan pengiriman tiket, contoh `SQA`, `MAIN SQA`, `NOP MEDAN`.
+- `mentions`: mapping nama PIC ke JID dan label mention.
+
+## 6. Buat Config Telegram
+
+Jalankan:
+
+```bash
+nano config/telegram.json
+```
+
+Paste isi file lokal `config/telegram.json`.
+
+Minimal struktur:
+
+```json
+{
+  "authorized_groups": {},
+  "authorized_users": {}
+}
+```
+
+Catatan:
+
+- Telegram group ID biasanya diawali `-100`.
+- Telegram private chat ID biasanya angka positif.
+- Admin utama tetap dari `.env` bagian `TELEGRAM_ADMIN_CHAT_IDS`.
+
+## 7. Data Reference
+
+Tidak perlu membuat file reference manual di VM.
+
+File berikut sudah harus masuk repository dan ikut image Docker:
+
+```text
+data/pic_nop_region_sumbagut.json
+data/ccm_handling_sqa_region_sumbagut.json
+```
+
+Jangan mount seluruh folder `data` ke container, karena itu akan menimpa file reference bawaan image. Compose hanya mount:
+
+```text
+./data/runtime:/app/data/runtime
+```
+
+Folder `data/runtime` hanya dipakai untuk file runtime seperti:
+
+```text
+data/runtime/sent_tickets.json
+```
+
+## 8. Login GHCR dari VM
+
+Jalankan:
+
+```bash
+docker login ghcr.io -u USERNAME
+```
+
+Saat diminta password, paste GitHub token yang punya permission:
+
+```text
+read:packages
+```
+
+Jika image public, login bisa saja tidak diperlukan. Jika pull gagal unauthorized, login wajib.
+
+## 9. Pull dan Jalankan Bot
+
+Pastikan masih di folder:
+
+```bash
+cd ~/sqa-sumbagut/send-ccm-ticket
+```
+
+Validasi compose:
+
+```bash
+docker compose config
+```
+
+Pull image:
+
+```bash
+docker compose pull
+```
+
+Jalankan container:
+
+```bash
+docker compose up -d
+```
+
+Lihat log:
+
+```bash
+docker compose logs -f ccm-ticket-bot
+```
+
+Jika log menunjukkan Telegram bot polling/start tanpa error, aplikasi sudah berjalan.
+
+## 10. Login WhatsApp dari Telegram
+
+Dari akun Telegram admin, kirim:
+
+```text
+/sessions
+```
+
+Jika belum ada session:
+
+```text
+/login 628xxxxxxxxxx
+```
+
+Bot akan bertanya nama session. Balas contoh:
+
+```text
+Rifqi
+```
+
+Setelah itu bot mengirim QR. Scan dari WhatsApp:
+
+```text
+WhatsApp > Linked Devices > Link a Device
+```
+
+Jika berhasil, session tersimpan di:
+
+```text
+~/sqa-sumbagut/send-ccm-ticket/sessions
+~/sqa-sumbagut/send-ccm-ticket/config/whatsapp_sessions.json
+```
+
+## 11. Test Flow Program
+
+Tes dari Telegram admin:
+
+```text
+/status
+/sessions
+```
+
+Tes dari grup/user yang sudah whitelist:
+
+1. Kirim file Excel dengan caption `.summary` untuk cek summary saja.
+2. Jika hasilnya benar, kirim file Excel dengan caption `.import` atau `.send`.
+3. Untuk kirim tiket tanpa salam dan summary, pakai caption `.update`.
+
+Jika file dikirim tanpa caption command, bot memang tidak memproses apa pun.
+
+## 12. Update Manual Setelah Image Baru Dipush
+
+Jalankan di VM:
+
+```bash
+cd ~/sqa-sumbagut/send-ccm-ticket
+docker compose pull
 docker compose up -d
 docker compose logs -f ccm-ticket-bot
 ```
 
-Stop container:
+Folder runtime tidak hilang karena semuanya di-mount:
+
+```text
+config/
+sessions/
+data/runtime/
+downloads/
+logs/
+```
+
+## 13. Stop dan Restart
+
+Stop:
 
 ```bash
 docker compose down
 ```
 
-## 4. Push Image ke Registry
-
-Contoh memakai GitHub Container Registry.
-
-Login:
+Start ulang:
 
 ```bash
-echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-```
-
-Tag image:
-
-```bash
-docker tag send-ccm-ticket:latest ghcr.io/YOUR_GITHUB_USERNAME/send-ccm-ticket:latest
-```
-
-Push:
-
-```bash
-docker push ghcr.io/YOUR_GITHUB_USERNAME/send-ccm-ticket:latest
-```
-
-## 4A. CI/CD dari Branch Master
-
-Workflow GitHub Actions ada di `.github/workflows/ci-cd.yml`.
-
-Trigger:
-
-- `push` ke branch `master`
-- `pull_request` ke branch `master`
-- manual `workflow_dispatch`
-
-Flow:
-
-1. Install dependency dengan `npm ci`.
-2. Syntax check `node --check index.js`.
-3. Run test `npm test`.
-4. Build Docker image.
-5. Push image ke GitHub Container Registry:
-   - `ghcr.io/<owner>/send-ccm-ticket:<commit_sha>`
-   - `ghcr.io/<owner>/send-ccm-ticket:latest`
-6. Deploy ke VM jika secret VM tersedia.
-
-Repository secrets yang dibutuhkan untuk auto deploy:
-
-- `VM_HOST`: IP/domain VM.
-- `VM_USER`: user SSH di VM.
-- `VM_SSH_KEY`: private key SSH.
-- `VM_PORT`: port SSH, optional. Default `22`.
-- `VM_APP_DIR`: folder app di VM, optional. Default `/opt/send-ccm-ticket`.
-
-Jika secret VM belum diisi, workflow tetap build dan push image, tetapi deploy akan dilewati.
-
-Sebelum merge dari branch development ke `master`:
-
-```bash
-git checkout master
-git pull origin master
-git merge dev
-git push origin master
-```
-
-Jika remote default branch masih `main`, ubah trigger workflow atau rename branch remote ke `master`.
-
-## 5. Setup VM
-
-Install Docker dan Compose plugin di VM, lalu buat folder aplikasi:
-
-```bash
-sudo mkdir -p /opt/send-ccm-ticket
-sudo chown -R $USER:$USER /opt/send-ccm-ticket
-cd /opt/send-ccm-ticket
-```
-
-Buat struktur folder persistent:
-
-```bash
-mkdir -p config sessions data downloads logs
-```
-
-Copy file berikut dari lokal ke VM:
-
-```bash
-scp .env user@SERVER_IP:/opt/send-ccm-ticket/.env
-scp docker-compose.yml user@SERVER_IP:/opt/send-ccm-ticket/docker-compose.yml
-scp -r config/whatsapp.json config/telegram.json user@SERVER_IP:/opt/send-ccm-ticket/config/
-scp -r data/* user@SERVER_IP:/opt/send-ccm-ticket/data/
-```
-
-Jika sudah punya session WhatsApp lokal dan ingin dipindahkan:
-
-```bash
-scp -r sessions/* user@SERVER_IP:/opt/send-ccm-ticket/sessions/
-scp config/whatsapp_sessions.json user@SERVER_IP:/opt/send-ccm-ticket/config/whatsapp_sessions.json
-```
-
-Jika ingin login ulang dari Telegram, session tidak perlu dicopy. Jalankan `/login nomor_hp` dari Telegram setelah container hidup.
-
-## 6. Pull dan Run di VM
-
-Login registry dari VM:
-
-```bash
-echo YOUR_GITHUB_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USERNAME --password-stdin
-```
-
-Set image yang akan dipakai:
-
-```bash
-export APP_IMAGE=ghcr.io/YOUR_GITHUB_USERNAME/send-ccm-ticket:latest
-```
-
-Pull dan jalankan:
-
-```bash
-docker compose pull
 docker compose up -d
 docker compose logs -f ccm-ticket-bot
 ```
 
-Supaya `APP_IMAGE` permanen, tambahkan ke file `.env` di VM:
-
-```env
-APP_IMAGE=ghcr.io/YOUR_GITHUB_USERNAME/send-ccm-ticket:latest
-```
-
-## 7. Update Versi di VM
-
-Setelah push image baru:
+Restart cepat:
 
 ```bash
-cd /opt/send-ccm-ticket
-docker compose pull
-docker compose up -d
-docker compose logs -f ccm-ticket-bot
+docker compose restart ccm-ticket-bot
 ```
 
-Container baru akan tetap memakai folder persistent yang sama.
+## 14. Troubleshooting
 
-## 8. Catatan Path
+Jika `docker` tidak bisa dijalankan:
 
-Semua path aplikasi berjalan relatif dari `/app` di container:
+```text
+permission denied
+```
 
-- `config/whatsapp.json`
-- `config/telegram.json`
-- `config/whatsapp_sessions.json`
-- `sessions/whatsapp`
-- `data/sent_tickets.json`
-- `downloads`
-- `logs`
+Berarti user VM belum punya akses Docker. Ini perlu admin VM yang memperbaiki permission Docker. Dari user terbatas, tidak bisa diselesaikan tanpa bantuan admin.
 
-Karena path tersebut di-mount dari host VM, data tidak hilang saat image/container diganti.
-
-## 9. Troubleshooting
-
-Jika Telegram tidak merespons:
+Jika `docker compose pull` gagal unauthorized:
 
 ```bash
-docker compose logs -f ccm-ticket-bot
+docker login ghcr.io -u USERNAME
 ```
 
-Periksa `.env`:
+Gunakan token dengan permission `read:packages`.
 
-- `TELEGRAM_BOT_TOKEN`
-- `TELEGRAM_ADMIN_CHAT_IDS`
-- `TELEGRAM_ACCESS_CONFIG_PATH=config/telegram.json`
+Jika container langsung restart:
 
-Jika WhatsApp perlu login ulang:
+```bash
+docker compose logs --tail=200 ccm-ticket-bot
+```
 
-1. Jalankan `/sessions` di Telegram.
+Cek biasanya salah satu dari ini:
+
+- `.env` belum berisi `TELEGRAM_BOT_TOKEN`.
+- `config/whatsapp.json` bukan JSON valid.
+- `config/telegram.json` bukan JSON valid.
+- File reference di `data/` belum lengkap.
+
+Jika ingin cek file JSON valid dari VM:
+
+```bash
+docker run --rm -v "$PWD:/app" node:22-bookworm-slim node -e "JSON.parse(require('fs').readFileSync('/app/config/whatsapp.json','utf8')); JSON.parse(require('fs').readFileSync('/app/config/telegram.json','utf8')); console.log('JSON OK')"
+```
+
+Jika WhatsApp tidak connected:
+
+1. Cek `/sessions`.
 2. Jalankan `/login nomor_hp`.
-3. Isi nama session.
-4. Scan QR dari WhatsApp Linked Devices.
+3. Scan QR ulang.
 
-Jika permission folder bermasalah di Linux VM:
+Jika ingin hapus session lokal dari Telegram admin:
 
-```bash
-sudo chown -R 1000:1000 /opt/send-ccm-ticket/config /opt/send-ccm-ticket/sessions /opt/send-ccm-ticket/data /opt/send-ccm-ticket/downloads /opt/send-ccm-ticket/logs
+```text
+/delete_session 1
+```
+
+Lalu login ulang dengan:
+
+```text
+/login nomor_hp
 ```

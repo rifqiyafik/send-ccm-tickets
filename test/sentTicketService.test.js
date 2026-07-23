@@ -88,7 +88,10 @@ test("skips duplicate IN SLA ticket when business status is not ReOpen transitio
 
   assert.equal(plan.sendable_tickets.length, 0);
   assert.equal(plan.duplicate_tickets.length, 1);
-  assert.match(formatSentTicketPlanReport(plan), /Tiket duplicate dilewati: 1/);
+  assert.match(
+    formatSentTicketPlanReport(plan),
+    /Tiket Sudah Pernah Dikirim Hari Ini: 1/,
+  );
   assert.match(formatSentTicketPlanReport(plan), /```\n\+-+/);
 
   context.cleanup();
@@ -191,7 +194,7 @@ test("skips ticket when required message data is empty", async () => {
     "notes",
     "analysis_text",
   ]);
-  assert.match(formatSentTicketPlanReport(plan), /Tiket data kosong dilewati: 1/);
+  assert.match(formatSentTicketPlanReport(plan), /Data Tidak Lengkap: 1/);
 
   context.cleanup();
 });

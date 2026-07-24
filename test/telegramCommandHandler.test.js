@@ -230,6 +230,26 @@ test("allows only Telegram admin to change runtime environment", async () => {
   context.cleanup();
 });
 
+test("shows runtime environment usage when change env argument is missing", async () => {
+  const context = setupTelegramAccessConfig("handler-change-env-usage");
+
+  const { handler, sentMessages, tools } = createMockRuntime();
+  await handler(
+    createTextUpdate({
+      chatId: "999",
+      text: "/change_env",
+    }),
+    tools,
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /Ganti Environment WhatsApp/);
+  assert.match(sentMessages[0].text, /change_env production/);
+  assert.match(sentMessages[0].text, /change_env development/);
+
+  context.cleanup();
+});
+
 test("returns command error message when authorized login fails", async () => {
   const context = setupTelegramAccessConfig("handler-login-error-reply");
   await registerTelegramChat({

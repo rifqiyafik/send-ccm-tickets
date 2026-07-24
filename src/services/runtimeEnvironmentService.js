@@ -200,6 +200,7 @@ export function changeRuntimeEnvironment(env, { updatedBy = "" } = {}) {
       ok: false,
       reason: "UNSUPPORTED_ENV",
       message: `Environment tidak didukung: ${env || "-"}`,
+      supported_environments: getSupportedAppEnvironments(),
     };
   }
 
@@ -222,6 +223,21 @@ export function changeRuntimeEnvironment(env, { updatedBy = "" } = {}) {
     relative_path: validation.relative_path,
     counts: validation.counts,
   };
+}
+
+export function formatEnvironmentChangeUsage() {
+  const active = getActiveAppEnvironment();
+  return [
+    "🌐 **Ganti Environment WhatsApp**",
+    "",
+    `Mode aktif saat ini: **${active.active_env}**`,
+    "",
+    "📌 **Pilihan command:**",
+    "- `/change_env production` → pakai `config/whatsapp.json`",
+    "- `/change_env development` → pakai `config/whatsapp-test.json`",
+    "",
+    "ℹ️ Jalankan `/env` untuk cek config yang sedang aktif.",
+  ].join("\n");
 }
 
 export function formatEnvironmentStatus() {
@@ -266,11 +282,22 @@ export function formatEnvironmentStatus() {
 
 export function formatEnvironmentChangeResult(result) {
   if (!result.ok) {
+    const supported = result.supported_environments?.length
+      ? [
+          "",
+          "📌 **Environment yang tersedia:**",
+          ...result.supported_environments.map((env) => `- \`${env}\``),
+          "",
+          "Contoh: `/change_env development`",
+        ]
+      : [];
+
     return [
       "❌ **Environment tidak diganti**",
       "",
       `Reason: \`${result.reason || "-"}\``,
       `Detail: ${result.message || "-"}`,
+      ...supported,
     ].join("\n");
   }
 

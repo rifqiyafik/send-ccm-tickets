@@ -20,6 +20,7 @@ import { processTicketExcel } from "../services/ticketImportService.js";
 import {
   changeRuntimeEnvironment,
   formatEnvironmentChangeResult,
+  formatEnvironmentChangeUsage,
   formatEnvironmentStatus,
 } from "../services/runtimeEnvironmentService.js";
 
@@ -676,6 +677,15 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
     }
 
     if (command === "/change_env") {
+      if (!argument) {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          formatEnvironmentChangeUsage(),
+        );
+        return;
+      }
+
       const result = changeRuntimeEnvironment(argument, { updatedBy: chatId });
       await sendRichMessage(
         sendMessage,

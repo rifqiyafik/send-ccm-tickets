@@ -70,6 +70,7 @@ npm test
 Detail filterisasi dari awal sampai output ada di:
 
 - `docs/FLOW_FILTERISASI_TIKET.md`
+- `docs/FLOWCHART_SEND_TIKET.md`
 
 ## Struktur Folder
 

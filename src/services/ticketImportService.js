@@ -658,7 +658,9 @@ function buildFallbackNotes(row) {
   const interactionDate = formatFallbackDateTime(
     getFirstRowValue(row, CUSTOMER_INTERACTION_DATE_COLUMNS),
   );
-  const msisdn = cleanTableValue(getFirstRowValue(row, CUSTOMER_MSISDN_COLUMNS));
+  const msisdn = cleanTableValue(
+    getFirstRowValue(row, CUSTOMER_MSISDN_COLUMNS),
+  );
   const complaintDetail = cleanMultilineText(
     getFirstRowValue(row, COMPLAINT_DESCRIPTION_COLUMNS),
   );
@@ -1308,10 +1310,12 @@ function getpreviousProblemAnalysis(ticket) {
   const trimmed =
     stopIndexes.length > 0 ? text.slice(0, Math.min(...stopIndexes)) : text;
 
-  return trimmed
-    .replace(/\s+/g, " ")
-    .replace(/\s+[.,;:]+$/g, "")
-    .trim() || "-";
+  return (
+    trimmed
+      .replace(/\s+/g, " ")
+      .replace(/\s+[.,;:]+$/g, "")
+      .trim() || "-"
+  );
 }
 
 // mengambil nilai Count ReOpen dari kolom Reopen Number(Confirm Close).
@@ -1391,6 +1395,7 @@ function formatSqaReminderMessage(tickets) {
           )} | ${getReminderSiteId(ticket)} | ${getReopenCount(
             ticket,
           )} | ${getpreviousProblemAnalysis(ticket)}*`,
+        "",
       ),
     );
   }
@@ -1421,9 +1426,12 @@ function formatNopReminderMessage(tickets) {
       "*PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen*",
       ...detailTickets.map((ticket, index) => {
         const tag = mentionTags[index];
-        return `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
-          getReminderSiteId(ticket),
-        )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`;
+        return (
+          `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
+            getReminderSiteId(ticket),
+          )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`,
+          ""
+        );
       }),
     );
   }

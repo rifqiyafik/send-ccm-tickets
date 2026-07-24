@@ -1,8 +1,8 @@
 import fs from "fs";
-import path from "path";
 import { createLogger } from "../utils/logger.js";
 import { readJsonObject } from "../utils/jsonFile.js";
 import { normalizeSearchKey } from "../utils/text.js";
+import { resolveWhatsAppConfigPath } from "../services/runtimeEnvironmentService.js";
 
 const logger = createLogger("appConfig");
 
@@ -10,7 +10,7 @@ const normalizeKey = normalizeSearchKey;
 
 // path config dibuat function agar test bisa override tanpa menyentuh config lokal.
 function getConfigPath() {
-  return path.resolve(process.cwd(), process.env.WHATSAPP_CONFIG_PATH || "config/whatsapp.json");
+  return resolveWhatsAppConfigPath();
 }
 
 // membaca config/whatsapp.json; jika belum ada, sistem tetap berjalan dengan config kosong.

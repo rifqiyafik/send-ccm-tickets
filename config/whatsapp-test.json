@@ -1,0 +1,142 @@
+{
+  "authorized_groups": {
+    "Testing Group": {
+      "jid": "120363408099585884@g.us",
+      "label": "Testing TG2WA"
+    }
+  },
+  "authorized_users": {
+    "Rifqi LID": {
+      "jid": "35515252351004@lid",
+      "label": "Rifqi private LID"
+    }
+  },
+  "target_groups": {
+    "MAIN SQA": {
+      "jid": "120363399484296676@g.us",
+      "label": "SQA + HD ( CCM INAP)"
+    },
+    "SQA": {
+      "jid": "62811616636-1557302067@g.us",
+      "label": "CCM-Tiket Complain TC01"
+    },
+    "NOP ACEH": {
+      "jid": "120363043516705393@g.us",
+      "label": "Network Operations and Productivity Aceh"
+    },
+    "NOP BINJAI": {
+      "jid": "120363047585007577@g.us",
+      "label": "Network Operations and Productivity Binjai"
+    },
+    "NOP MEDAN": {
+      "jid": "120363044721412872@g.us",
+      "label": "Network Operations and Productivity Medan"
+    },
+    "NOP PEMATANG SIANTAR": {
+      "jid": "120363027788914607@g.us",
+      "label": "Network Operations and Productivity Pematangsiantar"
+    },
+    "NOP RANTAU PRAPAT": {
+      "jid": "120363041486751739@g.us",
+      "label": "Network Operations and Productivity Rantau Prapat"
+    },
+    "NOP PADANG SIDEMPUAN": {
+      "jid": "120363029098307479@g.us",
+      "label": "Network Operations and Productivity Padang Sidempuan"
+    }
+  },
+  "mentions": {
+    "Ferry": {
+      "jid": "628116404890@s.whatsapp.net",
+      "label": "Bg Ferry CCM"
+    },
+    "Budi Harahap": {
+      "jid": "6281367156067@s.whatsapp.net",
+      "label": "Bg Budi Harahap CCM"
+    },
+    "Herman": {
+      "jid": "62811704400@s.whatsapp.net",
+      "label": "Bg Herman PIC SQA Telkomsel"
+    },
+    "Fernando Pasaribu": {
+      "jid": "628126099949@s.whatsapp.net",
+      "label": "Bg Fernando PIC SQA Telkomsel"
+    },
+    "Ahsan": {
+      "jid": "628111990334@s.whatsapp.net",
+      "label": "Bg Ahsan PIC SQA Telkomsel"
+    },
+    "Ahmad Faisal": {
+      "jid": "62811670020@s.whatsapp.net",
+      "label": "Bg Ahmad Faisal NS Aceh"
+    },
+    "Try Rizky Darmawansyah": {
+      "jid": "628119295270@s.whatsapp.net",
+      "label": "Bg Try Rizky Darmawansyah NS Aceh"
+    },
+    "Ikhsan Purnomo": {
+      "jid": "628111689290@s.whatsapp.net",
+      "label": "Bg Ikhsan Purnomo NS Aceh"
+    },
+    "Ruli Mahendra": {
+      "jid": "628119934673@s.whatsapp.net",
+      "label": "Bg Ruli Mahendra NS Aceh"
+    },
+    "Irwan Saleh Siregar": {
+      "jid": "628116289026@s.whatsapp.net",
+      "label": "Bg Irwan Saleh Siregar NS Aceh"
+    },
+    "Dean RM Simamora": {
+      "jid": "62811616461@s.whatsapp.net",
+      "label": "Bg Dean RM Simamora NS Binjai"
+    },
+    "Rizlul Khairi": {
+      "jid": "62811613331@s.whatsapp.net",
+      "label": "Bg Rizlul Khairi NS Binjai"
+    },
+    "Jonthala MK Tambunan": {
+      "jid": "628118119593@s.whatsapp.net",
+      "label": "Bg Jonthala MK Tambunan NS Binjai"
+    },
+    "Adi Saputra Piliang": {
+      "jid": "62811684242@s.whatsapp.net",
+      "label": "Bg Adi Saputra Piliang NS Medan"
+    },
+    "Rachmad S Siregar": {
+      "jid": "628127570123@s.whatsapp.net",
+      "label": "Bg Rachmad S Siregar NS Medan"
+    },
+    "Gioputu Pandhita": {
+      "jid": "628111996016@s.whatsapp.net",
+      "label": "Bg Gioputu Pandhita NS PSP"
+    },
+    "Deni Destian Harahap": {
+      "jid": "628111882148@s.whatsapp.net",
+      "label": "Bg Deni Destian Harahap NS PSP"
+    },
+    "Abel Bima Wiratama": {
+      "jid": "6281110117926@s.whatsapp.net",
+      "label": "Bg Abel Bima Wiratama NS PSP"
+    },
+    "Ray P Tarigan": {
+      "jid": "628118383861@s.whatsapp.net",
+      "label": "Bg Ray P Tarigan NS PMS"
+    },
+    "Royza Iqbal Zaini": {
+      "jid": "62811645600@s.whatsapp.net",
+      "label": "Bg Royza Iqbal Zaini NS PMS"
+    },
+    "Ivan Setiawan Situmorang": {
+      "jid": "628118035451@s.whatsapp.net",
+      "label": "Bg Ivan Setiawan Situmorang NS PMS"
+    },
+    "Edy Syofra Nasution": {
+      "jid": "62811705001@s.whatsapp.net",
+      "label": "Bg Edy Syofra Nasution NS RAP"
+    },
+    "Nasrul Amin S": {
+      "jid": "62811779182@s.whatsapp.net",
+      "label": "Bg Nasrul Amin S NS RAP"
+    }
+  }
+}

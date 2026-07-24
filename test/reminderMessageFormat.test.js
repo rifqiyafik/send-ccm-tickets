@@ -179,3 +179,29 @@ test("omits NOP ReOpen detail table when there are no ReOpen details", () => {
   );
   assert.deepEqual(payload.mentions, []);
 });
+
+test("omits NOP ReOpen detail row when remark is empty", () => {
+  const context = setupReminderConfig();
+  const payload = formatReminderMessagePayload([
+    {
+      assignment_type: "NOP",
+      sla_status: "OUT SLA",
+      cluster_area: "NOP ACEH",
+      order_id: "CC-20260723-00000350",
+      site_id: "MBO155",
+      reopen_number: "1",
+      problem_analysis: "-",
+      pic_nop: "Jonthala MK Tambunan",
+    },
+  ]);
+
+  assert.match(payload.text, /ACEH \| 1 \| 0 \| 1/);
+  assert.doesNotMatch(
+    payload.text,
+    /PIC NOP \| Nomor Ticket \| Site ID \| Count ReOpen \| Remark ReOpen/,
+  );
+  assert.doesNotMatch(payload.text, /CC-20260723-00000350/);
+  assert.deepEqual(payload.mentions, []);
+
+  context.cleanup();
+});

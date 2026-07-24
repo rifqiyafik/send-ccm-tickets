@@ -50,7 +50,36 @@ export const REQUIRED_COLUMNS = [
 const CCH_SUGGESTION_COLUMN = "CCH Suggestion(L1 Assign_cch_suggestion)";
 const DESCRIPTION_COLUMN =
   "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)";
+const PROBLEM_START_TIME_COLUMNS = [
+  "Problem Start Time",
+  "Problem Start Time(Create Ticket_problem_start_time)",
+];
+const CUSTOMER_INTERACTION_DATE_COLUMNS = [
+  "Customer Interaction Date",
+  "Customer Interaction Date(Create Ticket_customer_interaction_date)",
+];
+const CUSTOMER_MSISDN_COLUMNS = [
+  "Customer MSISDN(Create Ticket_customer_msisdn)",
+  "Customer MSISDN",
+];
+const VILLAGE_COLUMNS = [
+  "Desa/Kelurahan(Create Ticket)",
+  "Desa/Kelurahan",
+  "Kelurahan(Create Ticket)",
+  "Kelurahan",
+];
+const DISTRICT_COLUMNS = [
+  "kecamatan(Create Ticket)",
+  "Kecamatan(Create Ticket)",
+  "kecamatan",
+  "Kecamatan",
+];
+const COMPLAINT_DESCRIPTION_COLUMNS = [
+  "Description",
+  "Description(Create Ticket_description)",
+];
 const PROBLEM_ANALYSIS_COLUMN = "Problem Analysis";
+const PROBLEM_ANALYSIS_NSH_COLUMN = "Problem Analysis NSH";
 const REOPEN_NUMBER_COLUMN = "Reopen Number(Confirm Close)";
 const REOPEN_FILLED_CHECK_COLUMNS = [
   "Assign Personal(L2 Assign)",
@@ -516,15 +545,40 @@ function calculateSla(createTime, now = new Date()) {
   };
 }
 
-// mendeteksi CCH Suggestion kosong/null agar bisa fallback ke Problem Analysis NSH.
-function isEmptyCchSuggestion(value) {
+function getFirstRowValue(row, columns) {
+  for (const column of columns) {
+    if (Object.prototype.hasOwnProperty.call(row, column)) {
+      const value = row[column];
+      if (cleanTableValue(value) !== "-") {
+        return value;
+      }
+    }
+  }
+
+  return "";
+}
+
+function createFallbackResolution(field, source, missingFields = []) {
+  return {
+    field,
+    source,
+    missing_fields: missingFields,
+  };
+}
+
+// mendeteksi CCH Suggestion kosong/null/invalid agar bisa fallback ke Problem Analysis NSH.
+function isInvalidAnalysisText(value) {
   const text = String(value ?? "").trim();
   const normalized = text.toLowerCase().replace(/\s+/g, " ");
 
   return (
     !text ||
+    text === "-" ||
     normalized === "null" ||
     (normalized.includes("no matched data is found") &&
+      normalized.includes("suggestion: null") &&
+      normalized.includes("other: null")) ||
+    (normalized.includes("cause: the root cause is not found") &&
       normalized.includes("suggestion: null") &&
       normalized.includes("other: null"))
   );
@@ -533,17 +587,138 @@ function isEmptyCchSuggestion(value) {
 // memilih teks analisis untuk pesan, prioritas CCH Suggestion lalu fallback Problem Analysis NSH.
 function getAnalysisText(row) {
   const cchSuggestion = row[CCH_SUGGESTION_COLUMN];
-  if (!isEmptyCchSuggestion(cchSuggestion)) {
+  if (!isInvalidAnalysisText(cchSuggestion)) {
     logger.debug("Using CCH Suggestion as analysis text", {
       orderId: row["Order ID"],
     });
-    return cleanMultilineText(cchSuggestion);
+    return {
+      text: cleanMultilineText(cchSuggestion),
+      fallback: null,
+    };
   }
 
-  logger.debug("Using Problem Analysis NSH as analysis fallback", {
+  const fallbackText = cleanMultilineText(row[PROBLEM_ANALYSIS_NSH_COLUMN]);
+  if (isInvalidAnalysisText(fallbackText)) {
+    logger.warn("Analysis text fallback is unavailable", {
+      orderId: row["Order ID"],
+      cchSuggestion: cleanTableValue(cchSuggestion),
+    });
+    return {
+      text: "",
+      fallback: null,
+    };
+  }
+
+  logger.info("Analysis text fallback used from Problem Analysis NSH", {
     orderId: row["Order ID"],
   });
-  return cleanMultilineText(row["Problem Analysis NSH"]);
+  return {
+    text: fallbackText,
+    fallback: createFallbackResolution(
+      "analysis_text",
+      PROBLEM_ANALYSIS_NSH_COLUMN,
+    ),
+  };
+}
+
+function formatFallbackDateTime(value) {
+  return formatDateTimeValue(value, cleanTableValue(value));
+}
+
+function buildFallbackAddress(row) {
+  const village = cleanTableValue(getFirstRowValue(row, VILLAGE_COLUMNS));
+  const district = cleanTableValue(getFirstRowValue(row, DISTRICT_COLUMNS));
+  const city = cleanTableValue(row[CITY_COLUMN]);
+  const parts = [];
+
+  if (village !== "-") {
+    parts.push(`Kelurahan ${village}`);
+  }
+  if (district !== "-") {
+    parts.push(`Kecamatan ${district}`);
+  }
+  if (city !== "-") {
+    parts.push(`Kabupaten/Kota ${city}`);
+  }
+
+  return {
+    text: parts.join(", "),
+    missing_fields: [
+      village === "-" ? VILLAGE_COLUMNS[0] : "",
+      district === "-" ? DISTRICT_COLUMNS[0] : "",
+      city === "-" ? CITY_COLUMN : "",
+    ].filter(Boolean),
+  };
+}
+
+function buildFallbackNotes(row) {
+  const problemStartTime = formatFallbackDateTime(
+    getFirstRowValue(row, PROBLEM_START_TIME_COLUMNS),
+  );
+  const interactionDate = formatFallbackDateTime(
+    getFirstRowValue(row, CUSTOMER_INTERACTION_DATE_COLUMNS),
+  );
+  const msisdn = cleanTableValue(getFirstRowValue(row, CUSTOMER_MSISDN_COLUMNS));
+  const complaintDetail = cleanMultilineText(
+    getFirstRowValue(row, COMPLAINT_DESCRIPTION_COLUMNS),
+  );
+  const address = buildFallbackAddress(row);
+  const missingFields = [
+    problemStartTime === "-" ? PROBLEM_START_TIME_COLUMNS[0] : "",
+    interactionDate === "-" ? CUSTOMER_INTERACTION_DATE_COLUMNS[0] : "",
+    msisdn === "-" ? CUSTOMER_MSISDN_COLUMNS[0] : "",
+    ...address.missing_fields,
+    !complaintDetail ? COMPLAINT_DESCRIPTION_COLUMNS[0] : "",
+  ].filter(Boolean);
+  const lines = [
+    `Problem Start Time : ${problemStartTime}`,
+    `Customer Interaction Date : ${interactionDate}`,
+    `Customer MSISDN : ${msisdn}`,
+    `Alamat : ${address.text || "-"}`,
+    `Complaint Detail : ${complaintDetail || "-"}`,
+  ];
+  const hasUsefulValue = lines.some((line) => !line.endsWith(": -"));
+
+  if (!hasUsefulValue) {
+    logger.warn("Notes fallback is unavailable", {
+      orderId: row["Order ID"],
+      missingFields,
+    });
+    return {
+      text: "",
+      fallback: null,
+    };
+  }
+
+  logger.info("Notes fallback generated from ticket columns", {
+    orderId: row["Order ID"],
+    missingFields,
+  });
+
+  return {
+    text: lines.join("\n"),
+    fallback: createFallbackResolution(
+      "notes",
+      "Problem Start Time, Customer Interaction Date, Customer MSISDN, Address, Description",
+      missingFields,
+    ),
+  };
+}
+
+function getNotesText(row) {
+  const notes = cleanMultilineText(row[DESCRIPTION_COLUMN]);
+  if (notes) {
+    return {
+      text: notes,
+      fallback: null,
+    };
+  }
+
+  return buildFallbackNotes(row);
+}
+
+function createTicketFallbackMetadata(...fallbacks) {
+  return fallbacks.filter(Boolean);
 }
 
 // mendeteksi nilai cell benar-benar terisi untuk rule ReOpen; null/string kosong/tanda "-" dianggap kosong.
@@ -591,6 +766,8 @@ function normalizeTicket(row, picResult, siteResolution) {
   const isSqa = assignmentType === "SQA";
   const isNop = assignmentType === "NOP";
   const reopenRule = resolveReopenMessageRule(row);
+  const notesResult = getNotesText(row);
+  const analysisResult = getAnalysisText(row);
 
   const ticket = {
     order_id: row["Order ID"],
@@ -614,10 +791,14 @@ function normalizeTicket(row, picResult, siteResolution) {
     pic: picResult.pic,
     pic_sqa: isSqa ? picResult.pic_sqa : "",
     pic_nop: isNop ? picResult.pic_nop : "",
-    msisdn: row["Customer MSISDN(Create Ticket_customer_msisdn)"],
-    notes: cleanMultilineText(row[DESCRIPTION_COLUMN]),
-    analysis_text: getAnalysisText(row),
+    msisdn: getFirstRowValue(row, CUSTOMER_MSISDN_COLUMNS),
+    notes: notesResult.text,
+    analysis_text: analysisResult.text,
     problem_analysis: cleanMultilineText(row[PROBLEM_ANALYSIS_COLUMN]),
+    fallback_resolutions: createTicketFallbackMetadata(
+      notesResult.fallback,
+      analysisResult.fallback,
+    ),
     use_reopen_message_format: reopenRule.enabled,
     reopen_number: reopenRule.reopen_number,
     reopen_filled_columns: reopenRule.filled_columns,
@@ -812,6 +993,7 @@ export async function processTicketExcel(buffer) {
       use_reopen_message_format: ticket.use_reopen_message_format,
       reopen_number: ticket.reopen_number,
       reopen_filled_columns: ticket.reopen_filled_columns,
+      fallback_resolutions: ticket.fallback_resolutions,
     });
   }
 
@@ -1070,15 +1252,6 @@ function summarizeSla(tickets) {
   );
 }
 
-// mengambil tiket yang punya informasi ReOpen untuk ditampilkan pada tabel remark reminder.
-function getReopenReminderTickets(tickets) {
-  return tickets.filter(
-    (ticket) =>
-      cleanTableValue(ticket.reopen_number) !== "-" ||
-      cleanMultilineText(ticket.problem_analysis),
-  );
-}
-
 // membuat nama pendek NOP seperti BJI dari cluster area/NOP asal tiket.
 function getNopReminderName(tickets) {
   const firstTicket = tickets[0] || {};
@@ -1171,6 +1344,31 @@ function getReminderSiteId(ticket) {
   );
 }
 
+function hasRequiredReminderDetailData(ticket) {
+  return [
+    cleanTableValue(ticket.order_id),
+    getReminderSiteId(ticket),
+    getReopenCount(ticket),
+    getpreviousProblemAnalysis(ticket),
+  ].every((value) => value && value !== "-");
+}
+
+function hasRequiredNopReminderDetailData(ticket) {
+  return (
+    hasRequiredReminderDetailData(ticket) &&
+    cleanTableValue(ticket.pic_nop) !== "-"
+  );
+}
+
+// mengambil tiket ReOpen yang punya data lengkap untuk ditampilkan pada tabel remark reminder.
+function getReopenReminderTickets(tickets, { requirePicNop = false } = {}) {
+  return tickets.filter((ticket) =>
+    requirePicNop
+      ? hasRequiredNopReminderDetailData(ticket)
+      : hasRequiredReminderDetailData(ticket),
+  );
+}
+
 // membuat teks reminder untuk grup SQA sebelum detail tiket dikirim.
 function formatSqaReminderMessage(tickets) {
   const summary = summarizeSla(tickets);
@@ -1204,7 +1402,9 @@ function formatSqaReminderMessage(tickets) {
 function formatNopReminderMessage(tickets) {
   const summary = summarizeSla(tickets);
   const nopName = getNopReminderName(tickets);
-  const detailTickets = getReopenReminderTickets(tickets);
+  const detailTickets = getReopenReminderTickets(tickets, {
+    requirePicNop: true,
+  });
   const mentionTags = detailTickets.map((ticket) =>
     resolveMentionTag(ticket.pic_nop),
   );
@@ -1223,7 +1423,7 @@ function formatNopReminderMessage(tickets) {
         const tag = mentionTags[index];
         return `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
           getReminderSiteId(ticket),
-        )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}`;
+        )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`;
       }),
     );
   }

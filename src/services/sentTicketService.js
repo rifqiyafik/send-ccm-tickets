@@ -71,47 +71,78 @@ function resolveSqaFollowUpDepartment(ticket) {
     : cleanTableValue(ticket.nsa || "UNKNOWN");
 }
 
-function createOrderIdCodeTable(tickets) {
-  const orderIds = tickets.map((ticket) => cleanTableValue(ticket.order_id));
-  const width = Math.max(
-    "Order ID".length,
-    ...orderIds.map((orderId) => orderId.length),
+function createCodeTable(columns, rows) {
+  const normalizedRows = rows.map((row) =>
+    Object.fromEntries(
+      columns.map((column) => [
+        column.key,
+        cleanTableValue(row[column.key]),
+      ]),
+    ),
   );
-  const border = `+${"-".repeat(width + 2)}+`;
-  const header = `| ${"Order ID".padEnd(width)} |`;
-  const rows = orderIds.map((orderId) => `| ${orderId.padEnd(width)} |`);
-
-  return ["```", border, header, border, ...rows, border, "```"].join("\n");
-}
-
-function createInvalidMessageDataCodeTable(tickets) {
-  const rows = tickets.map((ticket) => ({
-    orderId: cleanTableValue(ticket.order_id),
-    missingData: cleanTableValue((ticket.missing_fields || []).join(", ")),
-  }));
-  const orderWidth = Math.max(
-    "Order ID".length,
-    ...rows.map((row) => row.orderId.length),
+  const widths = Object.fromEntries(
+    columns.map((column) => [
+      column.key,
+      Math.max(
+        column.header.length,
+        ...normalizedRows.map((row) => row[column.key].length),
+      ),
+    ]),
   );
-  const missingWidth = Math.max(
-    "Missing Data".length,
-    ...rows.map((row) => row.missingData.length),
-  );
-  const border = `+${"-".repeat(orderWidth + 2)}+${"-".repeat(
-    missingWidth + 2,
-  )}+`;
-  const header = `| ${"Order ID".padEnd(orderWidth)} | ${"Missing Data".padEnd(
-    missingWidth,
-  )} |`;
-  const tableRows = rows.map(
+  const border = `+${columns
+    .map((column) => "-".repeat(widths[column.key] + 2))
+    .join("+")}+`;
+  const header = `| ${columns
+    .map((column) => column.header.padEnd(widths[column.key]))
+    .join(" | ")} |`;
+  const tableRows = normalizedRows.map(
     (row) =>
-      `| ${row.orderId.padEnd(orderWidth)} | ${row.missingData.padEnd(
-        missingWidth,
-      )} |`,
+      `| ${columns
+        .map((column) => row[column.key].padEnd(widths[column.key]))
+        .join(" | ")} |`,
   );
 
   return ["```", border, header, border, ...tableRows, border, "```"].join(
     "\n",
+  );
+}
+
+function createOrderIdCodeTable(tickets) {
+  return createCodeTable(
+    [{ key: "orderId", header: "Order ID" }],
+    tickets.map((ticket) => ({ orderId: ticket.order_id })),
+  );
+}
+
+function createInvalidMessageDataCodeTable(tickets) {
+  return createCodeTable(
+    [
+      { key: "orderId", header: "Order ID" },
+      { key: "missingData", header: "Missing Data" },
+    ],
+    tickets.map((ticket) => ({
+      orderId: ticket.order_id,
+      missingData: (ticket.missing_fields || []).join(", "),
+    })),
+  );
+}
+
+function createResolvedFallbackDataCodeTable(tickets) {
+  return createCodeTable(
+    [
+      { key: "orderId", header: "Order ID" },
+      { key: "field", header: "Field" },
+      { key: "fallback", header: "Fallback" },
+      { key: "missing", header: "Field Kosong Fallback" },
+    ],
+    tickets.flatMap((ticket) =>
+      (ticket.fallback_resolutions || []).map((resolution) => ({
+        orderId: ticket.order_id,
+        field: resolution.field,
+        fallback: resolution.source,
+        missing: (resolution.missing_fields || []).join(", "),
+      })),
+    ),
   );
 }
 
@@ -374,6 +405,9 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     out_sla_tickets: outSlaTickets,
     reopened_tickets: reopenedTickets,
     invalid_message_tickets: invalidMessageTickets,
+    fallback_resolved_tickets: sendableTickets.filter(
+      (ticket) => (ticket.fallback_resolutions || []).length > 0,
+    ),
     retention_days: getRetentionDays(),
     sent_date: today,
   };
@@ -385,6 +419,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     outSla: outSlaTickets.length,
     reopened: reopenedTickets.length,
     invalidMessageData: invalidMessageTickets.length,
+    fallbackResolved: plan.fallback_resolved_tickets.length,
     sentDate: today,
     retentionDays: plan.retention_days,
   });
@@ -428,6 +463,7 @@ export async function markTicketAsSent(ticket, metadata = {}) {
 
 export function formatSentTicketPlanReport(plan) {
   const invalidMessageTickets = plan.invalid_message_tickets || [];
+  const fallbackResolvedTickets = plan.fallback_resolved_tickets || [];
   const newTicketCount = Math.max(
     0,
     plan.sendable_tickets.length -
@@ -440,7 +476,8 @@ export function formatSentTicketPlanReport(plan) {
     `🆕 Tiket Baru Terkirim: ${newTicketCount}`,
     `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
     `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,
-    `⚠️ Data Tidak Lengkap: ${invalidMessageTickets.length}`,
+    `🟡 Data Tidak Lengkap yang Dikirim: ${fallbackResolvedTickets.length}`,
+    `🔴 Data Tidak Lengkap Butuh Bantuan: ${invalidMessageTickets.length}`,
     `♻️ Tiket ReOpen dikirim ulang: ${plan.reopened_tickets.length}`,
     `🗄️ Retensi Data Lokal: ${plan.retention_days} hari`,
   ];
@@ -463,10 +500,19 @@ export function formatSentTicketPlanReport(plan) {
     );
   }
 
+  if (fallbackResolvedTickets.length > 0) {
+    reportLines.push(
+      "",
+      "🟡 Data Tidak Lengkap yang Dikirim:",
+      "",
+      createResolvedFallbackDataCodeTable(fallbackResolvedTickets),
+    );
+  }
+
   if (invalidMessageTickets.length > 0) {
     reportLines.push(
       "",
-      "⚠️ Tiket dengan Data Tidak Lengkap:",
+      "🔴 Data Tidak Lengkap Butuh Bantuan:",
       "",
       createInvalidMessageDataCodeTable(invalidMessageTickets),
     );

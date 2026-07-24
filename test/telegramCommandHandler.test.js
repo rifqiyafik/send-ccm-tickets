@@ -8,15 +8,22 @@ import { registerTelegramChat } from "../src/services/telegramAccessService.js";
 
 function setupTelegramAccessConfig(name) {
   const configPath = path.join("tmp", `${name}-telegram-access.json`);
+  const runtimeEnvPath = path.join("tmp", `${name}-runtime-env.json`);
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.rmSync(configPath, { force: true });
+  fs.rmSync(runtimeEnvPath, { force: true });
   process.env.TELEGRAM_ACCESS_CONFIG_PATH = configPath;
+  process.env.APP_RUNTIME_ENV_PATH = runtimeEnvPath;
+  delete process.env.WHATSAPP_CONFIG_PATH;
 
   return {
     configPath,
     cleanup() {
       fs.rmSync(configPath, { force: true });
+      fs.rmSync(runtimeEnvPath, { force: true });
       delete process.env.TELEGRAM_ACCESS_CONFIG_PATH;
+      delete process.env.APP_RUNTIME_ENV_PATH;
+      delete process.env.WHATSAPP_CONFIG_PATH;
     },
   };
 }
@@ -161,6 +168,64 @@ test("keeps logout admin-only for authorized Telegram chat", async () => {
   assert.equal(sentMessages.length, 1);
   assert.match(sentMessages[0].text, /hanya untuk admin/i);
   assert.doesNotMatch(sentMessages[0].text, /logout called/);
+
+  context.cleanup();
+});
+
+test("allows authorized Telegram chat to inspect active environment", async () => {
+  const context = setupTelegramAccessConfig("handler-env-status");
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const { handler, sentMessages, tools } = createMockRuntime();
+  await handler(
+    createTextUpdate({
+      chatId: "123456789",
+      text: "/env",
+    }),
+    tools,
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /Environment Aktif/);
+  assert.match(sentMessages[0].text, /whatsapp\.json/);
+
+  context.cleanup();
+});
+
+test("allows only Telegram admin to change runtime environment", async () => {
+  const context = setupTelegramAccessConfig("handler-change-env-admin-only");
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const { handler, sentMessages, tools } = createMockRuntime();
+  await handler(
+    createTextUpdate({
+      chatId: "123456789",
+      text: "/change_env development",
+    }),
+    tools,
+  );
+  await handler(
+    createTextUpdate({
+      chatId: "999",
+      text: "/change_env development",
+    }),
+    tools,
+  );
+
+  assert.equal(sentMessages.length, 2);
+  assert.match(sentMessages[0].text, /hanya untuk admin/i);
+  assert.match(sentMessages[1].text, /Environment berhasil diganti/);
+  assert.match(sentMessages[1].text, /development/);
 
   context.cleanup();
 });

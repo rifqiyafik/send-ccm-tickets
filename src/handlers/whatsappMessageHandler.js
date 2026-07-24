@@ -652,22 +652,27 @@ function groupTicketsForSummaryReminder(tickets) {
 }
 
 async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
-  const groups = groupTicketsForSummaryReminder(tickets);
-  logger.info("Sending .summary reminder messages to source", {
+  const groupsByTarget = await groupTicketsByTarget(sock, sourceJid, tickets);
+  logger.info("Sending .summary reminder messages to WhatsApp target groups", {
     sourceJid,
-    reminderGroups: groups.size,
+    targetGroups: groupsByTarget.size,
     tickets: tickets.length,
   });
 
-  for (const [groupKey, groupTickets] of groups.entries()) {
-    const payload = formatReminderMessagePayload(groupTickets);
-    logger.info("Sending .summary reminder message", {
-      sourceJid,
-      groupKey,
-      tickets: groupTickets.length,
-      assignmentType: groupTickets[0]?.assignment_type,
-    });
-    await sock.sendMessage(sourceJid, payload);
+  for (const [targetJid, targetTickets] of groupsByTarget.entries()) {
+    const reminderGroups = groupTicketsForSummaryReminder(targetTickets);
+
+    for (const [groupKey, groupTickets] of reminderGroups.entries()) {
+      const payload = formatReminderMessagePayload(groupTickets);
+      logger.info("Sending .summary reminder message to target group", {
+        sourceJid,
+        targetJid,
+        groupKey,
+        tickets: groupTickets.length,
+        assignmentType: groupTickets[0]?.assignment_type,
+      });
+      await sock.sendMessage(targetJid, payload);
+    }
   }
 }
 

@@ -17,6 +17,11 @@ import {
   sendImportResult,
 } from "./whatsappMessageHandler.js";
 import { processTicketExcel } from "../services/ticketImportService.js";
+import {
+  changeRuntimeEnvironment,
+  formatEnvironmentChangeResult,
+  formatEnvironmentStatus,
+} from "../services/runtimeEnvironmentService.js";
 
 const logger = createLogger("telegramCommandHandler");
 const TELEGRAM_SOURCE_PREFIX = "telegram:";
@@ -168,7 +173,9 @@ function detectTelegramChatType(chatId) {
 }
 
 function isAdminOnlyCommand(command) {
-  return ["/logout", "/delete_session", "/whitelist"].includes(command);
+  return ["/logout", "/delete_session", "/whitelist", "/change_env"].includes(
+    command,
+  );
 }
 
 function isAdminOnlyRegisterCommand(command, argument) {
@@ -185,6 +192,7 @@ function formatHelp() {
     "- `/start` → Mulai bot",
     "- `/help` → Lihat panduan",
     "- `/status` → Cek status koneksi",
+    "- `/env` → Cek environment dan config WhatsApp aktif",
     "- `/register` → Request whitelist chat/group Telegram",
     "",
     "### 🔐 Session Management",
@@ -203,6 +211,8 @@ function formatHelp() {
     "- `/private [keyword]` → Lihat daftar private chat aktif",
     "- `/register <chat_id> [label]` → Admin approve whitelist Telegram",
     "- `/whitelist` → Admin lihat whitelist Telegram",
+    "- `/change_env production` → Admin pakai config production",
+    "- `/change_env development` → Admin pakai config testing/development",
     "",
     "---",
     "📝 **Notes:**",
@@ -212,6 +222,8 @@ function formatHelp() {
     "- `/groups` dan `/private` membaca index dari session WhatsApp aktif.",
     "- File Excel Telegram hanya boleh dikirim dari group/private Telegram yang sudah whitelist.",
     "- File Excel WhatsApp tetap mengikuti whitelist WhatsApp.",
+    "- Environment `production` memakai `config/whatsapp.json`.",
+    "- Environment `development` memakai `config/whatsapp-test.json`.",
   ].join("\n");
 }
 
@@ -654,6 +666,21 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         sendMessage,
         chatId,
         formatRegisteredTelegramChatsList(await listAuthorizedTelegramChats()),
+      );
+      return;
+    }
+
+    if (command === "/env") {
+      await sendRichMessage(sendMessage, chatId, formatEnvironmentStatus());
+      return;
+    }
+
+    if (command === "/change_env") {
+      const result = changeRuntimeEnvironment(argument, { updatedBy: chatId });
+      await sendRichMessage(
+        sendMessage,
+        chatId,
+        formatEnvironmentChangeResult(result),
       );
       return;
     }

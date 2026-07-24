@@ -194,7 +194,46 @@ test("skips ticket when required message data is empty", async () => {
     "notes",
     "analysis_text",
   ]);
-  assert.match(formatSentTicketPlanReport(plan), /Data Tidak Lengkap: 1/);
+  assert.match(
+    formatSentTicketPlanReport(plan),
+    /Data Tidak Lengkap Butuh Bantuan: 1/,
+  );
+
+  context.cleanup();
+});
+
+test("reports incomplete data that was resolved by fallback and still sent", async () => {
+  const context = setupStore("fallback-resolved-ticket");
+
+  const plan = await createSentTicketPlan([
+    ticket({
+      notes:
+        "Problem Start Time : 2026-07-23 03:21:18\nComplaint Detail : Keluhan",
+      analysis_text: "Problem Analysis NSH fallback",
+      fallback_resolutions: [
+        {
+          field: "notes",
+          source: "Problem Start Time, Customer Interaction Date, Customer MSISDN, Address, Description",
+          missing_fields: [],
+        },
+        {
+          field: "analysis_text",
+          source: "Problem Analysis NSH",
+          missing_fields: [],
+        },
+      ],
+    }),
+  ]);
+
+  const report = formatSentTicketPlanReport(plan);
+
+  assert.equal(plan.sendable_tickets.length, 1);
+  assert.equal(plan.invalid_message_tickets.length, 0);
+  assert.equal(plan.fallback_resolved_tickets.length, 1);
+  assert.match(report, /Data Tidak Lengkap yang Dikirim: 1/);
+  assert.match(report, /CC-1/);
+  assert.match(report, /notes/);
+  assert.match(report, /analysis_text/);
 
   context.cleanup();
 });

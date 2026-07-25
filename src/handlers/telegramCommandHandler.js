@@ -109,6 +109,7 @@ function isSupportedTelegramExcelFile(document) {
 }
 
 function createTelegramWhatsAppAdapter({
+  ensureWhatsAppReady,
   getWhatsAppSocket,
   sourceChatId,
   sendDocument,
@@ -141,7 +142,8 @@ function createTelegramWhatsAppAdapter({
         return;
       }
 
-      const whatsappSock = getWhatsAppSocket?.();
+      const whatsappSock =
+        (await ensureWhatsAppReady?.()) || getWhatsAppSocket?.();
       if (!whatsappSock?.sendMessage) {
         throw new Error("WhatsApp session belum aktif. Jalankan /login dulu.");
       }
@@ -162,7 +164,9 @@ function createTelegramWhatsAppAdapter({
         );
         await wait(1500);
 
-        const latestSock = getWhatsAppSocket?.();
+        const latestSock =
+          (await ensureWhatsAppReady?.({ forceRecover: true })) ||
+          getWhatsAppSocket?.();
         if (!latestSock?.sendMessage || latestSock === whatsappSock) {
           throw error;
         }
@@ -438,11 +442,13 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
 
-      const whatsappSock = whatsappSession.getSocket();
-      if (!whatsappSock?.sendMessage) {
-        logger.warn("Telegram Excel rejected: WhatsApp session is not active", {
+      try {
+        await whatsappSession.ensureReady(chatId);
+      } catch (error) {
+        logger.warn("Telegram Excel rejected: WhatsApp session is not ready", {
           chatId,
           fileName: document.file_name,
+          message: error.message,
         });
         await sendRichMessage(
           sendMessage,
@@ -503,6 +509,8 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         });
 
         const adapter = createTelegramWhatsAppAdapter({
+          ensureWhatsAppReady: (options) =>
+            whatsappSession.ensureReady(chatId, options),
           getWhatsAppSocket: () => whatsappSession.getSocket(),
           sourceChatId: chatId,
           sendDocument,

@@ -1374,6 +1374,7 @@ export async function startBot(options = {}) {
     },
   };
   activeController = controller;
+  options.onControllerUpdate?.(controller);
 
   sock.ev.on("creds.update", saveCreds);
   bindCommandIndexEvents(sock);

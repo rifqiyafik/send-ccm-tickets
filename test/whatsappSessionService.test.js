@@ -26,7 +26,7 @@ function setupContext(name) {
 }
 
 function createMockStartBot(events) {
-  return async ({ authDir }) => {
+  return async ({ authDir, onConnectionUpdate, onControllerUpdate }) => {
     const controller = {
       sock: {
         sendMessage: async () => {},
@@ -50,6 +50,8 @@ function createMockStartBot(events) {
     };
 
     events.push({ type: "start", authDir });
+    onControllerUpdate?.(controller);
+    await onConnectionUpdate?.({ connection: "open" });
     return controller;
   };
 }
@@ -133,6 +135,30 @@ test("stops active WhatsApp session before starting confirmed switch target", as
   assert.match(result, /Session lama dimatikan: \*\*Rifqi Yafik\*\*/);
   assert.match(result, /Session baru: \*\*Budi\*\*/);
   assert.equal(service.getStatus().active_session.phone, "6281111111111");
+
+  context.cleanup();
+});
+
+test("force recovers WhatsApp session when socket send detects closed connection", async () => {
+  const { context, events, service } = await createServiceWithSessions(
+    "whatsapp-session-force-recover",
+  );
+
+  await service.login("5085979770", "1");
+  const socketBefore = service.getSocket();
+  const socketAfter = await service.ensureReady("5085979770", {
+    forceRecover: true,
+  });
+
+  assert.ok(socketBefore);
+  assert.ok(socketAfter);
+  assert.notEqual(socketAfter, socketBefore);
+  assert.deepEqual(
+    events.map((event) => event.type),
+    ["start", "stop", "start"],
+  );
+  assert.match(events[1].reason, /force recover/i);
+  assert.equal(service.getStatus().connection_state, "connected");
 
   context.cleanup();
 });

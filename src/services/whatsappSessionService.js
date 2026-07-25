@@ -18,6 +18,12 @@ import {
 const logger = createLogger("whatsappSessionService");
 const PENDING_LOGIN_TTL_MS = 5 * 60 * 1000;
 const PENDING_SESSION_SWITCH_TTL_MS = 2 * 60 * 1000;
+const DEFAULT_READY_TIMEOUT_MS = Number(
+  process.env.WA_READY_TIMEOUT_MS || 30000,
+);
+const AUTO_RECOVER_DELAY_MS = Number(
+  process.env.WA_AUTO_RECOVER_DELAY_MS || 7000,
+);
 
 function formatQrText(qr) {
   let qrText = "";
@@ -42,9 +48,13 @@ export function createWhatsAppSessionService({
 }) {
   let controller = null;
   let activeSession = null;
+  let desiredSessionId = "";
+  let connectionState = "stopped";
+  let autoRecoverTimer = null;
   const qrSubscribers = new Set();
   const pendingLoginNames = new Map();
   const pendingSessionSwitches = new Map();
+  const readyWaiters = new Set();
 
   async function notifySubscribers(text, options = {}) {
     for (const chatId of qrSubscribers) {
@@ -74,6 +84,94 @@ export function createWhatsAppSessionService({
 
   function isSessionRunning() {
     return Boolean(controller?.getStatus?.().running);
+  }
+
+  function resolveSocketReady() {
+    for (const waiter of readyWaiters) {
+      waiter.resolve(true);
+    }
+    readyWaiters.clear();
+  }
+
+  function rejectSocketReady(error) {
+    for (const waiter of readyWaiters) {
+      waiter.reject(error);
+    }
+    readyWaiters.clear();
+  }
+
+  function waitForConnection(timeoutMs = DEFAULT_READY_TIMEOUT_MS) {
+    if (isSessionRunning() && connectionState === "connected") {
+      return Promise.resolve(true);
+    }
+
+    return new Promise((resolve, reject) => {
+      const waiter = {
+        resolve: null,
+        reject: null,
+        timeout: null,
+      };
+
+      waiter.timeout = setTimeout(() => {
+        readyWaiters.delete(waiter);
+        reject(
+          new Error(
+            `WhatsApp session belum connected setelah ${Math.round(
+              timeoutMs / 1000,
+            )} detik.`,
+          ),
+        );
+      }, timeoutMs);
+
+      waiter.resolve = (value) => {
+        clearTimeout(waiter.timeout);
+        resolve(value);
+      };
+      waiter.reject = (error) => {
+        clearTimeout(waiter.timeout);
+        reject(error);
+      };
+
+      readyWaiters.add(waiter);
+    });
+  }
+
+  function clearAutoRecoverTimer() {
+    clearTimeout(autoRecoverTimer);
+    autoRecoverTimer = null;
+  }
+
+  function scheduleAutoRecover(session, chatId) {
+    if (!session || desiredSessionId !== session.id) {
+      return;
+    }
+
+    clearAutoRecoverTimer();
+    logger.warn("Scheduling WhatsApp session auto recovery", {
+      sessionId: session.id,
+      delayMs: AUTO_RECOVER_DELAY_MS,
+    });
+    autoRecoverTimer = setTimeout(() => {
+      autoRecoverTimer = null;
+      if (desiredSessionId !== session.id || isSessionRunning()) {
+        logger.info("Skipping WhatsApp auto recovery", {
+          sessionId: session.id,
+          desiredSessionId,
+          running: isSessionRunning(),
+        });
+        return;
+      }
+
+      startSession(session, chatId, {
+        autoRecover: true,
+        confirmedSwitch: true,
+      }).catch((error) => {
+        logger.error("WhatsApp session auto recovery failed", {
+          sessionId: session.id,
+          message: error.message,
+        });
+      });
+    }, AUTO_RECOVER_DELAY_MS);
   }
 
   function createPendingSessionSwitch(chatId, currentSession, nextSession) {
@@ -116,6 +214,7 @@ export function createWhatsAppSessionService({
     });
     await controller.stop(reason);
     controller = null;
+    connectionState = "stopped";
     await markWhatsAppSessionStatus(stoppedSession.id, "stopped");
     return stoppedSession;
   }
@@ -154,13 +253,26 @@ export function createWhatsAppSessionService({
       await stopCurrentSessionForSwitch("Confirmed WhatsApp session switch");
     }
 
+    clearAutoRecoverTimer();
+    desiredSessionId = session.id;
+    connectionState = options.autoRecover ? "reconnecting" : "starting";
     activeSession = await markWhatsAppSessionStatus(session.id, "starting");
     controller = await startWhatsAppBot({
       authDir: session.auth_dir,
       onQr: notifyQr,
+      onControllerUpdate: (nextController) => {
+        if (desiredSessionId === session.id) {
+          logger.info("WhatsApp session controller updated", {
+            sessionId: session.id,
+          });
+          controller = nextController;
+        }
+      },
       onConnectionUpdate: async ({ connection }) => {
         if (connection === "open") {
+          connectionState = "connected";
           await markWhatsAppSessionStatus(session.id, "connected");
+          resolveSocketReady();
           await notifySubscribers(
             [
               "✅ <b>WhatsApp Bot Connected</b>",
@@ -172,7 +284,14 @@ export function createWhatsAppSessionService({
           );
         }
         if (connection === "close") {
+          connectionState = "closed";
+          controller = null;
           await markWhatsAppSessionStatus(session.id, "stopped");
+          rejectSocketReady(new Error("WhatsApp connection closed."));
+          if (desiredSessionId === session.id) {
+            scheduleAutoRecover(session, chatId);
+            return;
+          }
           await notifySubscribers(
             [
               "❌ <b>WhatsApp Connection Closed</b>",
@@ -437,8 +556,11 @@ export function createWhatsAppSessionService({
       ].join("\n");
     }
 
+    desiredSessionId = "";
+    clearAutoRecoverTimer();
     await controller.stop("Telegram /stop");
     controller = null;
+    connectionState = "stopped";
     await markWhatsAppSessionStatus(session.id, "stopped");
 
     return [
@@ -483,8 +605,11 @@ export function createWhatsAppSessionService({
       ].join("\n");
     }
 
+    desiredSessionId = "";
+    clearAutoRecoverTimer();
     await controller.logout("Telegram /logout");
     controller = null;
+    connectionState = "logged_out";
     await markWhatsAppSessionStatus(session.id, "logged_out");
 
     return [
@@ -511,8 +636,11 @@ export function createWhatsAppSessionService({
     }
 
     if (controller?.getStatus?.().running && activeSession?.id === session.id) {
+      desiredSessionId = "";
+      clearAutoRecoverTimer();
       await controller.stop("Delete active WhatsApp session");
       controller = null;
+      connectionState = "stopped";
     }
 
     await deleteWhatsAppSession(selector);
@@ -542,18 +670,79 @@ export function createWhatsAppSessionService({
     return {
       ...status,
       active_session: activeSession,
+      connection_state: connectionState,
+      desired_session_id: desiredSessionId,
       qr_subscribers: qrSubscribers.size,
     };
   }
 
   function getSocket() {
-    return controller?.sock || null;
+    return isSessionRunning() && connectionState === "connected"
+      ? controller?.sock || null
+      : null;
+  }
+
+  async function ensureReady(chatId, options = {}) {
+    const timeoutMs = options.timeoutMs || DEFAULT_READY_TIMEOUT_MS;
+    const forceRecover = Boolean(options.forceRecover);
+    if (chatId) {
+      qrSubscribers.add(String(chatId));
+    }
+
+    if (!forceRecover && isSessionRunning() && connectionState === "connected") {
+      return getSocket();
+    }
+
+    const registry = await getWhatsAppSessionRegistry();
+    const session =
+      activeSession ||
+      (desiredSessionId
+        ? await resolveWhatsAppSession(desiredSessionId)
+        : registry.active_session_id
+          ? await resolveWhatsAppSession(registry.active_session_id)
+          : null);
+
+    if (!session) {
+      throw new Error("WhatsApp session belum aktif. Jalankan /login dulu.");
+    }
+
+    logger.warn("Ensuring WhatsApp session is ready", {
+      sessionId: session.id,
+      running: isSessionRunning(),
+      connectionState,
+      desiredSessionId,
+      forceRecover,
+    });
+
+    if (forceRecover && controller?.getStatus?.().running) {
+      logger.warn("Forcing WhatsApp session recovery", {
+        sessionId: session.id,
+      });
+      await controller.stop("Force recover WhatsApp session");
+      controller = null;
+      connectionState = "closed";
+    }
+
+    if (!isSessionRunning()) {
+      await startSession(session, chatId, {
+        autoRecover: connectionState === "closed",
+        confirmedSwitch: true,
+      });
+    }
+
+    await waitForConnection(timeoutMs);
+    const socket = getSocket();
+    if (!socket?.sendMessage) {
+      throw new Error("WhatsApp session belum ready untuk mengirim pesan.");
+    }
+    return socket;
   }
 
   return {
     completePendingLoginName,
     completePendingSessionSwitch,
     deleteSession,
+    ensureReady,
     getSocket,
     getStatus,
     listSessions,

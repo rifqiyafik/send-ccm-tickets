@@ -146,12 +146,67 @@ test("normal import sends SQA reminder only to MAIN SQA, not SQA detail group", 
     const sqaTargetTicket = sentMessages.find(
       (message) =>
         message.jid === context.targetJid &&
-        /Mohon dibantu/.test(message.payload?.text || ""),
+        /Mohon dibantu bang/.test(message.payload?.text || ""),
     );
 
     assert.equal(sqaTargetReminder, undefined);
     assert.ok(mainSqaReminder);
     assert.ok(sqaTargetTicket);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("normal import sends daily In Progress reminder only to SQA/NOP target, not MAIN SQA", async () => {
+  const context = setupConfig();
+  fs.writeFileSync(
+    process.env.SENT_TICKET_STORE_PATH,
+    JSON.stringify(
+      {
+        version: 1,
+        tickets: {
+          "CC-20260724-00000001": {
+            order_id: "CC-20260724-00000001",
+            business_status: "IN PROGRESS",
+            sla_status: "IN SLA",
+            sent_at: "2026-07-24T00:00:00.000Z",
+            sent_date: "2026-07-24",
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  const sentMessages = [];
+  const sock = {
+    async sendMessage(jid, payload) {
+      sentMessages.push({ jid, payload });
+    },
+  };
+
+  try {
+    await sendImportResult(sock, "telegram:5085979770", createResult());
+
+    const targetDailyReminder = sentMessages.find(
+      (message) =>
+        message.jid === context.targetJid &&
+        /REMIND TICKET IN PROGRESS/.test(message.payload?.text || ""),
+    );
+    const mainSqaDailyReminder = sentMessages.find(
+      (message) =>
+        message.jid === context.mainSqaJid &&
+        /REMIND TICKET IN PROGRESS/.test(message.payload?.text || ""),
+    );
+    const sqaTargetTicket = sentMessages.find(
+      (message) =>
+        message.jid === context.targetJid &&
+        /Mohon dibantu bang/.test(message.payload?.text || ""),
+    );
+
+    assert.ok(targetDailyReminder);
+    assert.equal(mainSqaDailyReminder, undefined);
+    assert.equal(sqaTargetTicket, undefined);
   } finally {
     context.cleanup();
   }

@@ -3,7 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { formatEscalationMessagePayload } from "../src/services/ticketImportService.js";
+import {
+  formatEscalationMessagePayload,
+  formatInProgressReminderMessagePayload,
+} from "../src/services/ticketImportService.js";
 
 function setupMentionConfig() {
   const configPath = path.join("tmp", "mention-format-whatsapp-config.json");
@@ -163,6 +166,44 @@ test("formats OUT SLA In Progress tickets with short reminder message", () => {
   assert.doesNotMatch(payload.text, /Long analysis/);
   assert.doesNotMatch(payload.text, /CC bang/);
   assert.deepEqual(payload.mentions, ["35515252351004@lid"]);
+
+  context.cleanup();
+});
+
+test("formats grouped In Progress daily reminder with mentions", () => {
+  const context = setupMentionConfig();
+
+  const payload = formatInProgressReminderMessagePayload([
+    {
+      order_id: "CC-20260709-00000348",
+      assignment_type: "SQA",
+      business_status: "In Progress",
+      sla_status: "OUT SLA",
+      pic_sqa: "Herman",
+      site_id: "JHO293",
+      resolve_target_22h_text: "Rabu / 22 Jul 2026, 11:50:38 PM",
+    },
+    {
+      order_id: "CC-20260711-00000356",
+      assignment_type: "SQA",
+      business_status: "In Progress",
+      sla_status: "IN SLA",
+      pic_sqa: "Herman",
+      site_id: "MDN872",
+      resolve_target_22h_text: "Kamis / 23 Jul 2026, 08:00:00 PM",
+    },
+  ]);
+
+  assert.match(payload.text, /REMIND TICKET IN PROGRESS/);
+  assert.match(payload.text, /SQA SUMBAGUT/);
+  assert.match(payload.text, /Total Ticket: \*2\*/);
+  assert.match(payload.text, /Out SLA: \*1\*/);
+  assert.match(payload.text, /In SLA: \*1\*/);
+  assert.match(payload.text, /@628136378970/);
+  assert.match(payload.text, /CC-20260709-00000348/);
+  assert.match(payload.text, /CC-20260711-00000356/);
+  assert.match(payload.text, /Due: Kamis \/ 23 Jul 2026, 08:00:00 PM/);
+  assert.deepEqual(payload.mentions, ["628136378970@s.whatsapp.net"]);
 
   context.cleanup();
 });

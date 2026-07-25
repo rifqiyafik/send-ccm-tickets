@@ -35,6 +35,7 @@ import {
 import {
   createFilteredTicketsExcel,
   formatEscalationMessagePayload,
+  formatInProgressReminderMessagePayload,
   formatImportSummary,
   formatProcessingReport,
   formatReminderMessagePayload,
@@ -855,6 +856,45 @@ async function sendMainSqaSummaryOnly(
   }
 }
 
+async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
+  if (!reminderTickets || reminderTickets.length === 0) {
+    logger.info("Daily In Progress reminder skipped: no reminder tickets");
+    return;
+  }
+
+  const remindersByTarget = await groupTicketsByTarget(
+    sock,
+    sourceJid,
+    reminderTickets,
+  );
+
+  logger.info("Sending daily In Progress reminders to detail target groups", {
+    sourceJid,
+    targetGroups: remindersByTarget.size,
+    tickets: reminderTickets.length,
+  });
+
+  for (const [targetJid, tickets] of remindersByTarget.entries()) {
+    try {
+      await sock.sendMessage(
+        targetJid,
+        formatInProgressReminderMessagePayload(tickets),
+      );
+
+      for (const ticket of tickets) {
+        await markTicketAsSent(ticket, { sourceJid, targetJid });
+      }
+    } catch (error) {
+      await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+        targetJid,
+        stage: "daily in progress reminder",
+        tickets,
+        error,
+      });
+    }
+  }
+}
+
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 export async function sendImportResult(sock, sourceJid, result, options = {}) {
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
@@ -970,11 +1010,19 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
+  await sendDailyInProgressReminders(
+    sock,
+    sourceJid,
+    sentTicketPlan.in_progress_reminder_tickets || [],
+  );
+
   if (sentTicketPlan.sendable_tickets.length === 0) {
     logger.info("No tickets left to send after deduplication/SLA checks", {
       sourceJid,
       duplicate: sentTicketPlan.duplicate_tickets.length,
       outSla: sentTicketPlan.out_sla_tickets.length,
+      inProgressReminder:
+        sentTicketPlan.in_progress_reminder_tickets?.length || 0,
     });
     return;
   }

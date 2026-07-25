@@ -129,7 +129,7 @@ test("resends ticket when previous business status was IN PROGRESS and current s
   context.cleanup();
 });
 
-test("sends OUT SLA In Progress ticket as daily reminder", async () => {
+test("plans previous-day OUT SLA In Progress ticket as daily reminder only", async () => {
   const context = setupStore("out-sla-ticket", {
     version: 1,
     tickets: {
@@ -148,9 +148,37 @@ test("sends OUT SLA In Progress ticket as daily reminder", async () => {
     new Date("2026-07-21T01:00:00.000Z"),
   );
 
-  assert.equal(plan.sendable_tickets.length, 1);
+  assert.equal(plan.sendable_tickets.length, 0);
+  assert.equal(plan.in_progress_reminder_tickets.length, 1);
   assert.equal(plan.reopened_tickets.length, 0);
   assert.equal(plan.out_sla_tickets.length, 1);
+
+  context.cleanup();
+});
+
+test("plans previous-day IN SLA In Progress ticket as daily reminder only", async () => {
+  const context = setupStore("in-sla-daily-reminder-ticket", {
+    version: 1,
+    tickets: {
+      "CC-1": {
+        order_id: "CC-1",
+        business_status: "IN PROGRESS",
+        sla_status: "IN SLA",
+        sent_at: "2026-07-20T00:00:00.000Z",
+        sent_date: "2026-07-20",
+      },
+    },
+  });
+
+  const plan = await createSentTicketPlan(
+    [ticket({ business_status: "In Progress", sla_status: "IN SLA" })],
+    new Date("2026-07-21T01:00:00.000Z"),
+  );
+
+  assert.equal(plan.sendable_tickets.length, 0);
+  assert.equal(plan.in_progress_reminder_tickets.length, 1);
+  assert.equal(plan.in_sla_reminder_tickets.length, 1);
+  assert.equal(plan.out_sla_tickets.length, 0);
 
   context.cleanup();
 });

@@ -1567,6 +1567,95 @@ function formatOutSlaInProgressEscalationText(ticket, { ccmTag, nopTag }) {
   ].join("\n");
 }
 
+function getReminderAssigneeName(ticket) {
+  return ticket.assignment_type === "SQA" ? ticket.pic_sqa : ticket.pic_nop;
+}
+
+function getInProgressReminderTargetName(tickets) {
+  const assignmentType = tickets[0]?.assignment_type;
+  if (assignmentType === "SQA") {
+    return "SQA SUMBAGUT";
+  }
+
+  return `NOP ${getNopReminderName(tickets)}`;
+}
+
+function getInProgressReminderLine(ticket, index) {
+  const slaStatus = cleanTableValue(ticket.sla_status).toUpperCase() || "-";
+  const siteId = getReminderSiteId(ticket) || "-";
+  const dueDate = cleanTableValue(ticket.resolve_target_22h_text);
+  const dueText =
+    slaStatus === "IN SLA" && dueDate && dueDate !== "-"
+      ? ` | Due: ${dueDate}`
+      : "";
+
+  return `${index + 1}. *${cleanTableValue(ticket.order_id)}* | ${slaStatus} | Site: ${siteId}${dueText}`;
+}
+
+// membuat bubble reminder ringkas untuk tiket In Progress yang sudah pernah dikirim hari sebelumnya.
+export function formatInProgressReminderMessagePayload(tickets) {
+  const reminderTickets = tickets.filter(
+    (ticket) => cleanTableValue(ticket.business_status).toUpperCase().replace(/[\s_-]+/g, "") === "INPROGRESS",
+  );
+  const summary = summarizeSla(reminderTickets);
+  const targetName = getInProgressReminderTargetName(reminderTickets);
+  const groupedByPic = new Map();
+
+  for (const ticket of reminderTickets) {
+    const assigneeName = getReminderAssigneeName(ticket);
+    const key = cleanTableValue(assigneeName).toUpperCase();
+    const group = groupedByPic.get(key) || {
+      tag: resolveMentionTag(assigneeName),
+      tickets: [],
+    };
+    group.tickets.push(ticket);
+    groupedByPic.set(key, group);
+  }
+
+  const mentionTags = [...groupedByPic.values()].map((group) => group.tag);
+  const lines = [
+    "*🔔 REMIND TICKET IN PROGRESS*",
+    "",
+    `Izin mengingatkan, berikut tiket yang masih belum resolve di *${targetName}*.`,
+    "",
+    "*📊 Summary:*",
+    `Total Ticket: *${summary.total}*`,
+    `In SLA: *${summary.inSla}*`,
+    `Out SLA: *${summary.outSla}*`,
+    "",
+  ];
+
+  for (const group of [...groupedByPic.values()].sort((a, b) =>
+    cleanTableValue(a.tag?.label).localeCompare(cleanTableValue(b.tag?.label)),
+  )) {
+    lines.push(`*👤 ${group.tag?.text || "-"}*`);
+    lines.push(
+      ...group.tickets.map((ticket, index) =>
+        getInProgressReminderLine(ticket, index),
+      ),
+      "",
+    );
+  }
+
+  lines.push(
+    "Mohon dibantu update dan resolve tiketnya ya abang-abang.",
+    "Untuk tiket IN SLA mohon dijaga agar tidak masuk OUT SLA.",
+    "",
+    "Terimakasih 🙏",
+  );
+
+  logger.info("In Progress reminder message payload created", {
+    assignmentType: reminderTickets[0]?.assignment_type,
+    tickets: reminderTickets.length,
+    picGroups: groupedByPic.size,
+  });
+
+  return {
+    text: lines.join("\n").trim(),
+    mentions: uniqueMentionJids(mentionTags),
+  };
+}
+
 // membuat teks pesan eskalasi dan daftar JID mention yang dikirim ke Baileys.
 export function formatEscalationMessagePayload(ticket) {
   logger.info("Formatting escalation message", {

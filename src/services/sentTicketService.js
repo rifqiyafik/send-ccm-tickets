@@ -158,6 +158,10 @@ function isOutSla(ticket) {
   return cleanTableValue(ticket.sla_status).toUpperCase() === "OUT SLA";
 }
 
+function isInSla(ticket) {
+  return cleanTableValue(ticket.sla_status).toUpperCase() === "IN SLA";
+}
+
 function isTicketValueEmpty(value) {
   const cleaned = cleanTableValue(value);
   return !cleaned || cleaned === "-";
@@ -335,9 +339,19 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
   }
 
   if (existingSentDate !== today) {
+    if (isInProgress(ticket.business_status)) {
+      return {
+        send: false,
+        remind: true,
+        reason: isOutSla(ticket)
+          ? "DAILY_OUT_SLA_IN_PROGRESS_REMINDER"
+          : "DAILY_IN_SLA_IN_PROGRESS_REMINDER",
+      };
+    }
+
     return {
       send: true,
-      reason: isOutSla(ticket) ? "OUT_SLA_REMINDER_TODAY" : "SENT_PREVIOUS_DAY",
+      reason: "SENT_PREVIOUS_DAY",
     };
   }
 
@@ -359,6 +373,8 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
   const outSlaTickets = [];
   const reopenedTickets = [];
   const invalidMessageTickets = [];
+  const inProgressReminderTickets = [];
+  const inSlaReminderTickets = [];
 
   for (const ticket of tickets) {
     const orderId = normalizeOrderId(ticket.order_id);
@@ -382,8 +398,16 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
       if (decision.reason === "REOPEN_AFTER_IN_PROGRESS") {
         reopenedTickets.push(ticket);
       }
-      if (decision.reason === "OUT_SLA_REMINDER_TODAY") {
+      continue;
+    }
+
+    if (decision.remind) {
+      inProgressReminderTickets.push(ticket);
+      if (isOutSla(ticket)) {
         outSlaTickets.push(ticket);
+      }
+      if (isInSla(ticket)) {
+        inSlaReminderTickets.push(ticket);
       }
       continue;
     }
@@ -403,6 +427,8 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     sendable_tickets: sendableTickets,
     duplicate_tickets: duplicateTickets,
     out_sla_tickets: outSlaTickets,
+    in_sla_reminder_tickets: inSlaReminderTickets,
+    in_progress_reminder_tickets: inProgressReminderTickets,
     reopened_tickets: reopenedTickets,
     invalid_message_tickets: invalidMessageTickets,
     fallback_resolved_tickets: sendableTickets.filter(
@@ -417,6 +443,8 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     sendable: sendableTickets.length,
     duplicate: duplicateTickets.length,
     outSla: outSlaTickets.length,
+    inSlaReminder: inSlaReminderTickets.length,
+    inProgressReminder: inProgressReminderTickets.length,
     reopened: reopenedTickets.length,
     invalidMessageData: invalidMessageTickets.length,
     fallbackResolved: plan.fallback_resolved_tickets.length,
@@ -464,11 +492,10 @@ export async function markTicketAsSent(ticket, metadata = {}) {
 export function formatSentTicketPlanReport(plan) {
   const invalidMessageTickets = plan.invalid_message_tickets || [];
   const fallbackResolvedTickets = plan.fallback_resolved_tickets || [];
+  const inProgressReminderTickets = plan.in_progress_reminder_tickets || [];
   const newTicketCount = Math.max(
     0,
-    plan.sendable_tickets.length -
-      plan.out_sla_tickets.length -
-      plan.reopened_tickets.length,
+    plan.sendable_tickets.length - plan.reopened_tickets.length,
   );
   const reportLines = [
     "📊 Rekapitulasi Tiket",
@@ -476,6 +503,7 @@ export function formatSentTicketPlanReport(plan) {
     `🆕 Tiket Baru Terkirim: ${newTicketCount}`,
     `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
     `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,
+    `🔔 Tiket In Progress Diremind: ${inProgressReminderTickets.length}`,
     `🟡 Data Tidak Lengkap yang Dikirim: ${fallbackResolvedTickets.length}`,
     `🔴 Data Tidak Lengkap Butuh Bantuan: ${invalidMessageTickets.length}`,
     `♻️ Tiket ReOpen dikirim ulang: ${plan.reopened_tickets.length}`,
@@ -497,6 +525,15 @@ export function formatSentTicketPlanReport(plan) {
       "⏱️ Tiket OUT SLA (Reminding):",
       "",
       createOrderIdCodeTable(plan.out_sla_tickets),
+    );
+  }
+
+  if (inProgressReminderTickets.length > 0) {
+    reportLines.push(
+      "",
+      "🔔 Tiket In Progress Diremind:",
+      "",
+      createOrderIdCodeTable(inProgressReminderTickets),
     );
   }
 

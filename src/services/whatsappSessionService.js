@@ -17,6 +17,7 @@ import {
 
 const logger = createLogger("whatsappSessionService");
 const PENDING_LOGIN_TTL_MS = 5 * 60 * 1000;
+const PENDING_SESSION_SWITCH_TTL_MS = 2 * 60 * 1000;
 
 function formatQrText(qr) {
   let qrText = "";
@@ -35,11 +36,15 @@ function formatSessionLine(session) {
 }
 
 // #penjelasan: membungkus lifecycle WhatsApp agar bisa dikontrol dari Telegram tanpa command terminal.
-export function createWhatsAppSessionService({ sendTelegramMessage }) {
+export function createWhatsAppSessionService({
+  sendTelegramMessage,
+  startWhatsAppBot = startBot,
+}) {
   let controller = null;
   let activeSession = null;
   const qrSubscribers = new Set();
   const pendingLoginNames = new Map();
+  const pendingSessionSwitches = new Map();
 
   async function notifySubscribers(text, options = {}) {
     for (const chatId of qrSubscribers) {
@@ -67,12 +72,60 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
     );
   }
 
-  async function startSession(session, chatId) {
+  function isSessionRunning() {
+    return Boolean(controller?.getStatus?.().running);
+  }
+
+  function createPendingSessionSwitch(chatId, currentSession, nextSession) {
+    const key = String(chatId);
+    pendingSessionSwitches.set(key, {
+      activeSessionId: currentSession.id,
+      requestedSessionId: nextSession.id,
+      expiresAt: Date.now() + PENDING_SESSION_SWITCH_TTL_MS,
+    });
+
+    return [
+      "⚠️ **Session WhatsApp sedang aktif**",
+      "",
+      "📱 **Session aktif:**",
+      `1. **${currentSession.label}**`,
+      `   Phone: \`${currentSession.phone}\``,
+      "",
+      "🔄 **Session yang diminta:**",
+      `**${nextSession.label}**`,
+      `Phone: \`${nextSession.phone}\``,
+      "",
+      "Apakah ingin mengganti session?",
+      "",
+      "Balas `YA` untuk stop session aktif dan menjalankan session baru.",
+      "Balas `TIDAK` untuk batal.",
+      "",
+      "⏱️ Konfirmasi berlaku 2 menit.",
+    ].join("\n");
+  }
+
+  async function stopCurrentSessionForSwitch(reason) {
+    if (!controller?.getStatus?.().running || !activeSession) {
+      return null;
+    }
+
+    const stoppedSession = activeSession;
+    logger.info("Stopping active WhatsApp session before confirmed switch", {
+      sessionId: stoppedSession.id,
+      reason,
+    });
+    await controller.stop(reason);
+    controller = null;
+    await markWhatsAppSessionStatus(stoppedSession.id, "stopped");
+    return stoppedSession;
+  }
+
+  async function startSession(session, chatId, options = {}) {
     if (chatId) {
       qrSubscribers.add(String(chatId));
     }
 
-    if (controller?.getStatus?.().running) {
+    if (isSessionRunning()) {
       if (activeSession?.id === session.id) {
         const status = controller.getStatus();
         return [
@@ -85,19 +138,24 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
         ].join("\n");
       }
 
-      logger.info("Stopping active session before switching session", {
+      if (!options.confirmedSwitch) {
+        logger.info("WhatsApp session switch requires confirmation", {
+          activeSessionId: activeSession?.id,
+          nextSessionId: session.id,
+          chatId,
+        });
+        return createPendingSessionSwitch(chatId, activeSession, session);
+      }
+
+      logger.info("Stopping active session before confirmed switch", {
         activeSessionId: activeSession?.id,
         nextSessionId: session.id,
       });
-      await controller.stop("Switch WhatsApp session");
-      if (activeSession?.id) {
-        await markWhatsAppSessionStatus(activeSession.id, "stopped");
-      }
-      controller = null;
+      await stopCurrentSessionForSwitch("Confirmed WhatsApp session switch");
     }
 
     activeSession = await markWhatsAppSessionStatus(session.id, "starting");
-    controller = await startBot({
+    controller = await startWhatsAppBot({
       authDir: session.auth_dir,
       onQr: notifyQr,
       onConnectionUpdate: async ({ connection }) => {
@@ -193,6 +251,89 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
     }
 
     return startSession(session, chatId);
+  }
+
+  async function completePendingSessionSwitch(chatId, answer) {
+    const key = String(chatId);
+    const pending = pendingSessionSwitches.get(key);
+    if (!pending) {
+      return null;
+    }
+
+    const normalizedAnswer = String(answer || "").trim().toUpperCase();
+    if (Date.now() > pending.expiresAt) {
+      pendingSessionSwitches.delete(key);
+      return [
+        "⌛ **Konfirmasi Switch Session Expired**",
+        "",
+        "Jalankan ulang `/login <nomor_urut>` jika masih ingin mengganti session.",
+      ].join("\n");
+    }
+
+    if (!["YA", "Y", "YES", "TIDAK", "N", "NO"].includes(normalizedAnswer)) {
+      return [
+        "⚠️ **Menunggu konfirmasi switch session**",
+        "",
+        "Balas `YA` untuk mengganti session.",
+        "Balas `TIDAK` untuk membatalkan.",
+      ].join("\n");
+    }
+
+    if (["TIDAK", "N", "NO"].includes(normalizedAnswer)) {
+      pendingSessionSwitches.delete(key);
+      return [
+        "✅ **Switch Session Dibatalkan**",
+        "",
+        "Session WhatsApp yang sedang aktif tetap berjalan.",
+      ].join("\n");
+    }
+
+    pendingSessionSwitches.delete(key);
+    const nextSession = await resolveWhatsAppSession(pending.requestedSessionId);
+    if (!nextSession) {
+      return [
+        "❌ **Gagal Mengganti Session**",
+        "",
+        "Session tujuan tidak ditemukan lagi.",
+        "Jalankan `/sessions` untuk melihat daftar session terbaru.",
+      ].join("\n");
+    }
+
+    try {
+      const stoppedSession = await stopCurrentSessionForSwitch(
+        "Telegram confirmed session switch",
+      );
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      const startResult = await startSession(nextSession, chatId, {
+        confirmedSwitch: true,
+      });
+
+      return [
+        "✅ **Switch Session Diproses**",
+        "",
+        stoppedSession
+          ? `Session lama dimatikan: **${stoppedSession.label}**`
+          : "Tidak ada session aktif yang perlu dimatikan.",
+        `Session baru: **${nextSession.label}**`,
+        "",
+        startResult,
+      ].join("\n");
+    } catch (error) {
+      logger.error("Failed to switch WhatsApp session after confirmation", {
+        message: error.message,
+        activeSessionId: pending.activeSessionId,
+        requestedSessionId: pending.requestedSessionId,
+      });
+      return [
+        "❌ **Gagal Mengganti Session**",
+        "",
+        "Session lama belum berhasil dimatikan atau session baru gagal dijalankan.",
+        "",
+        `Detail: \`${escapeTelegramHtml(error.message)}\``,
+        "",
+        "Coba jalankan `/stop 1`, lalu ulangi `/login <nomor_urut>`.",
+      ].join("\n");
+    }
   }
 
   async function completePendingLoginName(chatId, label) {
@@ -411,6 +552,7 @@ export function createWhatsAppSessionService({ sendTelegramMessage }) {
 
   return {
     completePendingLoginName,
+    completePendingSessionSwitch,
     deleteSession,
     getSocket,
     getStatus,

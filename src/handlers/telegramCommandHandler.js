@@ -538,6 +538,13 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         await sendRichMessage(sendMessage, chatId, pendingLoginResult);
         return;
       }
+
+      const pendingSwitchResult =
+        await whatsappSession.completePendingSessionSwitch?.(chatId, text);
+      if (pendingSwitchResult) {
+        await sendRichMessage(sendMessage, chatId, pendingSwitchResult);
+        return;
+      }
     }
 
     if (!chatId || !text.startsWith("/")) {

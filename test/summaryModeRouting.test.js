@@ -17,6 +17,10 @@ function setupConfig() {
         authorized_groups: {},
         authorized_users: {},
         target_groups: {
+          "MAIN SQA": {
+            jid: "120363000000000999@g.us",
+            label: "Main SQA",
+          },
           SQA: {
             jid: "120363000000000001@g.us",
             label: "SQA Target",
@@ -33,6 +37,7 @@ function setupConfig() {
 
   return {
     targetJid: "120363000000000001@g.us",
+    mainSqaJid: "120363000000000999@g.us",
     cleanup() {
       delete process.env.WHATSAPP_CONFIG_PATH;
       delete process.env.SENT_TICKET_STORE_PATH;
@@ -101,10 +106,52 @@ test(".summary sends reminder to WhatsApp target group instead of source chat", 
         message.jid === context.targetJid &&
         /Remind Ticket CX Open/.test(message.payload?.text || ""),
     );
+    const mainSqaReminder = sentMessages.find(
+      (message) =>
+        message.jid === context.mainSqaJid &&
+        /Remind Ticket CX Open/.test(message.payload?.text || ""),
+    );
 
     assert.equal(sourceReminder, undefined);
-    assert.ok(targetReminder);
-    assert.match(targetReminder.payload.text, /SQA \| 1 \| 1 \| 0/);
+    assert.equal(targetReminder, undefined);
+    assert.ok(mainSqaReminder);
+    assert.match(mainSqaReminder.payload.text, /SQA \| 1 \| 1 \| 0/);
+  } finally {
+    context.cleanup();
+  }
+});
+
+test("normal import sends SQA reminder only to MAIN SQA, not SQA detail group", async () => {
+  const context = setupConfig();
+  const sentMessages = [];
+  const sock = {
+    async sendMessage(jid, payload) {
+      sentMessages.push({ jid, payload });
+    },
+  };
+
+  try {
+    await sendImportResult(sock, "telegram:5085979770", createResult());
+
+    const sqaTargetReminder = sentMessages.find(
+      (message) =>
+        message.jid === context.targetJid &&
+        /Remind Ticket CX Open/.test(message.payload?.text || ""),
+    );
+    const mainSqaReminder = sentMessages.find(
+      (message) =>
+        message.jid === context.mainSqaJid &&
+        /Remind Ticket CX Open/.test(message.payload?.text || ""),
+    );
+    const sqaTargetTicket = sentMessages.find(
+      (message) =>
+        message.jid === context.targetJid &&
+        /Mohon dibantu/.test(message.payload?.text || ""),
+    );
+
+    assert.equal(sqaTargetReminder, undefined);
+    assert.ok(mainSqaReminder);
+    assert.ok(sqaTargetTicket);
   } finally {
     context.cleanup();
   }

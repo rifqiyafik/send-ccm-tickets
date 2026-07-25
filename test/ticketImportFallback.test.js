@@ -17,7 +17,7 @@ const HEADERS = [
   "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)",
   "Customer MSISDN(Create Ticket_customer_msisdn)",
   "Problem Start Time",
-  "Customer Interaction Date",
+  "Customer Interaction Date(Create Ticket)",
   "Desa/Kelurahan(Create Ticket)",
   "kecamatan(Create Ticket)",
   "Description",
@@ -40,7 +40,7 @@ function row(overrides = {}) {
     "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)": "",
     "Customer MSISDN(Create Ticket_customer_msisdn)": "6281229724194",
     "Problem Start Time": "2026-07-23 03:21:18",
-    "Customer Interaction Date": "2026-07-23 03:21:18",
+    "Customer Interaction Date(Create Ticket)": "2026-07-23 03:21:18",
     "Desa/Kelurahan(Create Ticket)": "SUKAMULIAMAKMUR",
     "kecamatan(Create Ticket)": "Darul Makmur",
     Description:

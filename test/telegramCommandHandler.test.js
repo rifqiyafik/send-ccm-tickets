@@ -51,6 +51,9 @@ function createMockRuntime(overrides = {}) {
     async completePendingLoginName() {
       return null;
     },
+    async completePendingSessionSwitch() {
+      return null;
+    },
     async listSessions() {
       return "sessions list";
     },

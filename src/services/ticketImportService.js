@@ -56,6 +56,7 @@ const PROBLEM_START_TIME_COLUMNS = [
 ];
 const CUSTOMER_INTERACTION_DATE_COLUMNS = [
   "Customer Interaction Date",
+  "Customer Interaction Date(Create Ticket)",
   "Customer Interaction Date(Create Ticket_customer_interaction_date)",
 ];
 const CUSTOMER_MSISDN_COLUMNS = [
@@ -545,6 +546,13 @@ function calculateSla(createTime, now = new Date()) {
   };
 }
 
+function normalizeColumnName(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toUpperCase();
+}
+
 function getFirstRowValue(row, columns) {
   for (const column of columns) {
     if (Object.prototype.hasOwnProperty.call(row, column)) {
@@ -552,6 +560,16 @@ function getFirstRowValue(row, columns) {
       if (cleanTableValue(value) !== "-") {
         return value;
       }
+    }
+  }
+
+  const normalizedColumns = new Set(columns.map(normalizeColumnName));
+  for (const [header, value] of Object.entries(row)) {
+    if (
+      normalizedColumns.has(normalizeColumnName(header)) &&
+      cleanTableValue(value) !== "-"
+    ) {
+      return value;
     }
   }
 

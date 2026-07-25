@@ -61,7 +61,7 @@ let reconnectTimer = null;
 let releaseSessionLock = null;
 let activeSock = null;
 let activeController = null;
-let stoppingRequested = false;
+let activeConnectionGeneration = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -603,7 +603,7 @@ async function groupTicketsByTarget(sock, sourceJid, tickets) {
   return groups;
 }
 
-// mengirim salam, file Excel, dan reminder ke grup tujuan sebelum tiket detail dikirim satu per satu.
+// mengirim salam dan file Excel ke grup tujuan sebelum tiket detail dikirim satu per satu.
 async function sendTargetGroupPreamble(sock, targetJid, tickets) {
   logger.info("Sending target group preamble", {
     targetJid,
@@ -625,7 +625,14 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
     fileName: formatUpdateTicketFileName(),
     // caption: "File Excel berisi tiket yang dikirim ke grup ini.",
   });
+}
 
+async function sendTargetGroupReminder(sock, targetJid, tickets) {
+  logger.info("Sending target group reminder", {
+    targetJid,
+    tickets: tickets.length,
+    assignmentType: tickets[0]?.assignment_type,
+  });
   await sock.sendMessage(targetJid, formatReminderMessagePayload(tickets));
 }
 
@@ -653,6 +660,7 @@ function groupTicketsForSummaryReminder(tickets) {
 
 async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
   const groupsByTarget = await groupTicketsByTarget(sock, sourceJid, tickets);
+  const mainSqaGroup = getGroupConfig("MAIN SQA");
   logger.info("Sending .summary reminder messages to WhatsApp target groups", {
     sourceJid,
     targetGroups: groupsByTarget.size,
@@ -663,15 +671,39 @@ async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
     const reminderGroups = groupTicketsForSummaryReminder(targetTickets);
 
     for (const [groupKey, groupTickets] of reminderGroups.entries()) {
+      const isSqaSummary = groupKey === "SQA";
+      const reminderTargetJid = isSqaSummary ? mainSqaGroup?.jid : targetJid;
+
+      if (!reminderTargetJid) {
+        logger.warn(".summary reminder skipped: target JID is not configured", {
+          sourceJid,
+          groupKey,
+          tickets: groupTickets.length,
+          assignmentType: groupTickets[0]?.assignment_type,
+        });
+        await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+          targetJid: isSqaSummary ? "MAIN SQA" : targetJid,
+          stage: ".summary reminder target missing",
+          tickets: groupTickets,
+          error: new Error(
+            isSqaSummary
+              ? "MAIN SQA target group belum dikonfigurasi."
+              : "Target group belum dikonfigurasi.",
+          ),
+        });
+        continue;
+      }
+
       const payload = formatReminderMessagePayload(groupTickets);
       logger.info("Sending .summary reminder message to target group", {
         sourceJid,
-        targetJid,
+        targetJid: reminderTargetJid,
+        originalTargetJid: targetJid,
         groupKey,
         tickets: groupTickets.length,
         assignmentType: groupTickets[0]?.assignment_type,
       });
-      await sock.sendMessage(targetJid, payload);
+      await sock.sendMessage(reminderTargetJid, payload);
     }
   }
 }
@@ -812,6 +844,7 @@ async function sendMainSqaSummaryOnly(
   });
   try {
     await sendTargetGroupPreamble(sock, mainSqaGroup.jid, sqaTickets);
+    await sendTargetGroupReminder(sock, mainSqaGroup.jid, sqaTickets);
   } catch (error) {
     await sendTargetDeliveryFailedAlert(sock, sourceJid, {
       targetJid: mainSqaGroup.jid,
@@ -981,6 +1014,9 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     } else {
       try {
         await sendTargetGroupPreamble(sock, targetJid, tickets);
+        if (tickets[0]?.assignment_type !== "SQA") {
+          await sendTargetGroupReminder(sock, targetJid, tickets);
+        }
       } catch (error) {
         await sendTargetDeliveryFailedAlert(sock, sourceJid, {
           targetJid,
@@ -1238,13 +1274,28 @@ async function handleIncomingMessage(sock, messageEvent) {
 export async function startBot(options = {}) {
   const authDir = options.authDir || AUTH_DIR;
   if (activeController) {
-    logger.info("WhatsApp bot already started, returning active controller");
-    return activeController;
+    const status = activeController.getStatus?.();
+    if (status?.authDir === authDir) {
+      logger.info("WhatsApp bot already started, returning active controller", {
+        authDir,
+        generation: activeConnectionGeneration,
+      });
+      return activeController;
+    }
+
+    logger.warn("Stopping existing WhatsApp bot before starting new auth dir", {
+      currentAuthDir: status?.authDir,
+      nextAuthDir: authDir,
+    });
+    await activeController.stop?.("Switch WhatsApp auth directory");
   }
 
-  stoppingRequested = false;
+  const generation = activeConnectionGeneration + 1;
+  activeConnectionGeneration = generation;
+  let stopRequested = false;
   logger.info("Starting WhatsApp bot auth state", { authDir });
-  releaseSessionLock = acquireProcessLock(authDir, "whatsapp-bot");
+  const localReleaseSessionLock = acquireProcessLock(authDir, "whatsapp-bot");
+  releaseSessionLock = localReleaseSessionLock;
   bindSessionLockCleanup();
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
@@ -1267,49 +1318,77 @@ export async function startBot(options = {}) {
   });
   activeSock = sock;
 
-  activeController = {
+  function isCurrentSocket() {
+    return activeConnectionGeneration === generation && activeSock === sock;
+  }
+
+  function cleanupCurrentSocket({ releaseLock = true } = {}) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+
+    if (isCurrentSocket()) {
+      activeSock = null;
+      activeController = null;
+    }
+
+    if (releaseLock && releaseSessionLock === localReleaseSessionLock) {
+      localReleaseSessionLock?.();
+      releaseSessionLock = null;
+    }
+  }
+
+  const controller = {
     sock,
     getStatus() {
       return {
-        running: Boolean(activeSock),
-        user: activeSock?.user || null,
+        running: isCurrentSocket(),
+        user: isCurrentSocket() ? sock.user || null : null,
         authDir,
+        generation,
       };
     },
     async stop(reason = "Manual stop") {
-      logger.info("Stopping WhatsApp bot socket", { reason });
-      stoppingRequested = true;
-      clearTimeout(reconnectTimer);
+      logger.info("Stopping WhatsApp bot socket", { reason, authDir, generation });
+      stopRequested = true;
       try {
-        activeSock?.end?.(new Error(reason));
+        sock.ev.removeAllListeners("connection.update");
+        sock.ev.removeAllListeners("messages.upsert");
+        sock.ev.removeAllListeners("creds.update");
+        sock.end?.(new Error(reason));
       } catch (error) {
         logger.warn("WhatsApp socket stop raised an error", {
           message: error.message,
+          authDir,
+          generation,
         });
       }
-      activeSock = null;
-      activeController = null;
-      releaseSessionLock?.();
-      releaseSessionLock = null;
+      cleanupCurrentSocket();
     },
     async logout(reason = "Telegram logout") {
-      logger.info("Logging out WhatsApp bot", { reason });
-      stoppingRequested = true;
-      clearTimeout(reconnectTimer);
-      if (activeSock?.logout) {
-        await activeSock.logout(reason);
+      logger.info("Logging out WhatsApp bot", { reason, authDir, generation });
+      stopRequested = true;
+      if (sock.logout) {
+        await sock.logout(reason);
       }
-      activeSock = null;
-      activeController = null;
-      releaseSessionLock?.();
-      releaseSessionLock = null;
+      cleanupCurrentSocket();
     },
   };
+  activeController = controller;
 
   sock.ev.on("creds.update", saveCreds);
   bindCommandIndexEvents(sock);
 
   sock.ev.on("connection.update", ({ connection, lastDisconnect, qr }) => {
+    if (activeConnectionGeneration !== generation) {
+      logger.warn("Ignoring stale WhatsApp connection update", {
+        connection,
+        authDir,
+        generation,
+        activeGeneration: activeConnectionGeneration,
+      });
+      return;
+    }
+
     options.onConnectionUpdate?.({ connection, lastDisconnect, qr });
 
     if (qr) {
@@ -1321,7 +1400,7 @@ export async function startBot(options = {}) {
     }
 
     if (connection === "open") {
-      logger.info("WhatsApp bot connected");
+      logger.info("WhatsApp bot connected", { authDir, generation });
     }
 
     if (connection === "close") {
@@ -1330,32 +1409,39 @@ export async function startBot(options = {}) {
         lastDisconnect?.error?.output?.payload?.message ||
         lastDisconnect?.error?.message;
       const shouldReconnect =
-        !stoppingRequested && statusCode !== DisconnectReason.loggedOut;
+        !stopRequested && statusCode !== DisconnectReason.loggedOut;
 
       if (shouldReconnect) {
         logger.warn("WhatsApp connection closed, reconnecting in 5 seconds", {
           statusCode: statusCode || "unknown",
           reason: reason || "no reason",
+          authDir,
+          generation,
         });
         clearTimeout(reconnectTimer);
         reconnectTimer = setTimeout(() => {
-          activeSock = null;
-          activeController = null;
-          releaseSessionLock?.();
-          releaseSessionLock = null;
+          if (activeConnectionGeneration !== generation || stopRequested) {
+            logger.warn("Skipping stale WhatsApp reconnect timer", {
+              authDir,
+              generation,
+              activeGeneration: activeConnectionGeneration,
+              stopRequested,
+            });
+            return;
+          }
+
+          cleanupCurrentSocket();
           startBot(options).catch((error) => {
             logger.error("Failed to reconnect WhatsApp bot", error);
           });
         }, 5000);
       } else {
-        activeSock = null;
-        activeController = null;
-        releaseSessionLock?.();
-        releaseSessionLock = null;
+        cleanupCurrentSocket();
         logger.warn(
           "WhatsApp logged out. Delete auth dir and start again to scan a new QR",
           {
             authDir,
+            generation,
           },
         );
       }

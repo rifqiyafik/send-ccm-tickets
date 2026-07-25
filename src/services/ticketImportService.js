@@ -1395,7 +1395,6 @@ function formatSqaReminderMessage(tickets) {
           )} | ${getReminderSiteId(ticket)} | ${getReopenCount(
             ticket,
           )} | ${getpreviousProblemAnalysis(ticket)}*`,
-        "",
       ),
     );
   }
@@ -1426,12 +1425,9 @@ function formatNopReminderMessage(tickets) {
       "*PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen*",
       ...detailTickets.map((ticket, index) => {
         const tag = mentionTags[index];
-        return (
-          `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
-            getReminderSiteId(ticket),
-          )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`,
-          ""
-        );
+        return `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
+          getReminderSiteId(ticket),
+        )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`;
       }),
     );
   }

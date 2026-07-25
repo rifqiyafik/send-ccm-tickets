@@ -109,10 +109,10 @@ function isSupportedTelegramExcelFile(document) {
 }
 
 function createTelegramWhatsAppAdapter({
+  getWhatsAppSocket,
   sourceChatId,
   sendDocument,
   sendMessage,
-  whatsappSock,
 }) {
   const sourceJid = `${TELEGRAM_SOURCE_PREFIX}${sourceChatId}`;
 
@@ -141,13 +141,46 @@ function createTelegramWhatsAppAdapter({
         return;
       }
 
+      const whatsappSock = getWhatsAppSocket?.();
       if (!whatsappSock?.sendMessage) {
         throw new Error("WhatsApp session belum aktif. Jalankan /login dulu.");
       }
 
-      await whatsappSock.sendMessage(jid, payload);
+      try {
+        await whatsappSock.sendMessage(jid, payload);
+      } catch (error) {
+        if (!isWhatsAppConnectionClosedError(error)) {
+          throw error;
+        }
+
+        logger.warn(
+          "WhatsApp send failed because socket is closed, retrying with latest socket",
+          {
+            targetJid: jid,
+            message: error.message,
+          },
+        );
+        await wait(1500);
+
+        const latestSock = getWhatsAppSocket?.();
+        if (!latestSock?.sendMessage || latestSock === whatsappSock) {
+          throw error;
+        }
+
+        await latestSock.sendMessage(jid, payload);
+      }
     },
   };
+}
+
+function isWhatsAppConnectionClosedError(error) {
+  return /connection closed/i.test(String(error?.message || ""));
+}
+
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function isAdminChat(chatId, config) {
@@ -470,10 +503,10 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         });
 
         const adapter = createTelegramWhatsAppAdapter({
+          getWhatsAppSocket: () => whatsappSession.getSocket(),
           sourceChatId: chatId,
           sendDocument,
           sendMessage,
-          whatsappSock,
         });
         await sendImportResult(adapter, adapter.sourceJid, result, importOptions);
       } catch (error) {

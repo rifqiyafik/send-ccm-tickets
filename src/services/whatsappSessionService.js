@@ -24,6 +24,7 @@ const DEFAULT_READY_TIMEOUT_MS = Number(
 const AUTO_RECOVER_DELAY_MS = Number(
   process.env.WA_AUTO_RECOVER_DELAY_MS || 7000,
 );
+const WA_LOGGED_OUT_STATUS_CODE = 401;
 
 function formatQrText(qr) {
   let qrText = "";
@@ -174,6 +175,45 @@ export function createWhatsAppSessionService({
     }, AUTO_RECOVER_DELAY_MS);
   }
 
+  function getDisconnectStatusCode(lastDisconnect) {
+    return (
+      lastDisconnect?.error?.output?.statusCode ||
+      lastDisconnect?.error?.output?.payload?.statusCode ||
+      lastDisconnect?.error?.statusCode ||
+      0
+    );
+  }
+
+  function isLoggedOutDisconnect(lastDisconnect) {
+    return getDisconnectStatusCode(lastDisconnect) === WA_LOGGED_OUT_STATUS_CODE;
+  }
+
+  async function handleLoggedOutSession(session) {
+    clearAutoRecoverTimer();
+    desiredSessionId = "";
+    connectionState = "logged_out";
+    controller = null;
+    activeSession = await markWhatsAppSessionStatus(session.id, "logged_out");
+    rejectSocketReady(new Error("WhatsApp session logged out."));
+
+    await notifySubscribers(
+      [
+        "🚪 <b>WhatsApp Session Logged Out</b>",
+        "",
+        `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
+        `Phone: <code>${escapeTelegramHtml(session.phone)}</code>`,
+        "",
+        "Credential lokal session ini sudah tidak valid, jadi bot tidak bisa auto-recovery dan QR tidak akan muncul dari credential lama.",
+        "",
+        "Langkah perbaikan:",
+        "1. Jalankan <code>/delete_session 1</code> untuk hapus credential lokal.",
+        `2. Jalankan <code>/login ${escapeTelegramHtml(session.phone)}</code> untuk membuat session baru.`,
+        "3. Isi nama session, lalu scan QR yang dikirim bot.",
+      ].join("\n"),
+      { parse_mode: "HTML" },
+    );
+  }
+
   function createPendingSessionSwitch(chatId, currentSession, nextSession) {
     const key = String(chatId);
     pendingSessionSwitches.set(key, {
@@ -268,7 +308,7 @@ export function createWhatsAppSessionService({
           controller = nextController;
         }
       },
-      onConnectionUpdate: async ({ connection }) => {
+      onConnectionUpdate: async ({ connection, lastDisconnect }) => {
         if (connection === "open") {
           connectionState = "connected";
           await markWhatsAppSessionStatus(session.id, "connected");
@@ -284,6 +324,15 @@ export function createWhatsAppSessionService({
           );
         }
         if (connection === "close") {
+          if (isLoggedOutDisconnect(lastDisconnect)) {
+            logger.warn("WhatsApp session logged out, auto recovery disabled", {
+              sessionId: session.id,
+              statusCode: getDisconnectStatusCode(lastDisconnect),
+            });
+            await handleLoggedOutSession(session);
+            return;
+          }
+
           connectionState = "closed";
           controller = null;
           await markWhatsAppSessionStatus(session.id, "stopped");

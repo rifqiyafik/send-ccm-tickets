@@ -181,7 +181,10 @@ export async function markWhatsAppSessionStatus(sessionId, status) {
   if (status === "connected" || status === "starting") {
     registry.active_session_id = sessionId;
   }
-  if (status === "stopped" && registry.active_session_id === sessionId) {
+  if (
+    ["stopped", "logged_out"].includes(status) &&
+    registry.active_session_id === sessionId
+  ) {
     registry.active_session_id = "";
   }
   await writeRegistry(registry);

@@ -56,6 +56,42 @@ function createMockStartBot(events) {
   };
 }
 
+function createLoggedOutStartBot(events) {
+  return async ({ authDir, onConnectionUpdate, onControllerUpdate }) => {
+    const controller = {
+      sock: {
+        sendMessage: async () => {},
+      },
+      stopped: false,
+      getStatus() {
+        return {
+          running: !controller.stopped,
+          user: null,
+          authDir,
+        };
+      },
+      async stop(reason) {
+        events.push({ type: "stop", authDir, reason });
+        controller.stopped = true;
+      },
+    };
+
+    events.push({ type: "start", authDir });
+    onControllerUpdate?.(controller);
+    await onConnectionUpdate?.({
+      connection: "close",
+      lastDisconnect: {
+        error: {
+          output: {
+            statusCode: 401,
+          },
+        },
+      },
+    });
+    return controller;
+  };
+}
+
 async function createServiceWithSessions(name) {
   const context = setupContext(name);
   const events = [];
@@ -159,6 +195,34 @@ test("force recovers WhatsApp session when socket send detects closed connection
   );
   assert.match(events[1].reason, /force recover/i);
   assert.equal(service.getStatus().connection_state, "connected");
+
+  context.cleanup();
+});
+
+test("does not auto recover logged out WhatsApp session and asks for new QR session", async () => {
+  const context = setupContext("whatsapp-session-logged-out");
+  const events = [];
+  const messages = [];
+  const service = createWhatsAppSessionService({
+    sendTelegramMessage: async (chatId, text) => {
+      messages.push({ chatId, text });
+    },
+    startWhatsAppBot: createLoggedOutStartBot(events),
+  });
+
+  await upsertWhatsAppSession({
+    phone: "6282160478546",
+    label: "Rifqi Yafik",
+  });
+
+  await service.login("5085979770", "1");
+
+  assert.deepEqual(events.map((event) => event.type), ["start"]);
+  assert.equal(service.getStatus().connection_state, "logged_out");
+  assert.equal(service.getStatus().desired_session_id, "");
+  assert.match(messages.at(-1).text, /WhatsApp Session Logged Out/);
+  assert.match(messages.at(-1).text, /\/delete_session 1/);
+  assert.match(messages.at(-1).text, /\/login 6282160478546/);
 
   context.cleanup();
 });

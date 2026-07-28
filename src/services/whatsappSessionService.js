@@ -3,6 +3,7 @@ import qrcode from "qrcode-terminal";
 import { startBot } from "../handlers/whatsappMessageHandler.js";
 import { createLogger } from "../utils/logger.js";
 import { escapeTelegramHtml } from "../utils/telegramFormat.js";
+import { releaseProcessLockByDir } from "../utils/processLock.js";
 import {
   deleteWhatsAppSession,
   formatWhatsAppSessionsList,
@@ -472,9 +473,24 @@ export function createWhatsAppSessionService({
         "Telegram confirmed session switch",
       );
       await new Promise((resolve) => setTimeout(resolve, 750));
-      const startResult = await startSession(nextSession, chatId, {
-        confirmedSwitch: true,
-      });
+      releaseProcessLockByDir(nextSession.auth_dir);
+
+      let startResult;
+      try {
+        startResult = await startSession(nextSession, chatId, {
+          confirmedSwitch: true,
+        });
+      } catch (startError) {
+        logger.warn("Initial session start failed during switch, retrying with forced lock cleanup", {
+          sessionId: nextSession.id,
+          authDir: nextSession.auth_dir,
+          error: startError.message,
+        });
+        releaseProcessLockByDir(nextSession.auth_dir);
+        startResult = await startSession(nextSession, chatId, {
+          confirmedSwitch: true,
+        });
+      }
 
       return [
         "✅ **Switch Session Diproses**",

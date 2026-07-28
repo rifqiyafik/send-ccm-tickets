@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { createLogger } from "./logger.js";
@@ -33,8 +34,34 @@ function readLock(lockPath) {
   }
 }
 
+// melepas lock berbasis direktori secara langsung (termasuk membongkar lock file di disk jika terpencil).
+export function releaseProcessLockByDir(lockDir) {
+  const lockPath = path.join(lockDir, ".process.lock");
+  const release = activeLocks.get(lockPath);
+
+  if (release) {
+    release();
+    return true;
+  }
+
+  try {
+    if (fs.existsSync(lockPath)) {
+      fs.rmSync(lockPath, { force: true });
+      logger.info("Forced stale process lock removal", { lockPath });
+      return true;
+    }
+  } catch (error) {
+    logger.warn("Failed to force remove process lock file", {
+      lockPath,
+      error: error.message,
+    });
+  }
+
+  return false;
+}
+
 // membuat lock eksklusif agar satu folder session Baileys hanya dipakai satu proses.
-export function acquireProcessLock(lockDir, owner) {
+export function acquireProcessLock(lockDir, owner, options = {}) {
   fs.mkdirSync(lockDir, { recursive: true });
   const lockPath = path.join(lockDir, ".process.lock");
   const existingLock = activeLocks.get(lockPath);
@@ -43,8 +70,14 @@ export function acquireProcessLock(lockDir, owner) {
     return existingLock;
   }
 
+  if (options.forceClean) {
+    releaseProcessLockByDir(lockDir);
+  }
+
   const lockData = {
     owner,
+    app_name: "send-ccm-ticket",
+    hostname: os.hostname(),
     pid: process.pid,
     started_at: new Date().toISOString(),
   };
@@ -59,14 +92,17 @@ export function acquireProcessLock(lockDir, owner) {
     }
 
     const currentLock = readLock(lockPath);
-    if (currentLock?.pid === process.pid) {
-      logger.warn("Removing orphan process lock for current PID", {
+    const samePid = currentLock?.pid === process.pid;
+    const sameHostname = !currentLock?.hostname || currentLock?.hostname === os.hostname();
+
+    if (samePid || (sameHostname && !activeLocks.has(lockPath))) {
+      logger.warn("Removing orphan/stale process lock for current process session switch", {
         lockPath,
         currentLock,
         pid: process.pid,
       });
-      fs.unlinkSync(lockPath);
-      return acquireProcessLock(lockDir, owner);
+      fs.rmSync(lockPath, { force: true });
+      return acquireProcessLock(lockDir, owner, options);
     }
 
     if (isPidRunning(currentLock?.pid)) {
@@ -78,8 +114,8 @@ export function acquireProcessLock(lockDir, owner) {
     }
 
     logger.warn("Removing stale process lock", { lockPath, currentLock });
-    fs.unlinkSync(lockPath);
-    return acquireProcessLock(lockDir, owner);
+    fs.rmSync(lockPath, { force: true });
+    return acquireProcessLock(lockDir, owner, options);
   }
 
   let released = false;

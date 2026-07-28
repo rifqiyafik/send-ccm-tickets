@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
-import { acquireProcessLock } from "../src/utils/processLock.js";
+import { acquireProcessLock, releaseProcessLockByDir } from "../src/utils/processLock.js";
 
 function setupLockDir(name) {
   const lockDir = path.join("tmp", name);
@@ -42,6 +42,29 @@ test("removes orphan lock file that has current process PID but is not registere
   assert.equal(lock.owner, "whatsapp-bot");
 
   release();
+  assert.equal(fs.existsSync(context.lockPath), false);
+
+  context.cleanup();
+});
+
+test("releaseProcessLockByDir forcibly removes lock file from disk", () => {
+  const context = setupLockDir("force-release-lock");
+  fs.writeFileSync(
+    context.lockPath,
+    `${JSON.stringify(
+      {
+        owner: "whatsapp-bot",
+        pid: 999999,
+        started_at: new Date().toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  assert.equal(fs.existsSync(context.lockPath), true);
+  releaseProcessLockByDir(context.lockDir);
   assert.equal(fs.existsSync(context.lockPath), false);
 
   context.cleanup();

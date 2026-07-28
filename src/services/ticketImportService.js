@@ -1597,7 +1597,7 @@ function getInProgressReminderLine(ticket, index) {
 
   let dueText = "";
   if (hasMultipleReopens) {
-    dueText = `${reopenNum}X`;
+    dueText = `${reopenNum}X ReOpen`;
   } else if (slaStatus === "IN SLA" && dueDate && dueDate !== "-") {
     dueText = dueDate;
   }
@@ -1653,9 +1653,8 @@ export function formatInProgressReminderMessagePayload(tickets, options = {}) {
   if (isReminderCmd) {
     lines.push(
       "*📊 Summary:*",
-      `Total Ticket: *${summary.total}*`,
-      `In SLA: *${summary.inSla}*`,
-      `Out SLA: *${summary.outSla}*`,
+      `*Total | In SLA | Out SLA*`,
+      `*${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
       "",
     );
   }

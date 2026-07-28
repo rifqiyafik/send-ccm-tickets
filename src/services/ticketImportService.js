@@ -1568,7 +1568,9 @@ function formatOutSlaInProgressEscalationText(ticket, { ccmTag, nopTag }) {
 }
 
 function getReminderAssigneeName(ticket) {
-  return ticket.assignment_type === "SQA" ? ticket.pic_sqa : ticket.pic_nop;
+  return ticket.assignment_type === "SQA"
+    ? ticket.ccm_handling || ticket.pic_sqa
+    : ticket.pic_nop;
 }
 
 function getInProgressReminderTargetName(tickets) {
@@ -1584,19 +1586,47 @@ function getInProgressReminderLine(ticket, index) {
   const slaStatus = cleanTableValue(ticket.sla_status).toUpperCase() || "-";
   const siteId = getReminderSiteId(ticket) || "-";
   const dueDate = cleanTableValue(ticket.resolve_target_22h_text);
-  const dueText =
-    slaStatus === "IN SLA" && dueDate && dueDate !== "-"
-      ? ` | Due: ${dueDate}`
-      : "";
+  const businessStatus = cleanTableValue(ticket.business_status)
+    .toUpperCase()
+    .replace(/[\s_-]+/g, "");
+  const reopenCountStr = getReopenCount(ticket);
+  const reopenNum = Number(reopenCountStr);
+  const isReopen = businessStatus === "REOPEN";
+  const hasMultipleReopens =
+    isReopen && Number.isFinite(reopenNum) && reopenNum > 1;
 
-  return `${index + 1}. *${cleanTableValue(ticket.order_id)}* | ${slaStatus} | Site: ${siteId}${dueText}`;
+  let dueText = "";
+  if (hasMultipleReopens) {
+    dueText = `${reopenNum}X`;
+  } else if (slaStatus === "IN SLA" && dueDate && dueDate !== "-") {
+    dueText = dueDate;
+  }
+
+  const extraPart = dueText ? ` | ${dueText}` : "";
+  return `${index + 1}. *${cleanTableValue(ticket.order_id)}* | ${slaStatus} | ${siteId}${extraPart}`;
 }
 
 // membuat bubble reminder ringkas untuk tiket In Progress yang sudah pernah dikirim hari sebelumnya.
-export function formatInProgressReminderMessagePayload(tickets) {
-  const reminderTickets = tickets.filter(
-    (ticket) => cleanTableValue(ticket.business_status).toUpperCase().replace(/[\s_-]+/g, "") === "INPROGRESS",
+export function formatInProgressReminderMessagePayload(tickets, options = {}) {
+  const isReminderCmd = Boolean(
+    options.isReminderCmd || options.includeSummary,
   );
+  const reminderTickets = isReminderCmd
+    ? tickets
+    : tickets.filter(
+        (ticket) =>
+          cleanTableValue(ticket.business_status)
+            .toUpperCase()
+            .replace(/[\s_-]+/g, "") === "INPROGRESS",
+      );
+
+  if (!reminderTickets || reminderTickets.length === 0) {
+    return {
+      text: "",
+      mentions: [],
+    };
+  }
+
   const summary = summarizeSla(reminderTickets);
   const targetName = getInProgressReminderTargetName(reminderTickets);
   const groupedByPic = new Map();
@@ -1618,12 +1648,17 @@ export function formatInProgressReminderMessagePayload(tickets) {
     "",
     `Izin mengingatkan, berikut tiket yang masih belum resolve di *${targetName}*.`,
     "",
-    "*📊 Summary:*",
-    `Total Ticket: *${summary.total}*`,
-    `In SLA: *${summary.inSla}*`,
-    `Out SLA: *${summary.outSla}*`,
-    "",
   ];
+
+  if (isReminderCmd) {
+    lines.push(
+      "*📊 Summary:*",
+      `Total Ticket: *${summary.total}*`,
+      `In SLA: *${summary.inSla}*`,
+      `Out SLA: *${summary.outSla}*`,
+      "",
+    );
+  }
 
   for (const group of [...groupedByPic.values()].sort((a, b) =>
     cleanTableValue(a.tag?.label).localeCompare(cleanTableValue(b.tag?.label)),
@@ -1648,6 +1683,7 @@ export function formatInProgressReminderMessagePayload(tickets) {
     assignmentType: reminderTickets[0]?.assignment_type,
     tickets: reminderTickets.length,
     picGroups: groupedByPic.size,
+    isReminderCmd,
   });
 
   return {

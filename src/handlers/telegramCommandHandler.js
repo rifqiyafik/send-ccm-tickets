@@ -70,16 +70,18 @@ function getTelegramDocumentImportOptions(caption) {
       missingCommand: true,
       ticketOnlyMode: false,
       summaryOnlyMode: false,
+      reminderMode: false,
     };
   }
 
-  if (!text.startsWith(".")) {
+  if (!text.startsWith(".") && !text.startsWith("/")) {
     return {
       command: text,
       supported: false,
       missingCommand: false,
       ticketOnlyMode: false,
       summaryOnlyMode: false,
+      reminderMode: false,
     };
   }
 
@@ -87,12 +89,14 @@ function getTelegramDocumentImportOptions(caption) {
   const normalMode = [".import", ".send"].includes(command);
   const ticketOnlyMode = command === ".update";
   const summaryOnlyMode = command === ".summary";
+  const reminderMode = [".reminder", "/reminder"].includes(command);
   return {
     command,
-    supported: normalMode || ticketOnlyMode || summaryOnlyMode,
+    supported: normalMode || ticketOnlyMode || summaryOnlyMode || reminderMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
+    reminderMode,
   };
 }
 
@@ -467,27 +471,35 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       await sendRichMessage(
         sendMessage,
         chatId,
-        importOptions.summaryOnlyMode
+        importOptions.reminderMode
           ? [
-              "📂 **File Excel Diterima (Mode .summary)**",
+              "📂 **File Excel Diterima (Mode /reminder)**",
               "",
-              "⏳ Sedang memproses report dan summary saja...",
+              "⏳ Sedang memproses reminder untuk seluruh tiket valid pada file...",
+              "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
               `📄 File Name: \`${document.file_name || "-"}\``,
             ].join("\n")
-          : importOptions.ticketOnlyMode
+          : importOptions.summaryOnlyMode
             ? [
-                "📂 **File Excel Diterima (Mode .update)**",
+                "📂 **File Excel Diterima (Mode .summary)**",
                 "",
-                "⏳ Sedang memproses detail tiket saja dan meneruskan ke grup WhatsApp target...",
-                "🚫 Salam pembuka, Excel target, dan reminder summary akan dilewati.",
+                "⏳ Sedang memproses report dan summary saja...",
                 `📄 File Name: \`${document.file_name || "-"}\``,
               ].join("\n")
-            : [
-                "📂 **File Excel Diterima**",
-                "",
-                "⏳ Sedang memproses tiket dan meneruskan ke grup WhatsApp target...",
-                `📄 File Name: \`${document.file_name || "-"}\``,
-              ].join("\n"),
+            : importOptions.ticketOnlyMode
+              ? [
+                  "📂 **File Excel Diterima (Mode .update)**",
+                  "",
+                  "⏳ Sedang memproses detail tiket saja dan meneruskan ke grup WhatsApp target...",
+                  "🚫 Salam pembuka, Excel target, dan reminder summary akan dilewati.",
+                  `📄 File Name: \`${document.file_name || "-"}\``,
+                ].join("\n")
+              : [
+                  "📂 **File Excel Diterima**",
+                  "",
+                  "⏳ Sedang memproses tiket dan meneruskan ke grup WhatsApp target...",
+                  `📄 File Name: \`${document.file_name || "-"}\``,
+                ].join("\n"),
       );
       try {
         const buffer = await downloadFile(document.file_id);

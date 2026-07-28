@@ -14,7 +14,7 @@ import {
   getTargetGroupKey,
   resolveTargetJid,
 } from "../config/whatsappRouting.js";
-import { getGroupConfig } from "../config/appConfig.js";
+import { getGroupConfig, getMentionContact } from "../config/appConfig.js";
 import { createLogger } from "../utils/logger.js";
 import {
   getMessageSenderJid,
@@ -142,16 +142,18 @@ function getDocumentImportOptions(text) {
       missingCommand: true,
       ticketOnlyMode: false,
       summaryOnlyMode: false,
+      reminderMode: false,
     };
   }
 
-  if (!trimmedText.startsWith(".")) {
+  if (!trimmedText.startsWith(".") && !trimmedText.startsWith("/")) {
     return {
       command: trimmedText,
       supported: false,
       missingCommand: false,
       ticketOnlyMode: false,
       summaryOnlyMode: false,
+      reminderMode: false,
     };
   }
 
@@ -159,12 +161,14 @@ function getDocumentImportOptions(text) {
   const normalMode = [".import", ".send"].includes(command);
   const ticketOnlyMode = command === ".update";
   const summaryOnlyMode = command === ".summary";
+  const reminderMode = [".reminder", "/reminder"].includes(command);
   return {
     command,
-    supported: normalMode || ticketOnlyMode || summaryOnlyMode,
+    supported: normalMode || ticketOnlyMode || summaryOnlyMode || reminderMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
+    reminderMode,
   };
 }
 
@@ -895,10 +899,129 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
   }
 }
 
+export async function sendReminderCommandResult(
+  sock,
+  sourceJid,
+  validTickets,
+  options = {},
+) {
+  if (!validTickets || validTickets.length === 0) {
+    logger.info("Reminder command skipped: no valid tickets");
+    await sock.sendMessage(sourceJid, {
+      text: "⚠️ Tidak ada tiket valid yang dapat di-remind dari file Excel ini.",
+    });
+    return;
+  }
+
+  const sqaTickets = validTickets.filter(
+    (ticket) => ticket.assignment_type === "SQA",
+  );
+  const nopTickets = validTickets.filter(
+    (ticket) => ticket.assignment_type === "NOP",
+  );
+
+  logger.info("Processing /reminder command result", {
+    sourceJid,
+    totalValid: validTickets.length,
+    sqaCount: sqaTickets.length,
+    nopCount: nopTickets.length,
+  });
+
+  // 1. Process NOP tickets: send reminder to NOP target groups
+  if (nopTickets.length > 0) {
+    const nopRemindersByTarget = await groupTicketsByTarget(
+      sock,
+      sourceJid,
+      nopTickets,
+    );
+
+    for (const [targetJid, tickets] of nopRemindersByTarget.entries()) {
+      try {
+        const payload = formatInProgressReminderMessagePayload(tickets, {
+          isReminderCmd: true,
+          includeSummary: true,
+        });
+
+        if (payload.text) {
+          await sock.sendMessage(targetJid, payload);
+          logger.info("Sent NOP /reminder payload to target group", {
+            targetJid,
+            tickets: tickets.length,
+          });
+        }
+      } catch (error) {
+        await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+          targetJid,
+          stage: "reminder command NOP",
+          tickets,
+          error,
+        });
+      }
+    }
+  }
+
+  // 2. Process SQA tickets: group by ccm_handling, send JAPRI (Direct Message)
+  if (sqaTickets.length > 0) {
+    const sqaGroupedByCcm = new Map();
+    for (const ticket of sqaTickets) {
+      const ccmName = ticket.ccm_handling || ticket.pic_sqa || "UNKNOWN";
+      const key = cleanInlineText(ccmName).toUpperCase();
+      const group = sqaGroupedByCcm.get(key) || { name: ccmName, tickets: [] };
+      group.tickets.push(ticket);
+      sqaGroupedByCcm.set(key, group);
+    }
+
+    for (const { name, tickets } of sqaGroupedByCcm.values()) {
+      const contact = getMentionContact(name);
+      const payload = formatInProgressReminderMessagePayload(tickets, {
+        isReminderCmd: true,
+        includeSummary: true,
+      });
+
+      if (!payload.text) continue;
+
+      if (contact && contact.jid) {
+        try {
+          await sock.sendMessage(contact.jid, payload);
+          logger.info("Sent SQA /reminder JAPRI to PIC CCM", {
+            ccmName: name,
+            contactJid: contact.jid,
+            tickets: tickets.length,
+          });
+        } catch (error) {
+          logger.error(
+            "Failed to send SQA /reminder JAPRI, falling back to Telegram source chat",
+            {
+              ccmName: name,
+              contactJid: contact.jid,
+              error,
+            },
+          );
+          await sock.sendMessage(sourceJid, {
+            text: `⚠️ **Gagal JAPRI WA ke ${name} (${contact.jid})**\n\n${payload.text}`,
+          });
+        }
+      } else {
+        logger.warn(
+          "PIC CCM WhatsApp contact not found, falling back to Telegram source chat",
+          {
+            ccmName: name,
+            sourceJid,
+          },
+        );
+        await sock.sendMessage(sourceJid, {
+          text: `⚠️ **[FALLBACK SQA REMINDER]**\nNomor WA untuk PIC CCM **${name}** belum terdaftar di config mentions.\nBerikut reminder tiketnya:\n\n${payload.text}`,
+        });
+      }
+    }
+  }
+}
+
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 export async function sendImportResult(sock, sourceJid, result, options = {}) {
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   const summaryOnlyMode = Boolean(options.summaryOnlyMode);
+  const reminderMode = Boolean(options.reminderMode);
   logger.info("Sending import summary", {
     sourceJid,
     ok: result.ok,
@@ -907,6 +1030,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     skipped: result.skipped_count,
     ticketOnlyMode,
     summaryOnlyMode,
+    reminderMode,
   });
 
   await sock.sendMessage(sourceJid, {
@@ -1004,6 +1128,20 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       result.valid_tickets,
     );
     logger.info("Stopping import flow after summary-only report", {
+      sourceJid,
+      validTickets: result.valid_tickets.length,
+    });
+    return;
+  }
+
+  if (reminderMode) {
+    await sendReminderCommandResult(
+      sock,
+      sourceJid,
+      result.valid_tickets,
+      options,
+    );
+    logger.info("Stopping import flow after reminder command mode", {
       sourceJid,
       validTickets: result.valid_tickets.length,
     });

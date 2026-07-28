@@ -173,12 +173,13 @@ test("formats OUT SLA In Progress tickets with short reminder message", () => {
 test("formats grouped In Progress daily reminder with mentions", () => {
   const context = setupMentionConfig();
 
-  const payload = formatInProgressReminderMessagePayload([
+  const tickets = [
     {
       order_id: "CC-20260709-00000348",
       assignment_type: "SQA",
       business_status: "In Progress",
       sla_status: "OUT SLA",
+      ccm_handling: "Herman",
       pic_sqa: "Herman",
       site_id: "JHO293",
       resolve_target_22h_text: "Rabu / 22 Jul 2026, 11:50:38 PM",
@@ -188,22 +189,52 @@ test("formats grouped In Progress daily reminder with mentions", () => {
       assignment_type: "SQA",
       business_status: "In Progress",
       sla_status: "IN SLA",
+      ccm_handling: "Herman",
       pic_sqa: "Herman",
       site_id: "MDN872",
       resolve_target_22h_text: "Kamis / 23 Jul 2026, 08:00:00 PM",
     },
-  ]);
+  ];
 
-  assert.match(payload.text, /REMIND TICKET IN PROGRESS/);
-  assert.match(payload.text, /SQA SUMBAGUT/);
-  assert.match(payload.text, /Total Ticket: \*2\*/);
-  assert.match(payload.text, /Out SLA: \*1\*/);
-  assert.match(payload.text, /In SLA: \*1\*/);
-  assert.match(payload.text, /@628136378970/);
-  assert.match(payload.text, /CC-20260709-00000348/);
-  assert.match(payload.text, /CC-20260711-00000356/);
-  assert.match(payload.text, /Due: Kamis \/ 23 Jul 2026, 08:00:00 PM/);
-  assert.deepEqual(payload.mentions, ["628136378970@s.whatsapp.net"]);
+  const dailyPayload = formatInProgressReminderMessagePayload(tickets);
+  assert.match(dailyPayload.text, /REMIND TICKET IN PROGRESS/);
+  assert.match(dailyPayload.text, /SQA SUMBAGUT/);
+  assert.equal(dailyPayload.text.includes("Total Ticket:"), false);
+  assert.match(dailyPayload.text, /@628136378970/);
+  assert.match(dailyPayload.text, /CC-20260709-00000348/);
+  assert.match(dailyPayload.text, /CC-20260711-00000356/);
+
+  const cmdPayload = formatInProgressReminderMessagePayload(tickets, {
+    isReminderCmd: true,
+  });
+  assert.match(cmdPayload.text, /REMIND TICKET IN PROGRESS/);
+  assert.match(cmdPayload.text, /Total Ticket: \*2\*/);
+  assert.match(cmdPayload.text, /Out SLA: \*1\*/);
+  assert.match(cmdPayload.text, /In SLA: \*1\*/);
+
+  context.cleanup();
+});
+
+test("formats ReOpen reminder line with reopen count when count > 1", () => {
+  const context = setupMentionConfig();
+
+  const tickets = [
+    {
+      order_id: "CC-20260712-00000999",
+      assignment_type: "SQA",
+      business_status: "ReOpen",
+      sla_status: "OUT SLA",
+      ccm_handling: "Herman",
+      pic_sqa: "Herman",
+      site_id: "KBA123",
+      reopen_number: "2",
+    },
+  ];
+
+  const payload = formatInProgressReminderMessagePayload(tickets, {
+    isReminderCmd: true,
+  });
+  assert.match(payload.text, /CC-20260712-00000999\* \| OUT SLA \| KBA123 \| 2X/);
 
   context.cleanup();
 });

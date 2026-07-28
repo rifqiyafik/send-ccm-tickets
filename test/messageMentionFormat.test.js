@@ -208,9 +208,8 @@ test("formats grouped In Progress daily reminder with mentions", () => {
     isReminderCmd: true,
   });
   assert.match(cmdPayload.text, /REMIND TICKET IN PROGRESS/);
-  assert.match(cmdPayload.text, /Total Ticket: \*2\*/);
-  assert.match(cmdPayload.text, /Out SLA: \*1\*/);
-  assert.match(cmdPayload.text, /In SLA: \*1\*/);
+  assert.match(cmdPayload.text, /\*Total \| In SLA \| Out SLA\*/);
+  assert.match(cmdPayload.text, /\*2 \| 1 \| 1\*/);
 
   context.cleanup();
 });

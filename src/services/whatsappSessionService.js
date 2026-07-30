@@ -85,7 +85,10 @@ export function createWhatsAppSessionService({
   }
 
   function isSessionRunning() {
-    return Boolean(controller?.getStatus?.().running);
+    return (
+      Boolean(controller?.getStatus?.().running) &&
+      connectionState === "connected"
+    );
   }
 
   function resolveSocketReady() {
@@ -734,6 +737,7 @@ export function createWhatsAppSessionService({
 
     return {
       ...status,
+      running: isSessionRunning(),
       active_session: activeSession,
       connection_state: connectionState,
       desired_session_id: desiredSessionId,

@@ -1485,15 +1485,33 @@ export async function startBot(options = {}) {
   bindSessionLockCleanup();
 
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
-  const envVersion = parseWaWebVersion(process.env.WA_WEB_VERSION);
-  const { version: latestVersion } = envVersion
-    ? { version: envVersion }
-    : await fetchLatestBaileysVersion();
-  const version = envVersion || latestVersion;
+  let version = null;
+  let versionSource = "latest";
+  try {
+    const { version: fetchedVersion } = await fetchLatestBaileysVersion();
+    version = fetchedVersion;
+  } catch (error) {
+    logger.warn("Failed to fetch latest Baileys version from web, falling back to env/default", {
+      error: error.message,
+    });
+  }
+
+  if (!version) {
+    const envVersion = parseWaWebVersion(process.env.WA_WEB_VERSION);
+    if (envVersion) {
+      version = envVersion;
+      versionSource = "env";
+    }
+  }
+
+  if (!version) {
+    version = [2, 3000, 1015901307];
+    versionSource = "fallback";
+  }
 
   logger.info("Starting WhatsApp socket", {
-    waWebVersion: version.join("."),
-    versionSource: envVersion ? "env" : "latest",
+    waWebVersion: Array.isArray(version) ? version.join(".") : String(version),
+    versionSource,
   });
 
   const sock = makeWASocket({
@@ -1595,8 +1613,11 @@ export async function startBot(options = {}) {
       const reason =
         lastDisconnect?.error?.output?.payload?.message ||
         lastDisconnect?.error?.message;
+      const isManagedBySessionService = Boolean(options.onConnectionUpdate);
       const shouldReconnect =
-        !stopRequested && statusCode !== DisconnectReason.loggedOut;
+        !stopRequested &&
+        statusCode !== DisconnectReason.loggedOut &&
+        !isManagedBySessionService;
 
       if (shouldReconnect) {
         logger.warn("WhatsApp connection closed, reconnecting in 5 seconds", {
@@ -1625,10 +1646,13 @@ export async function startBot(options = {}) {
       } else {
         cleanupCurrentSocket();
         logger.warn(
-          "WhatsApp logged out. Delete auth dir and start again to scan a new QR",
+          "WhatsApp connection closed",
           {
             authDir,
             generation,
+            statusCode,
+            reason,
+            managedBySessionService: isManagedBySessionService,
           },
         );
       }

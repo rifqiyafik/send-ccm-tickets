@@ -1164,34 +1164,74 @@ export function formatProcessingReport(result) {
   }
 
   if (result.valid_tickets.length > 0) {
-    lines.push(
-      "",
-      "📋 Detail tiket yang valid:",
-      createCodeBlock(
-        formatAsciiTable(
-          [
-            { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 24 },
-            {
-              key: "assignment_type",
-              header: "Assignment Type",
-              minWidth: 15,
-            },
-            { key: "city", header: "City", minWidth: 12, maxWidth: 18 },
-            { key: "sla_status", header: "SLA Status", minWidth: 10 },
-            { key: "pic", header: "PIC", minWidth: 12, maxWidth: 24 },
-            { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
-          ],
-          result.valid_tickets.map((ticket) => ({
-            order_id: getTicketRef(ticket),
-            assignment_type: ticket.assignment_type,
-            city: ticket.city || "-",
-            sla_status: ticket.sla_status || "-",
-            pic: ticket.pic || "-",
-            site_id: ticket.site_id || "-",
-          })),
-        ),
-      ),
+    const tableColumns = [
+      { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 24 },
+      { key: "city", header: "City", minWidth: 12, maxWidth: 18 },
+      { key: "cluster_area", header: "Cluster Area", minWidth: 14, maxWidth: 20 },
+      { key: "sla_status", header: "SLA Status", minWidth: 10 },
+      { key: "pic", header: "PIC", minWidth: 12, maxWidth: 24 },
+      { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
+    ];
+
+    const mapTicketToRow = (ticket) => ({
+      order_id: getTicketRef(ticket),
+      city: ticket.city || "-",
+      cluster_area:
+        ticket.cluster_area ||
+        ticket.departemen_ns ||
+        ticket.departement_ns ||
+        ticket.nsa ||
+        "-",
+      sla_status: ticket.sla_status || "-",
+      pic: ticket.pic || "-",
+      site_id: ticket.site_id || "-",
+    });
+
+    const sqaTickets = result.valid_tickets.filter(
+      (ticket) => ticket.assignment_type === "SQA",
     );
+    const nopTickets = result.valid_tickets.filter(
+      (ticket) => ticket.assignment_type === "NOP",
+    );
+    const otherTickets = result.valid_tickets.filter(
+      (ticket) =>
+        ticket.assignment_type !== "SQA" && ticket.assignment_type !== "NOP",
+    );
+
+    lines.push("", "📋 Detail tiket yang valid:");
+
+    if (sqaTickets.length > 0) {
+      lines.push(
+        "SQA",
+        createCodeBlock(
+          formatAsciiTable(tableColumns, sqaTickets.map(mapTicketToRow)),
+        ),
+      );
+    }
+
+    if (nopTickets.length > 0) {
+      if (sqaTickets.length > 0) {
+        lines.push("");
+      }
+      lines.push(
+        "NOP",
+        createCodeBlock(
+          formatAsciiTable(tableColumns, nopTickets.map(mapTicketToRow)),
+        ),
+      );
+    }
+
+    if (otherTickets.length > 0) {
+      if (sqaTickets.length > 0 || nopTickets.length > 0) {
+        lines.push("");
+      }
+      lines.push(
+        "OTHER",
+        createCodeBlock(
+          formatAsciiTable(tableColumns, otherTickets.map(mapTicketToRow)),
+        ),
+      );
+    }
   }
 
   return lines.join("\n");
@@ -1306,6 +1346,10 @@ function getReminderDepartmentName(ticket) {
   return normalizeNopAreaName(department) || "-";
 }
 
+function countWords(text) {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
 // mengambil teks remark Problem Analysis untuk tabel reminder.
 function getpreviousProblemAnalysis(ticket) {
   const text = cleanTableValue(cleanMultilineText(ticket.problem_analysis));
@@ -1314,22 +1358,36 @@ function getpreviousProblemAnalysis(ticket) {
   }
 
   const stopPatterns = [
-    /\bberdasarkan\s+dominant\s+cell\b/i,
-    /\bberdasarkan\s+the\s+dominant\s+cell\b/i,
-    /\bperkiraan\s+site\s+(?:cover\s+)?pelanggan\b/i,
-    /\bperkiraan\s+site\s+cover\b/i,
+    /\bperkiraan\s+site\b/i,
+    /\bdominant\s+cell\b/i,
     /\bpotensial\s+problem\b/i,
-    /\bcategori\s+problem\b/i,
-    /\bcategory\s+problem\b/i,
+    /\bcat?egor[yi]\s+problem\b/i,
   ];
   const stopIndexes = stopPatterns
     .map((pattern) => text.search(pattern))
     .filter((index) => index >= 0);
-  const trimmed =
+  const processedText =
     stopIndexes.length > 0 ? text.slice(0, Math.min(...stopIndexes)) : text;
 
+  const sentences = processedText
+    .split(/(?<=\.)\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let resultText = processedText;
+  if (sentences.length > 0) {
+    const firstSentence = sentences[0];
+    const wordCountFirst = countWords(firstSentence);
+
+    if (wordCountFirst >= 15) {
+      resultText = firstSentence;
+    } else if (sentences.length >= 2) {
+      resultText = `${firstSentence} ${sentences[1]}`;
+    }
+  }
+
   return (
-    trimmed
+    resultText
       .replace(/\s+/g, " ")
       .replace(/\s+[.,;:]+$/g, "")
       .trim() || "-"
@@ -1406,14 +1464,15 @@ function formatSqaReminderMessage(tickets) {
     lines.push(
       "",
       "*Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen*",
-      ...detailTickets.map(
-        (ticket) =>
-          `*${getReminderDepartmentName(ticket)} | ${cleanTableValue(
-            ticket.order_id,
-          )} | ${getReminderSiteId(ticket)} | ${getReopenCount(
-            ticket,
-          )} | ${getpreviousProblemAnalysis(ticket)}*`,
-      ),
+      "*---------------------------------------------------------------------------*",
+      ...detailTickets.flatMap((ticket) => [
+        `*${getReminderDepartmentName(ticket)} | ${cleanTableValue(
+          ticket.order_id,
+        )} | ${getReminderSiteId(ticket)} | ${getReopenCount(
+          ticket,
+        )} | ${getpreviousProblemAnalysis(ticket)}*`,
+        "",
+      ]),
     );
   }
 
@@ -1441,11 +1500,15 @@ function formatNopReminderMessage(tickets) {
     lines.push(
       "",
       "*PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen*",
-      ...detailTickets.map((ticket, index) => {
+      "*---------------------------------------------------------------------------*",
+      ...detailTickets.flatMap((ticket, index) => {
         const tag = mentionTags[index];
-        return `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
-          getReminderSiteId(ticket),
-        )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`;
+        return [
+          `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
+            getReminderSiteId(ticket),
+          )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`,
+          "",
+        ];
       }),
     );
   }
@@ -1582,24 +1645,60 @@ function getInProgressReminderTargetName(tickets) {
   return `NOP ${getNopReminderName(tickets)}`;
 }
 
+function parseFormattedDueDate(rawDueDate, ticket) {
+  if (
+    ticket?.resolve_target_22h instanceof Date &&
+    !Number.isNaN(ticket.resolve_target_22h.getTime())
+  ) {
+    return ticket.resolve_target_22h;
+  }
+  if (!rawDueDate || rawDueDate === "-") {
+    return null;
+  }
+  const cleaned = rawDueDate.replace(/^[A-Za-z]+\s*\/\s*/, "").trim();
+  const enFormatted = cleaned
+    .replace(/\bMei\b/i, "May")
+    .replace(/\bAgu\b/i, "Aug")
+    .replace(/\bOkt\b/i, "Oct")
+    .replace(/\bDes\b/i, "Dec");
+  const date = new Date(enFormatted);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatOverdueTime(rawDueDate, ticket, now = new Date()) {
+  const dueDate = parseFormattedDueDate(rawDueDate, ticket);
+  if (!dueDate) return "";
+
+  const diffMs = now.getTime() - dueDate.getTime();
+  if (diffMs <= 0) return "";
+
+  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const diffHours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
+  const diffMinutes = Math.floor((diffMs / (1000 * 60)) % 60);
+
+  return diffDays > 0
+    ? `Out ${diffDays}d ${diffHours}h ${diffMinutes}m`
+    : `Out ${diffHours}h ${diffMinutes}m`;
+}
+
 function getInProgressReminderLine(ticket, index) {
   const slaStatus = cleanTableValue(ticket.sla_status).toUpperCase() || "-";
   const siteId = getReminderSiteId(ticket) || "-";
-  const dueDate = cleanTableValue(ticket.resolve_target_22h_text);
+  const rawDueDate = cleanTableValue(ticket.resolve_target_22h_text);
   const businessStatus = cleanTableValue(ticket.business_status)
     .toUpperCase()
     .replace(/[\s_-]+/g, "");
   const reopenCountStr = getReopenCount(ticket);
   const reopenNum = Number(reopenCountStr);
   const isReopen = businessStatus === "REOPEN";
-  const hasMultipleReopens =
-    isReopen && Number.isFinite(reopenNum) && reopenNum > 1;
 
   let dueText = "";
-  if (hasMultipleReopens) {
-    dueText = `${reopenNum}X ReOpen`;
-  } else if (slaStatus === "IN SLA" && dueDate && dueDate !== "-") {
-    dueText = dueDate;
+  if (isReopen && Number.isFinite(reopenNum)) {
+    dueText = reopenNum > 1 ? `${reopenNum}X ReOpen` : "ReOpen";
+  } else if (slaStatus === "IN SLA") {
+    dueText = rawDueDate !== "-" ? rawDueDate : "";
+  } else if (slaStatus === "OUT SLA" && businessStatus === "INPROGRESS") {
+    dueText = formatOverdueTime(rawDueDate, ticket);
   }
 
   const extraPart = dueText ? ` | ${dueText}` : "";
@@ -1662,7 +1761,7 @@ export function formatInProgressReminderMessagePayload(tickets, options = {}) {
   for (const group of [...groupedByPic.values()].sort((a, b) =>
     cleanTableValue(a.tag?.label).localeCompare(cleanTableValue(b.tag?.label)),
   )) {
-    lines.push(`*👤 ${group.tag?.text || "-"}*`);
+    lines.push(`👤 ${group.tag?.text || "-"}`);
     lines.push(
       ...group.tickets.map((ticket, index) =>
         getInProgressReminderLine(ticket, index),

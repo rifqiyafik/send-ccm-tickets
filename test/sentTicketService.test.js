@@ -129,6 +129,39 @@ test("resends ticket when previous business status was IN PROGRESS and current s
   context.cleanup();
 });
 
+test("resends ticket when business status is ReOpen and reopen_count increased today", async () => {
+  const context = setupStore("reopen-count-increase", {
+    version: 1,
+    tickets: {
+      "CC-1": {
+        order_id: "CC-1",
+        business_status: "REOPEN",
+        sla_status: "IN SLA",
+        reopen_count: 2,
+        sent_at: "2026-07-21T00:00:00.000Z",
+        sent_date: "2026-07-21",
+      },
+    },
+  });
+
+  const plan = await createSentTicketPlan(
+    [
+      ticket({
+        business_status: "ReOpen",
+        use_reopen_message_format: true,
+        reopen_number: "3",
+      }),
+    ],
+    new Date("2026-07-21T01:00:00.000Z"),
+  );
+
+  assert.equal(plan.sendable_tickets.length, 1);
+  assert.equal(plan.reopened_tickets.length, 1);
+  assert.equal(plan.duplicate_tickets.length, 0);
+
+  context.cleanup();
+});
+
 test("plans previous-day OUT SLA In Progress ticket as daily reminder only", async () => {
   const context = setupStore("out-sla-ticket", {
     version: 1,

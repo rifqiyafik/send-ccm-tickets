@@ -118,11 +118,11 @@ test("formats SQA reminder using department, remark site, integer reopen count, 
 
   assert.match(
     payload.text,
-    /PMS \| CC-20260721-00000037 \| BGE291 \| 3 \| Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport\/TNL yang cukup tinggi, sehingga performance tidak maksimal\. Dan saat ini sudah normal kembali/,
+    /PMS \| CC-20260721-00000037 \| BGE291 \| 3 \| Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport\/TNL yang cukup tinggi, sehingga performance tidak maksimal/,
   );
   assert.match(
     payload.text,
-    /ACEH \| CC-20260721-00000268 \| MBO052 \| 2 \| Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport\/TNL yang cukup tinggi, sehingga performance tidak maksimal\. Dan saat ini sudah normal kembali/,
+    /ACEH \| CC-20260721-00000268 \| MBO052 \| 2 \| Performance KPI beberapa hari terakhir disaat kejadian terlihat ada issue Transport\/TNL yang cukup tinggi, sehingga performance tidak maksimal/,
   );
   assert.doesNotMatch(payload.text, /TOBA SAMOSIR/);
   assert.doesNotMatch(payload.text, /ACEH BARAT/);
@@ -204,4 +204,40 @@ test("omits NOP ReOpen detail row when remark is empty", () => {
   assert.deepEqual(payload.mentions, []);
 
   context.cleanup();
+});
+
+test("trims Problem Analysis by 15-word rule and formats blank lines between ticket rows", () => {
+  const payload = formatReminderMessagePayload([
+    {
+      assignment_type: "SQA",
+      sla_status: "IN SLA",
+      departement_ns: "NOP ACEH",
+      order_id: "CC-20260729-00000801",
+      site_id: "PYB280",
+      reopen_number: "2",
+      problem_analysis:
+        "Performance KPI di beberapa hari terlihat ada issue site cell down/unmonitoring dan saat ini sudah kembali normal. Perkiraan site coverPYB280 sector 1.",
+    },
+    {
+      assignment_type: "SQA",
+      sla_status: "IN SLA",
+      departement_ns: "NOP ACEH",
+      order_id: "CC-20260730-00000190",
+      site_id: "MAK773",
+      reopen_number: "1",
+      problem_analysis:
+        "Dari Performance KPI di beberapa hari terakhir terlihat issue high cHigh PRB Util di busy hour sehingga perform site tidak maksimal. saat ini sudah kembali safe. perkiraan site dominant cover dengan Lokasi Complain adalah MAK035 sector 2.",
+    },
+  ]);
+
+  // Verify Perkiraan site cover is cleanly stripped
+  assert.doesNotMatch(payload.text, /Perkiraan site coverPYB280/);
+  assert.doesNotMatch(payload.text, /perkiraan site dominant cover/);
+  assert.doesNotMatch(payload.text, /saat ini sudah kembali safe/);
+
+  // Verify blank line exists between ticket rows
+  assert.match(
+    payload.text,
+    /ACEH \| CC-20260729-00000801 \| PYB280 \| 2 \| Performance KPI di beberapa hari terlihat ada issue site cell down\/unmonitoring dan saat ini sudah kembali normal\.\*\n\n\*ACEH \| CC-20260730-00000190 \| MAK773 \| 1 \| Dari Performance KPI di beberapa hari terakhir terlihat issue high cHigh PRB Util di busy hour sehingga perform site tidak maksimal\.\*/,
+  );
 });

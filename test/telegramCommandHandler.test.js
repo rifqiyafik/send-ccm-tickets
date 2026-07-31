@@ -283,3 +283,77 @@ test("returns command error message when authorized login fails", async () => {
 
   context.cleanup();
 });
+
+test("returns group help guide for group chat and personal guide for private chat", async () => {
+  const context = setupTelegramAccessConfig("handler-help-separation");
+  await registerTelegramChat({
+    chatId: "-1001234567890",
+    label: "Approved Group",
+    type: "group",
+    registeredBy: "999",
+  });
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const { handler, sentMessages, tools } = createMockRuntime();
+
+  // Test Group /help
+  await handler(
+    createTextUpdate({
+      chatId: "-1001234567890",
+      text: "/help",
+      type: "supergroup",
+    }),
+    tools,
+  );
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /Panduan Bot Kirim CCM Ticket \(Grup Telegram\)/);
+  assert.match(sentMessages[0].text, /Cek Koneksi WhatsApp Bot/);
+
+  // Test Personal /help
+  await handler(
+    createTextUpdate({
+      chatId: "123456789",
+      text: "/help",
+      type: "private",
+    }),
+    tools,
+  );
+  assert.equal(sentMessages.length, 2);
+  assert.match(sentMessages[1].text, /Admin Command Center \(Personal Guide\)/);
+  assert.match(sentMessages[1].text, /WhatsApp Session Management/);
+
+  context.cleanup();
+});
+
+test("returns start greeting and features overview for /start command", async () => {
+  const context = setupTelegramAccessConfig("handler-start-greeting");
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const { handler, sentMessages, tools } = createMockRuntime();
+
+  await handler(
+    createTextUpdate({
+      chatId: "123456789",
+      text: "/start",
+      type: "private",
+    }),
+    tools,
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /Selamat Datang di CCM Ticket Bot!/);
+  assert.match(sentMessages[0].text, /Fitur Utama Bot:/);
+  assert.match(sentMessages[0].text, /Ketik.*\/help.*panduan/);
+
+  context.cleanup();
+});

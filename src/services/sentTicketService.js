@@ -133,7 +133,7 @@ function createResolvedFallbackDataCodeTable(tickets) {
       { key: "orderId", header: "Order ID" },
       { key: "field", header: "Field" },
       { key: "fallback", header: "Fallback" },
-      { key: "missing", header: "Field Kosong Fallback" },
+      { key: "missing", header: "Fallback Kosong" },
     ],
     tickets.flatMap((ticket) =>
       (ticket.fallback_resolutions || []).map((resolution) => ({
@@ -338,6 +338,23 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
     };
   }
 
+  const newReopenCountValue = Number(cleanTableValue(ticket.reopen_number));
+  const newReopenCount =
+    Number.isFinite(newReopenCountValue) && Number.isInteger(newReopenCountValue)
+      ? newReopenCountValue
+      : 0;
+  const existingReopenCount = Number(existingRecord.reopen_count || 0);
+
+  if (
+    isReopen(ticket.business_status) &&
+    newReopenCount > existingReopenCount
+  ) {
+    return {
+      send: true,
+      reason: "REOPEN_COUNT_INCREASED",
+    };
+  }
+
   if (existingSentDate !== today) {
     if (isInProgress(ticket.business_status)) {
       return {
@@ -395,7 +412,10 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
 
     if (decision.send) {
       sendableTickets.push(ticket);
-      if (decision.reason === "REOPEN_AFTER_IN_PROGRESS") {
+      if (
+        decision.reason === "REOPEN_AFTER_IN_PROGRESS" ||
+        decision.reason === "REOPEN_COUNT_INCREASED"
+      ) {
         reopenedTickets.push(ticket);
       }
       continue;
@@ -468,11 +488,19 @@ export async function markTicketAsSent(ticket, metadata = {}) {
   const rawStore = await readStore();
   const store = cleanupExpiredRecords(rawStore);
   const now = new Date();
+
+  const reopenCountValue = Number(cleanTableValue(ticket.reopen_number));
+  const reopenCount =
+    Number.isFinite(reopenCountValue) && Number.isInteger(reopenCountValue)
+      ? reopenCountValue
+      : 0;
+
   store.tickets[orderId] = {
     order_id: ticket.order_id,
     assignment_type: ticket.assignment_type,
     business_status: ticket.business_status,
     sla_status: ticket.sla_status,
+    reopen_count: reopenCount,
     target_jid: metadata.targetJid || "",
     source_jid: metadata.sourceJid || "",
     sent_at: now.toISOString(),

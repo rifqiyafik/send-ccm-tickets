@@ -1424,7 +1424,7 @@ function formatSqaReminderMessage(tickets) {
     lines.push(
       "",
       "*Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen*",
-      "",
+      "*---------------------------------------------------------------------------*",
       ...detailTickets.flatMap((ticket) => [
         `*${getReminderDepartmentName(ticket)} | ${cleanTableValue(
           ticket.order_id,
@@ -1460,7 +1460,7 @@ function formatNopReminderMessage(tickets) {
     lines.push(
       "",
       "*PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen*",
-      "",
+      "*---------------------------------------------------------------------------*",
       ...detailTickets.flatMap((ticket, index) => {
         const tag = mentionTags[index];
         return [
@@ -1651,12 +1651,10 @@ function getInProgressReminderLine(ticket, index) {
   const reopenCountStr = getReopenCount(ticket);
   const reopenNum = Number(reopenCountStr);
   const isReopen = businessStatus === "REOPEN";
-  const hasMultipleReopens =
-    isReopen && Number.isFinite(reopenNum) && reopenNum > 1;
 
   let dueText = "";
-  if (hasMultipleReopens) {
-    dueText = `${reopenNum}X ReOpen`;
+  if (isReopen && Number.isFinite(reopenNum)) {
+    dueText = reopenNum > 1 ? `${reopenNum}X ReOpen` : "ReOpen";
   } else if (slaStatus === "IN SLA") {
     dueText = rawDueDate !== "-" ? rawDueDate : "";
   } else if (slaStatus === "OUT SLA" && businessStatus === "INPROGRESS") {

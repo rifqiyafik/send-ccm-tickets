@@ -238,6 +238,31 @@ test("formats ReOpen reminder line with reopen count when count > 1", () => {
   context.cleanup();
 });
 
+test("formats ReOpen reminder line with ReOpen when count is 1", () => {
+  const context = setupMentionConfig();
+
+  const tickets = [
+    {
+      order_id: "CC-20260712-00000777",
+      assignment_type: "SQA",
+      business_status: "ReOpen",
+      sla_status: "OUT SLA",
+      ccm_handling: "Herman",
+      pic_sqa: "Herman",
+      site_id: "KBA123",
+      reopen_number: "1",
+    },
+  ];
+
+  const payload = formatInProgressReminderMessagePayload(tickets, {
+    isReminderCmd: true,
+  });
+  assert.match(payload.text, /CC-20260712-00000777\* \| OUT SLA \| KBA123 \| ReOpen/);
+  assert.doesNotMatch(payload.text, /1X ReOpen/);
+
+  context.cleanup();
+});
+
 test("formats OUT SLA In Progress reminder line with calculated overdue time", () => {
   const context = setupMentionConfig();
 

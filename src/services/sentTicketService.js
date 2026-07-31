@@ -133,7 +133,7 @@ function createResolvedFallbackDataCodeTable(tickets) {
       { key: "orderId", header: "Order ID" },
       { key: "field", header: "Field" },
       { key: "fallback", header: "Fallback" },
-      { key: "missing", header: "Field Kosong Fallback" },
+      { key: "missing", header: "Fallback Kosong" },
     ],
     tickets.flatMap((ticket) =>
       (ticket.fallback_resolutions || []).map((resolution) => ({

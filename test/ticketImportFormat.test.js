@@ -103,3 +103,40 @@ test("formats processing report tables with aligned static borders", () => {
     assertAlignedCodeTable(table);
   }
 });
+
+test("formats valid tickets report separated into SQA and NOP tables with Cluster Area", () => {
+  const report = formatProcessingReport({
+    ok: true,
+    valid_by_assignment_type: { SQA: 1, NOP: 1 },
+    valid_by_pic: { Herman: 1, "Edy Syofra": 1 },
+    skipped_by_reason: {},
+    skipped_tickets: [],
+    valid_tickets: [
+      {
+        order_id: "CC-20260723-00000308",
+        assignment_type: "SQA",
+        city: "NAGAN RAYA",
+        cluster_area: "NOP ACEH",
+        sla_status: "OUT SLA",
+        pic: "Herman",
+        site_id: "MAK758",
+      },
+      {
+        order_id: "CC-20260729-00000887",
+        assignment_type: "NOP",
+        city: "LABUHANBATU",
+        cluster_area: "NOP RANTAU PRAPAT",
+        sla_status: "OUT SLA",
+        pic: "Edy Syofra",
+        site_id: "RAP755",
+      },
+    ],
+  });
+
+  assert.match(report, /📋 Detail tiket yang valid:/);
+  assert.match(report, /SQA\n```\n\+-+\+/);
+  assert.match(report, /NOP\n```\n\+-+\+/);
+  assert.match(report, /Cluster Area/);
+  assert.match(report, /CC-20260723-00000308/);
+  assert.match(report, /CC-20260729-00000887/);
+});

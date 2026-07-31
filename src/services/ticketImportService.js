@@ -1164,34 +1164,74 @@ export function formatProcessingReport(result) {
   }
 
   if (result.valid_tickets.length > 0) {
-    lines.push(
-      "",
-      "📋 Detail tiket yang valid:",
-      createCodeBlock(
-        formatAsciiTable(
-          [
-            { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 24 },
-            {
-              key: "assignment_type",
-              header: "Assignment Type",
-              minWidth: 15,
-            },
-            { key: "city", header: "City", minWidth: 12, maxWidth: 18 },
-            { key: "sla_status", header: "SLA Status", minWidth: 10 },
-            { key: "pic", header: "PIC", minWidth: 12, maxWidth: 24 },
-            { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
-          ],
-          result.valid_tickets.map((ticket) => ({
-            order_id: getTicketRef(ticket),
-            assignment_type: ticket.assignment_type,
-            city: ticket.city || "-",
-            sla_status: ticket.sla_status || "-",
-            pic: ticket.pic || "-",
-            site_id: ticket.site_id || "-",
-          })),
-        ),
-      ),
+    const tableColumns = [
+      { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 24 },
+      { key: "city", header: "City", minWidth: 12, maxWidth: 18 },
+      { key: "cluster_area", header: "Cluster Area", minWidth: 14, maxWidth: 20 },
+      { key: "sla_status", header: "SLA Status", minWidth: 10 },
+      { key: "pic", header: "PIC", minWidth: 12, maxWidth: 24 },
+      { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
+    ];
+
+    const mapTicketToRow = (ticket) => ({
+      order_id: getTicketRef(ticket),
+      city: ticket.city || "-",
+      cluster_area:
+        ticket.cluster_area ||
+        ticket.departemen_ns ||
+        ticket.departement_ns ||
+        ticket.nsa ||
+        "-",
+      sla_status: ticket.sla_status || "-",
+      pic: ticket.pic || "-",
+      site_id: ticket.site_id || "-",
+    });
+
+    const sqaTickets = result.valid_tickets.filter(
+      (ticket) => ticket.assignment_type === "SQA",
     );
+    const nopTickets = result.valid_tickets.filter(
+      (ticket) => ticket.assignment_type === "NOP",
+    );
+    const otherTickets = result.valid_tickets.filter(
+      (ticket) =>
+        ticket.assignment_type !== "SQA" && ticket.assignment_type !== "NOP",
+    );
+
+    lines.push("", "📋 Detail tiket yang valid:");
+
+    if (sqaTickets.length > 0) {
+      lines.push(
+        "SQA",
+        createCodeBlock(
+          formatAsciiTable(tableColumns, sqaTickets.map(mapTicketToRow)),
+        ),
+      );
+    }
+
+    if (nopTickets.length > 0) {
+      if (sqaTickets.length > 0) {
+        lines.push("");
+      }
+      lines.push(
+        "NOP",
+        createCodeBlock(
+          formatAsciiTable(tableColumns, nopTickets.map(mapTicketToRow)),
+        ),
+      );
+    }
+
+    if (otherTickets.length > 0) {
+      if (sqaTickets.length > 0 || nopTickets.length > 0) {
+        lines.push("");
+      }
+      lines.push(
+        "OTHER",
+        createCodeBlock(
+          formatAsciiTable(tableColumns, otherTickets.map(mapTicketToRow)),
+        ),
+      );
+    }
   }
 
   return lines.join("\n");

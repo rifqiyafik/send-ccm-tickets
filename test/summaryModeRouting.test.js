@@ -6,7 +6,8 @@ import test from "node:test";
 import { sendImportResult } from "../src/handlers/whatsappMessageHandler.js";
 
 function setupConfig() {
-  const tmpDir = path.join("tmp", "summary-mode-routing");
+  const uniqueId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const tmpDir = path.resolve("tmp", `summary-mode-routing-${uniqueId}`);
   const configPath = path.join(tmpDir, "whatsapp.json");
   const sentStorePath = path.join(tmpDir, "sent_tickets.json");
   fs.mkdirSync(tmpDir, { recursive: true });
@@ -159,6 +160,9 @@ test("normal import sends SQA reminder only to MAIN SQA, not SQA detail group", 
 
 test("normal import sends daily In Progress reminder only to SQA/NOP target, not MAIN SQA", async () => {
   const context = setupConfig();
+  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const yesterdayIso = yesterday.toISOString();
+  const yesterdayDate = yesterdayIso.slice(0, 10);
   fs.writeFileSync(
     process.env.SENT_TICKET_STORE_PATH,
     JSON.stringify(
@@ -169,8 +173,8 @@ test("normal import sends daily In Progress reminder only to SQA/NOP target, not
             order_id: "CC-20260724-00000001",
             business_status: "IN PROGRESS",
             sla_status: "IN SLA",
-            sent_at: "2026-07-24T00:00:00.000Z",
-            sent_date: "2026-07-24",
+            sent_at: yesterdayIso,
+            sent_date: yesterdayDate,
           },
         },
       },

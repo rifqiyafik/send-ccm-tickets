@@ -256,35 +256,77 @@ async function sendLongText(sock, jid, text) {
 }
 
 // membuat pesan bantuan singkat saat user mengirim command "." atau ".help".
-function formatCommandHelp({ sourceJid, senderJid, allowed }) {
+function formatWhatsAppGroupHelp({ sourceJid, senderJid, allowed }) {
   return [
-    "CCM Ticket Bot",
+    "🤖 *CCM Ticket Bot (Group Guide)*",
     "",
     `Access: ${allowed ? "ALLOWED" : "DENIED"}`,
     `Source JID: ${sourceJid || "-"}`,
     `Sender JID: ${senderJid || "-"}`,
     "",
-    "Command:",
-    ".",
-    ".help",
-    ".status",
-    ".groups",
-    ".groups nop",
-    ".private",
-    ".private ferry",
-    ".import + file Excel",
-    ".send + file Excel",
-    ".update + file Excel",
-    ".summary + file Excel",
+    "⚠️ *Langkah Wajib Sebelum Mengirim File Tiket:*",
+    "1. *Cek Koneksi WhatsApp Bot*: Ketik `.status` terlebih dahulu.",
+    "2. *Pastikan Session WhatsApp Aktif*: Jika status terputus/stopped, hubungi Admin untuk melakukan `/login` di Telegram / Chat Personal Bot terlebih dahulu sebelum mengirimkan file Excel!",
     "",
-    "Import tiket:",
-    "- Kirim file Excel .xlsx dengan caption .import atau .send untuk flow normal.",
-    "- Caption .update pada file Excel: hanya kirim detail tiket tanpa salam, Excel target, dan reminder summary ke grup target.",
-    "- Caption .summary pada file Excel: hanya proses dan kirim report/summary ke pengirim.",
-    "- File Excel tanpa caption command akan diabaikan.",
-    "- Grup sumber harus ada di authorized_groups.",
-    "- Private chat harus ada di authorized_users atau OWNER_JIDS.",
+    "--------------------------------------------------",
+    "",
+    "📤 *Cara Mengirim File Tiket Excel:*",
+    "- Kirim file Excel (`.xlsx` / `.xls`) dengan **Caption Command**:",
+    "",
+    "🔹 *Mode Pengiriman File:*",
+    "• *Tanpa Caption / `.import` / `.send`*: Kirim tiket normal ke grup target SQA & NOP + Excel balasan.",
+    "• `.update`: Kirim detail tiket eskalasi saja ke grup target (tanpa salam & summary).",
+    "• `.summary`: Kirim report/summary & Excel balasan saja ke chat ini.",
+    "• `/reminder`: Kirim reminder semua tiket yang belum resolve di file Excel.",
+    "",
+    "--------------------------------------------------",
+    "",
+    "📊 *Fitur Utama:*",
+    "✅ Routing otomatis ke grup SQA & NOP.",
+    "✅ Auto mention ke PIC CCM & PIC SQA/NOP.",
+    "✅ Deteksi ReOpen & kalkulasi waktu Out SLA.",
   ].join("\n");
+}
+
+function formatWhatsAppPersonalHelp({ sourceJid, senderJid, allowed }) {
+  return [
+    "🤖 *CCM Ticket Bot (Personal Guide)*",
+    "",
+    `Access: ${allowed ? "ALLOWED" : "DENIED"}`,
+    `Source JID: ${sourceJid || "-"}`,
+    `Sender JID: ${senderJid || "-"}`,
+    "",
+    "📌 *Daftar Command & Fitur:*",
+    "",
+    "🔹 *Pengecekan & Monitoring:*",
+    "• `.status` : Cek status koneksi, user aktif, & index",
+    "• `.groups` : Lihat semua daftar grup WhatsApp dari session aktif",
+    "• `.groups <keyword>` : Cari grup WhatsApp spesifik (contoh: `.groups nop`)",
+    "• `.private` : Lihat daftar kontak private chat WhatsApp",
+    "• `.private <keyword>` : Cari kontak private chat spesifik",
+    "• `.help` / `.` : Tampilkan panduan ini",
+    "",
+    "📤 *Mode Pengiriman Excel:*",
+    "• `.import` / `.send` + File Excel : Kirim tiket normal ke grup target",
+    "• `.update` + File Excel : Kirim detail tiket eskalasi saja ke grup target",
+    "• `.summary` + File Excel : Kirim report & Excel balasan saja",
+    "• `/reminder` + File Excel : Kirim reminder tiket belum resolve",
+    "",
+    "🔐 *Manajemen Session & Bot (via Telegram Command Center):*",
+    "- Gunakan Bot Telegram untuk `/sessions`, `/login`, `/stop`, `/logout`, `/delete_session`, `/change_env`.",
+    "",
+    "---",
+    "📝 *Catatan Akses:*",
+    "- Grup sumber harus terdaftar di `authorized_groups`.",
+    "- Private chat harus terdaftar di `authorized_users` atau `OWNER_JIDS`.",
+  ].join("\n");
+}
+
+function formatCommandHelp({ sourceJid, senderJid, allowed }) {
+  const isGroup = String(sourceJid || "").endsWith("@g.us");
+  return isGroup
+    ? formatWhatsAppGroupHelp({ sourceJid, senderJid, allowed })
+    : formatWhatsAppPersonalHelp({ sourceJid, senderJid, allowed });
 }
 
 // mengambil ulang daftar grup dari WhatsApp agar command .groups memakai data terbaru.

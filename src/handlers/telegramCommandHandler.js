@@ -224,48 +224,97 @@ function isAdminOnlyRegisterCommand(command, argument) {
   return command === "/register" && Boolean(String(argument || "").trim());
 }
 
-function formatHelp() {
+function formatTelegramGroupHelp() {
   return [
-    "🤖 **CCM Ticket Bot - Telegram Command Center**",
+    "🤖 **Panduan Bot Kirim CCM Ticket (Grup Telegram)**",
     "",
-    "📌 **Command List:**",
+    "⚠️ **Langkah Wajib Sebelum Mengirim File Tiket:**",
+    "1. **Cek Koneksi WhatsApp Bot**: Jalankan `/status` terlebih dahulu.",
+    "2. **Pastikan Session WhatsApp Aktif**: Jika status `❌ NO` (terputus/stopped), hubungi admin untuk melakukan `/login` di **Chat Personal Bot** terlebih dahulu sebelum mengirimkan file Excel!",
     "",
-    "### 🔹 Basic Commands",
-    "- `/start` → Mulai bot",
-    "- `/help` → Lihat panduan",
-    "- `/status` → Cek status koneksi",
-    "- `/env` → Cek environment dan config WhatsApp aktif",
-    "- `/register` → Request whitelist chat/group Telegram",
+    "--------------------------------------------------",
     "",
-    "### 🔐 Session Management",
+    "📤 **Cara Mengirim File Tiket Excel:**",
+    "- Upload file Excel (`.xlsx` / `.xls`) ke chat ini.",
+    "- Tambahkan **Caption Command** sesuai kebutuhan:",
+    "",
+    "🔹 **Mode Pengiriman File:**",
+    "• **Tanpa Caption / `.import` / `.send`**: Pengiriman Normal. Detail tiket dikirim ke grup target (SQA & NOP), file balasan Excel dibuat, dan summary dikirim.",
+    "• `.update`: Mode Update Cepat. Hanya mengirim detail tiket eskalasi ke grup target (tanpa salam pembuka & summary).",
+    "• `.summary`: Mode Ringkasan. Hanya membuat report/summary dan file Excel balasan di chat ini tanpa mengirim detail ke grup target.",
+    "• `/reminder`: Mode Reminder Tiket Unresolved. Hanya mengirimkan reminder untuk semua tiket yang belum resolve di file Excel.",
+    "",
+    "--------------------------------------------------",
+    "",
+    "📊 **Fitur Utama Bot:**",
+    "✅ Routing otomatis ke grup target SQA & NOP berdasarkan Region/Cluster.",
+    "✅ Tagging / Mention otomatis ke PIC CCM & PIC SQA / NOP.",
+    "✅ Deteksi ReOpen & kalkulasi waktu keterlambatan SLA (Out SLA).",
+    "✅ Rekap & report filter Excel otomatis.",
+    "",
+    "ℹ️ *Untuk perintah manajemen sesi, login, dan konfigurasi bot, gunakan `/help` di Chat Personal Bot.*",
+  ].join("\n");
+}
+
+function formatTelegramPersonalHelp() {
+  return [
+    "🤖 **CCM Ticket Bot - Admin Command Center (Personal Guide)**",
+    "",
+    "📌 **Daftar Command Lengkap:**",
+    "",
+    "### 🔐 WhatsApp Session Management",
     "- `/sessions` → Lihat daftar session WhatsApp tersimpan",
-    "- `/login` → Lihat pilihan login session",
-    "- `/login 1` → Jalankan session berdasarkan nomor urut",
-    "- `/login 6282160478546` → Buat session baru, lalu bot minta nama session",
-    "- `/stop` → Lihat info stop session aktif",
+    "- `/login` → Pilihan login & QR session WhatsApp",
+    "- `/login 1` → Jalankan/konek session nomor urut",
+    "- `/login 6282160478546` → Buat session baru (bot akan minta label nama)",
+    "- `/stop` → Info cara matikan session aktif",
     "- `/stop 1` → Matikan koneksi session aktif tanpa hapus credential",
     "- `/logout` → Putus linked device session aktif dari WhatsApp",
     "- `/logout 1` → Logout session nomor urut jika sedang aktif",
     "- `/delete_session 1` → Hapus credential lokal session",
+    "- `YA` / `TIDAK` → Konfirmasi pergantian session aktif",
     "",
-    "### 📂 Group & Private Access",
-    "- `/groups [keyword]` → Lihat daftar grup WhatsApp aktif",
-    "- `/private [keyword]` → Lihat daftar private chat aktif",
+    "### 📊 Monitoring & Status",
+    "- `/status` → Cek kondisi koneksi WhatsApp, user aktif, & subscribers",
+    "- `/env` → Cek environment dan config WhatsApp aktif (`production` / `development`)",
+    "- `/groups [keyword]` → Cari/lihat daftar grup WhatsApp dari session aktif",
+    "- `/private [keyword]` → Cari/lihat daftar kontak private chat WhatsApp",
+    "",
+    "### 📂 Group & Whitelist Management",
+    "- `/register` → Request whitelist chat Telegram ini",
     "- `/register <chat_id> [label]` → Admin approve whitelist Telegram",
-    "- `/whitelist` → Admin lihat whitelist Telegram",
-    "- `/change_env production` → Admin pakai config production",
-    "- `/change_env development` → Admin pakai config testing/development",
+    "- `/whitelist` → Admin lihat daftar whitelist Telegram",
+    "- `/change_env production` → Pakai `config/whatsapp.json`",
+    "- `/change_env development` → Pakai `config/whatsapp-test.json`",
+    "",
+    "### 📤 Mode Pengiriman Excel Tiket",
+    "- **Tanpa Caption / `.import` / `.send`** → Pengiriman tiket normal ke grup target",
+    "- `.update` → Kirim detail tiket eskalasi saja ke grup target",
+    "- `.summary` → Kirim ringkasan & Excel balasan saja ke pengirim",
+    "- `.reminder` → Kirim reminder semua tiket yang belum resolve",
     "",
     "---",
-    "📝 **Notes:**",
-    "- `Stop session` hanya mematikan socket, credential tetap aman.",
-    "- `Logout session` memutus linked device dari WhatsApp.",
-    "- `Delete session` menghapus file credential lokal.",
-    "- `/groups` dan `/private` membaca index dari session WhatsApp aktif.",
-    "- File Excel Telegram hanya boleh dikirim dari group/private Telegram yang sudah whitelist.",
-    "- File Excel WhatsApp tetap mengikuti whitelist WhatsApp.",
-    "- Environment `production` memakai `config/whatsapp.json`.",
-    "- Environment `development` memakai `config/whatsapp-test.json`.",
+    "📝 **Catatan Alur:**",
+    "- Sebelum upload file Excel di grup, selalu pastikan session WhatsApp aktif (`/status`).",
+    "- Sesi WhatsApp yang sudah login tersimpan aman dan tidak hilang kecuali di-logout atau diketik `/delete_session`.",
+  ].join("\n");
+}
+
+function formatStartMessage() {
+  return [
+    "👋 **Selamat Datang di CCM Ticket Bot!**",
+    "",
+    "🤖 **CCM Ticket Bot** adalah sistem otomatisasi penanganan & eskalasi tiket Customer Complaint Management (CCM/Remedy) Telkomsel Region Sumbagut.",
+    "",
+    "🚀 **Fitur Utama Bot:**",
+    "✅ **Automatic Routing & Escalation**: Memproses file Excel tiket dan meneruskannya secara otomatis ke grup WhatsApp SQA & NOP sesuai wilayah/cluster.",
+    "✅ **Auto Mention & Tagging**: Tagging otomatis JID WhatsApp PIC CCM, PIC SQA, dan PIC NOP.",
+    "✅ **Smart ReOpen & SLA Tracker**: Mendeteksi kenaikan count ReOpen dan menghitung durasi keterlambatan SLA (`Out Xd Xh Xm`).",
+    "✅ **Fleksibilitas Mode Pengiriman**: Mendukung mode `.import` (full flow), `.update` (detail eskalasi saja), `.summary` (report saja), dan `.reminder` (reminder unresolved).",
+    "✅ **WhatsApp Session Management**: Kelola sesi login/logout WhatsApp dengan aman via Telegram Command Center.",
+    "",
+    "--------------------------------------------------",
+    "👉 Ketik `/help` untuk melihat panduan lengkap cara penggunaan dan daftar command bot.",
   ].join("\n");
 }
 
@@ -665,8 +714,20 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
-    if (command === "/start" || command === "/help") {
-      await sendRichMessage(sendMessage, chatId, formatHelp());
+    if (command === "/start") {
+      await sendRichMessage(sendMessage, chatId, formatStartMessage());
+      return;
+    }
+
+    if (command === "/help") {
+      const isGroup =
+        String(chatId).startsWith("-") ||
+        chat?.type === "group" ||
+        chat?.type === "supergroup";
+      const helpText = isGroup
+        ? formatTelegramGroupHelp()
+        : formatTelegramPersonalHelp();
+      await sendRichMessage(sendMessage, chatId, helpText);
       return;
     }
 

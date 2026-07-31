@@ -237,3 +237,25 @@ test("formats ReOpen reminder line with reopen count when count > 1", () => {
 
   context.cleanup();
 });
+
+test("formats OUT SLA In Progress reminder line with calculated overdue time", () => {
+  const context = setupMentionConfig();
+
+  const tickets = [
+    {
+      order_id: "CC-20260712-00000888",
+      assignment_type: "SQA",
+      business_status: "In Progress",
+      sla_status: "OUT SLA",
+      ccm_handling: "Herman",
+      pic_sqa: "Herman",
+      site_id: "KBA123",
+      resolve_target_22h_text: "Kamis / 30 Jul 2026, 08:00:00 AM",
+    },
+  ];
+
+  const payload = formatInProgressReminderMessagePayload(tickets);
+  assert.match(payload.text, /CC-20260712-00000888\* \| OUT SLA \| KBA123 \| Out /);
+
+  context.cleanup();
+});

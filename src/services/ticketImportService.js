@@ -755,12 +755,16 @@ function resolveReopenMessageRule(row) {
   const filledColumns = REOPEN_FILLED_CHECK_COLUMNS.filter((column) =>
     isFilledCell(row[column]),
   );
-  const enabled = businessStatus === "reopen" && filledColumns.length > 0;
+  const enabled =
+    businessStatus === "reopen" &&
+    filledColumns.length === REOPEN_FILLED_CHECK_COLUMNS.length;
 
   logger.info("Resolved ReOpen message rule", {
     orderId: row["Order ID"],
     businessStatus: row["Business Status"],
     enabled,
+    filledColumnsCount: filledColumns.length,
+    totalRequiredColumns: REOPEN_FILLED_CHECK_COLUMNS.length,
     filledColumns,
     reopenNumber: row[REOPEN_NUMBER_COLUMN],
   });

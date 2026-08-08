@@ -674,13 +674,17 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
   });
 }
 
-async function sendTargetGroupReminder(sock, targetJid, tickets) {
+async function sendTargetGroupReminder(sock, targetJid, tickets, options = {}) {
   logger.info("Sending target group reminder", {
     targetJid,
     tickets: tickets.length,
     assignmentType: tickets[0]?.assignment_type,
+    options,
   });
-  await sock.sendMessage(targetJid, formatReminderMessagePayload(tickets));
+  await sock.sendMessage(
+    targetJid,
+    formatReminderMessagePayload(tickets, options),
+  );
 }
 
 function getSummaryReminderGroupKey(ticket) {
@@ -741,7 +745,12 @@ async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
         continue;
       }
 
-      const payload = formatReminderMessagePayload(groupTickets);
+      const payload = formatReminderMessagePayload(groupTickets, {
+        targetGroupKey: isSqaSummary
+          ? "MAIN SQA"
+          : getTargetGroupKey(reminderTargetJid),
+        usePicSqa: isSqaSummary,
+      });
       logger.info("Sending .summary reminder message to target group", {
         sourceJid,
         targetJid: reminderTargetJid,
@@ -891,7 +900,10 @@ async function sendMainSqaSummaryOnly(
   });
   try {
     await sendTargetGroupPreamble(sock, mainSqaGroup.jid, sqaTickets);
-    await sendTargetGroupReminder(sock, mainSqaGroup.jid, sqaTickets);
+    await sendTargetGroupReminder(sock, mainSqaGroup.jid, sqaTickets, {
+      targetGroupKey: "MAIN SQA",
+      usePicSqa: true,
+    });
   } catch (error) {
     await sendTargetDeliveryFailedAlert(sock, sourceJid, {
       targetJid: mainSqaGroup.jid,
@@ -1243,7 +1255,9 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       try {
         await sendTargetGroupPreamble(sock, targetJid, tickets);
         if (tickets[0]?.assignment_type !== "SQA") {
-          await sendTargetGroupReminder(sock, targetJid, tickets);
+          await sendTargetGroupReminder(sock, targetJid, tickets, {
+            targetGroupKey: getTargetGroupKey(targetJid),
+          });
         }
       } catch (error) {
         await sendTargetDeliveryFailedAlert(sock, sourceJid, {

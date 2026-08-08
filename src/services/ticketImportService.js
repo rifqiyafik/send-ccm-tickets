@@ -881,6 +881,10 @@ export async function processTicketExcel(buffer) {
 
     throw error;
   }
+  return processTicketRows(rows);
+}
+
+export function processTicketRows(rows) {
   const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
   const missingColumns = validateHeaders(headers);
 
@@ -990,6 +994,7 @@ export async function processTicketExcel(buffer) {
 
     const ticket = normalizeTicket(resolvedRow, picResult, siteResolution);
     ticket.row_number = rowNumber;
+    ticket.anomaly_info = picResult.anomaly_info || null;
     validTickets.push(ticket);
     logger.info("Row marked valid", {
       rowNumber,
@@ -1018,6 +1023,7 @@ export async function processTicketExcel(buffer) {
       reopen_number: ticket.reopen_number,
       reopen_filled_columns: ticket.reopen_filled_columns,
       fallback_resolutions: ticket.fallback_resolutions,
+      anomaly_info: ticket.anomaly_info,
     });
   }
 
@@ -1057,30 +1063,15 @@ export async function processTicketExcel(buffer) {
 // membuat pesan ringkas jumlah total, valid, dan dilewati untuk dikirim ke pengirim file.
 export function formatImportSummary(result) {
   logger.info("Formatting import summary", { ok: result.ok });
-  if (!result.ok && result.reason === "INVALID_EXCEL_FILE") {
+  if (!result.ok) {
     return [
-      "File Excel tidak valid.",
+      "⚠️ **Gagal Memproses Excel**",
       "",
-      "Bot sudah mencoba membaca sebagai XLSX normal, XLSX export web, HTML, CSV, dan TSV.",
+      `Alasan: ${result.reason || "Format tidak valid"}`,
       result.detail ? `Detail: ${result.detail}` : "",
-      result.signature?.hex ? `Signature: ${result.signature.hex}` : "",
-      "",
-      "Solusi:",
-      "- Buka file di Microsoft Excel/WPS/LibreOffice.",
-      "- Save As ke format Excel Workbook (*.xlsx).",
-      "- Kirim ulang file hasil Save As tersebut.",
     ]
       .filter(Boolean)
       .join("\n");
-  }
-
-  if (!result.ok && result.reason === "MISSING_COLUMNS") {
-    return [
-      "File tidak valid.",
-      "",
-      "Kolom wajib berikut tidak ditemukan:",
-      ...result.missing_columns.map((column) => `- ${column}`),
-    ].join("\n");
   }
 
   return [
@@ -1130,6 +1121,34 @@ export function formatProcessingReport(result) {
       ),
     ),
   ];
+
+  const validAnomalies = (result.valid_tickets || []).filter(
+    (t) => t.anomaly_info,
+  );
+  if (validAnomalies.length > 0) {
+    lines.push(
+      "",
+      "⚠️ Tiket Anomali (Tetap Terkirim ke WA):",
+      ...validAnomalies.map(
+        (t) =>
+          `- ${getTicketRef(t)} | ${t.assignment_group || t.assignment_type} | ${t.anomaly_info} | PIC: ${t.pic || "-"}`,
+      ),
+    );
+  }
+
+  const skippedAnomalies = (result.skipped_tickets || []).filter(
+    (t) => t.anomaly_info || t.reason === "CITY_NOT_FOUND",
+  );
+  if (skippedAnomalies.length > 0) {
+    lines.push(
+      "",
+      "⚠️ Tiket Anomali Dilewati (Tidak Dikirim ke WA):",
+      ...skippedAnomalies.map(
+        (t) =>
+          `- ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${t.anomaly_info || t.reason || "Kota/Site di luar Region Sumbagut"}`,
+      ),
+    );
+  }
 
   if (result.skipped_tickets.length > 0) {
     lines.push(
@@ -1634,10 +1653,14 @@ function formatOutSlaInProgressEscalationText(ticket, { ccmTag, nopTag }) {
   ].join("\n");
 }
 
-function getReminderAssigneeName(ticket) {
-  return ticket.assignment_type === "SQA"
-    ? ticket.ccm_handling || ticket.pic_sqa
-    : ticket.pic_nop;
+function getReminderAssigneeTag(ticket, options = {}) {
+  if (ticket.assignment_type === "SQA") {
+    const usePicSqa = options.usePicSqa || options.targetGroupKey === "MAIN SQA";
+    return usePicSqa
+      ? resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel")
+      : resolveMentionTag(ticket.ccm_handling, "CCM");
+  }
+  return resolveMentionTag(ticket.pic_nop);
 }
 
 function getInProgressReminderTargetName(tickets) {
@@ -1735,10 +1758,10 @@ export function formatInProgressReminderMessagePayload(tickets, options = {}) {
   const groupedByPic = new Map();
 
   for (const ticket of reminderTickets) {
-    const assigneeName = getReminderAssigneeName(ticket);
-    const key = cleanTableValue(assigneeName).toUpperCase();
+    const tag = getReminderAssigneeTag(ticket, options);
+    const key = cleanTableValue(tag.label || tag.text || "-").toUpperCase();
     const group = groupedByPic.get(key) || {
-      tag: resolveMentionTag(assigneeName),
+      tag,
       tickets: [],
     };
     group.tickets.push(ticket);

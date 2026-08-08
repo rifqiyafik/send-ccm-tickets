@@ -21,9 +21,27 @@ function parseGroupMapping(value = "") {
 
 export const WHATSAPP_GROUPS = parseGroupMapping(process.env.WHATSAPP_GROUPS);
 
+function getNopGroupKeyFromAssignmentGroup(assignmentGroup) {
+  const normalized = String(assignmentGroup ?? "")
+    .trim()
+    .toUpperCase()
+    .replace(/^GROUP\s*:\s*/i, "");
+  if (normalized.includes("ACEH")) return "NOP ACEH";
+  if (normalized.includes("BINJAI")) return "NOP BINJAI";
+  if (normalized.includes("MEDAN")) return "NOP MEDAN";
+  if (normalized.includes("PEMATANG")) return "NOP PEMATANG SIANTAR";
+  if (normalized.includes("RANTAU")) return "NOP RANTAU PRAPAT";
+  if (normalized.includes("SIDEMPUAN")) return "NOP PADANG SIDEMPUAN";
+  return null;
+}
+
 // menentukan key grup target berdasarkan tipe assignment tiket.
 export function getTargetGroupKey(ticket) {
-  return ticket.assignment_type === "SQA" ? "SQA" : ticket.cluster_area || ticket.nsa;
+  if (ticket.assignment_type === "SQA") {
+    return "SQA";
+  }
+  const nopGroupKey = getNopGroupKeyFromAssignmentGroup(ticket.assignment_group);
+  return nopGroupKey || ticket.cluster_area || ticket.nsa;
 }
 
 // menentukan grup tujuan; prioritas target_groups di config/whatsapp.json, lalu env WHATSAPP_GROUPS.

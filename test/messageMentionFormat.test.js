@@ -284,3 +284,46 @@ test("formats OUT SLA In Progress reminder line with calculated overdue time", (
 
   context.cleanup();
 });
+
+test("formats MAIN SQA reminder payload using pic_sqa without fallback to ccm_handling", () => {
+  const context = setupMentionConfig();
+
+  const tickets = [
+    {
+      order_id: "CC-20260807-00000001",
+      assignment_type: "SQA",
+      business_status: "In Progress",
+      sla_status: "OUT SLA",
+      ccm_handling: "Ferry",
+      pic_sqa: "Herman",
+      site_id: "MDN001",
+      resolve_target_22h_text: "Kamis / 30 Jul 2026, 08:00:00 AM",
+    },
+    {
+      order_id: "CC-20260807-00000002",
+      assignment_type: "SQA",
+      business_status: "In Progress",
+      sla_status: "IN SLA",
+      ccm_handling: "Ferry",
+      pic_sqa: "",
+      site_id: "MDN002",
+      resolve_target_22h_text: "Sabtu / 08 Agu 2026, 08:00:00 AM",
+    },
+  ];
+
+  const payload = formatInProgressReminderMessagePayload(tickets, {
+    targetGroupKey: "MAIN SQA",
+    usePicSqa: true,
+    isReminderCmd: true,
+  });
+
+  // Ticket 1 has pic_sqa Herman -> should resolve to Herman's JID @628136378970
+  assert.match(payload.text, /@628136378970/);
+  assert.doesNotMatch(payload.text, /@35515252351004/); // Ferry's JID should NOT be tagged
+
+  // Ticket 2 has empty pic_sqa -> should show 👤 - without fallback to Ferry
+  assert.match(payload.text, /👤 -/);
+  assert.deepEqual(payload.mentions, ["628136378970@s.whatsapp.net"]);
+
+  context.cleanup();
+});

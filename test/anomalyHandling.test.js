@@ -6,6 +6,27 @@ import { getTargetGroupKey } from "../src/config/whatsappRouting.js";
 import { searchPicByCityAndAssignment } from "../src/services/picSearchService.js";
 import { formatProcessingReport, processTicketRows } from "../src/services/ticketImportService.js";
 
+import { extractSiteCover, resolveCityFromTicketRow } from "../src/services/siteSearchService.js";
+
+test("extracts site cover from eNodeB cell string E_RAP755SL1_SEIBARU", () => {
+  const text = "Lokasi Pelanggan : -\n\nE_RAP755SL1_SEIBARU_SL11 (+- M)\nRSRP:-126.97 dBm(Bad)";
+  const siteId = extractSiteCover(text);
+  assert.equal(siteId, "RAP755");
+});
+
+test("resolves Labuhanbatu city for RAP755 ticket CC-20260809-00000044", () => {
+  const row = {
+    "Order ID": "CC-20260809-00000044",
+    "Kabupaten/Kota(Create Ticket)": "-",
+    "Problem Analysis NSH": "E_RAP755SL1_SEIBARU_SL11 (+- M)\nRSRP:-126.97 dBm(Bad)",
+  };
+
+  const res = resolveCityFromTicketRow(row);
+  assert.equal(res.ok, true);
+  assert.equal(res.city, "LABUHANBATU");
+  assert.equal(res.site_id, "RAP755");
+});
+
 test("extracts Sumbagut city from Lokasi Pelanggan description line", () => {
   const text = `Tanggal Kejadian: 20260722 06:00:00:0000
 Lokasi Pelanggan (alamat) : DESA SAMPAIMAH, KEC. MANYAK PAYED, ACEH TAMIANG, ACEH

@@ -1083,6 +1083,26 @@ export function formatImportSummary(result) {
   ].join("\n");
 }
 
+function formatSkippedAnomalyDetail(t) {
+  if (t.anomaly_info) {
+    return `${t.anomaly_info} (${t.reason})`;
+  }
+
+  const cityVal = t.city && t.city !== "-" ? t.city : "";
+  const siteVal = t.site_id || t.site_cover || "";
+
+  if (cityVal && siteVal) {
+    return `Kota ${cityVal} (${siteVal}) di luar Region Sumbagut (${t.reason})`;
+  }
+  if (cityVal) {
+    return `Kota ${cityVal} di luar Region Sumbagut (${t.reason})`;
+  }
+  if (siteVal) {
+    return `Site ${siteVal} tidak terdaftar di DB Sumbagut (${t.reason})`;
+  }
+  return `Kota & Site Cover tidak ditemukan pada tiket (${t.reason})`;
+}
+
 // membuat report detail alasan tiket valid/dilewati agar proses filter bisa diaudit dari WhatsApp/Telegram.
 export function formatProcessingReport(result) {
   logger.info("Formatting processing report", { ok: result.ok });
@@ -1137,7 +1157,11 @@ export function formatProcessingReport(result) {
   }
 
   const skippedAnomalies = (result.skipped_tickets || []).filter(
-    (t) => t.anomaly_info || t.reason === "CITY_NOT_FOUND",
+    (t) =>
+      t.anomaly_info ||
+      t.reason === "CITY_NOT_FOUND" ||
+      t.reason === "SITE_COVER_NOT_FOUND_IN_NOP_DATA" ||
+      t.reason === "CITY_EMPTY_AND_SITE_COVER_NOT_FOUND",
   );
   if (skippedAnomalies.length > 0) {
     lines.push(
@@ -1145,7 +1169,7 @@ export function formatProcessingReport(result) {
       "⚠️ Tiket Anomali Dilewati (Tidak Dikirim ke WA):",
       ...skippedAnomalies.map(
         (t) =>
-          `- ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${t.anomaly_info || t.reason || "Kota/Site di luar Region Sumbagut"}`,
+          `- ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${formatSkippedAnomalyDetail(t)}`,
       ),
     );
   }

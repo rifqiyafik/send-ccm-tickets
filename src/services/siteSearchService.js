@@ -31,15 +31,32 @@ function resolveNopSitePath() {
 const defaultNopSiteRows = loadNopSiteRows();
 const defaultSiteIndex = buildSiteIndex(defaultNopSiteRows);
 
-// mengambil site ID dari teks Problem Analysis NSH dengan pola #Site Cover / #SiteCover.
-export function extractSiteCover(problemAnalysis) {
-  logger.debug("Extracting site cover from Problem Analysis NSH");
-  const text = String(problemAnalysis ?? "");
+// mengambil site ID dari teks dengan pola #Site Cover / #SiteCover.
+export function extractSiteCover(textInput) {
+  logger.debug("Extracting site cover from text");
+  const text = String(textInput ?? "");
   const match = text.match(/#\s*site\s*cover\s*:?\s*([A-Z]{2,5}\d{2,5})/i);
 
   const siteId = match ? normalizeText(match[1]) : null;
   logger.debug("Site cover extraction result", { siteId });
   return siteId;
+}
+
+export function extractSiteCoverFromRow(row) {
+  const candidateColumns = [
+    PROBLEM_ANALYSIS_NSH_COLUMN,
+    "CCH Suggestion(L1 Assign_cch_suggestion)",
+    "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)",
+    "Description",
+    "Problem Analysis",
+    "CCH Smartcare",
+  ];
+
+  for (const col of candidateColumns) {
+    const siteId = extractSiteCover(row?.[col]);
+    if (siteId) return siteId;
+  }
+  return null;
 }
 
 // membuat index site_id -> data site agar search ke JSON NOP cepat dan konsisten.
@@ -66,7 +83,7 @@ export function loadNopSiteRows(filePath = resolveNopSitePath()) {
   }
 }
 
-// membuat resolver city; prioritas kolom Kabupaten/Kota, fallback site cover dari Problem Analysis NSH.
+// membuat resolver city; prioritas kolom Kabupaten/Kota, fallback site cover dari Problem Analysis NSH / CCH Suggestion / Deskripsi.
 export function createCityResolver(options = {}) {
   const rows = options.rows || (options.filePath ? loadNopSiteRows(options.filePath) : null);
   const siteIndex = options.siteIndex || (rows ? buildSiteIndex(rows) : defaultSiteIndex);
@@ -74,7 +91,7 @@ export function createCityResolver(options = {}) {
   return function resolveCityFromTicketRow(row) {
     logger.info("Resolving city from ticket row", { orderId: row?.["Order ID"] });
     const directCity = normalizeText(row?.[CITY_COLUMN]);
-    if (directCity) {
+    if (directCity && directCity !== "-") {
       logger.info("City resolved from city column", { city: directCity });
       return {
         ok: true,
@@ -84,7 +101,7 @@ export function createCityResolver(options = {}) {
       };
     }
 
-    const siteId = extractSiteCover(row?.[PROBLEM_ANALYSIS_NSH_COLUMN]);
+    const siteId = extractSiteCoverFromRow(row);
     if (!siteId) {
       logger.warn("City resolution failed: city empty and site cover not found", {
         orderId: row?.["Order ID"],

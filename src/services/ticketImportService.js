@@ -1061,7 +1061,7 @@ export function processTicketRows(rows) {
 }
 
 // membuat pesan ringkas jumlah total, valid, dan dilewati untuk dikirim ke pengirim file.
-export function formatImportSummary(result) {
+export function formatImportSummary(result, options = {}) {
   logger.info("Formatting import summary", { ok: result.ok });
   if (!result.ok) {
     return [
@@ -1074,13 +1074,20 @@ export function formatImportSummary(result) {
       .join("\n");
   }
 
-  return [
-    "✅ Import tiket selesai.",
+  const modeTag = options.mode ? ` (Mode \`${options.mode}\`)` : "";
+  const lines = [
+    `✅ Import tiket selesai.${modeTag}`,
     "",
     `📊 Total row: ${result.total_rows}`,
     `✔️ Tiket valid: ${result.valid_count}`,
     `⏭️ Tiket dilewati: ${result.skipped_count}`,
-  ].join("\n");
+  ];
+
+  if (options.modeNote) {
+    lines.push("", `ℹ️ ${options.modeNote}`);
+  }
+
+  return lines.join("\n");
 }
 
 function formatSkippedAnomalyDetail(t) {
@@ -1111,9 +1118,9 @@ export function formatProcessingReport(result) {
   }
 
   const lines = [
-    "📊 Report Proses Import",
+    "📊 **Report Proses Import Tiket**",
     "",
-    "🗂️ Valid per Assignment:",
+    "🗂️ **Valid per Assignment**:",
     createCodeBlock(
       formatAsciiTable(
         [
@@ -1127,7 +1134,7 @@ export function formatProcessingReport(result) {
       ),
     ),
     "",
-    "👤 Valid per PIC:",
+    "👤 **Valid per PIC**:",
     createCodeBlock(
       formatAsciiTable(
         [
@@ -1148,10 +1155,10 @@ export function formatProcessingReport(result) {
   if (validAnomalies.length > 0) {
     lines.push(
       "",
-      "⚠️ Tiket Anomali (Tetap Terkirim ke WA):",
+      "⚠️ **Tiket Anomali (Tetap Terkirim ke WA)**:",
       ...validAnomalies.map(
         (t) =>
-          `- ${getTicketRef(t)} | ${t.assignment_group || t.assignment_type} | ${t.anomaly_info} | PIC: ${t.pic || "-"}`,
+          `• ${getTicketRef(t)} | ${t.assignment_group || t.assignment_type} | ${t.anomaly_info} | PIC: ${t.pic || "-"}`,
       ),
     );
   }
@@ -1166,17 +1173,16 @@ export function formatProcessingReport(result) {
   if (skippedAnomalies.length > 0) {
     lines.push(
       "",
-      "⚠️ Tiket Anomali Dilewati (Tidak Dikirim ke WA):",
+      "⚠️ **Tiket Anomali Dilewati (Tidak Dikirim ke WA)**:",
       ...skippedAnomalies.map(
         (t) =>
-          `- ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${formatSkippedAnomalyDetail(t)}`,
+          `• ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${formatSkippedAnomalyDetail(t)}`,
       ),
     );
   }
 
   if (result.skipped_tickets.length > 0) {
     lines.push(
-      "",
       "",
       "⏭️ Alasan dilewati:",
       ...Object.entries(result.skipped_by_reason).map(
@@ -1196,14 +1202,12 @@ export function formatProcessingReport(result) {
               minWidth: 18,
               maxWidth: 34,
             },
-            // { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 10 },
           ],
           result.skipped_tickets.map((ticket) => ({
             order_id: getTicketRef(ticket),
             reason: ticket.reason,
             city: ticket.city || "-",
             assignment_group: ticket.assignment_group || "-",
-            // site_id: ticket.site_id || "-",
           })),
         ),
       ),

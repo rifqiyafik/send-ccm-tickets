@@ -115,6 +115,6 @@ test("skips out-of-region SQA ticket and records anomaly for Telegram report", (
   assert.equal(result.skipped_tickets[0].reason, "CITY_NOT_FOUND");
 
   const report = formatProcessingReport(result);
-  assert.match(report, /⚠️ Tiket Anomali Dilewati \(Tidak Dikirim ke WA\)/);
+  assert.match(report, /⚠️ .*Tiket Anomali Dilewati/);
   assert.match(report, /CC-20260803-00000509/);
 });

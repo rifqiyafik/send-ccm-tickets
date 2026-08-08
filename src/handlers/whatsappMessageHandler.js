@@ -1087,8 +1087,19 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     reminderMode,
   });
 
+  const modeName = ticketOnlyMode
+    ? ".update"
+    : summaryOnlyMode
+    ? ".summary"
+    : null;
+  const modeNote = ticketOnlyMode
+    ? "Mode `.update` aktif: Detail tiket dikirim langsung ke grup target tanpa salam pembuka & reminder summary."
+    : summaryOnlyMode
+    ? "Mode `.summary` aktif: Bot hanya membuat report dan summary tanpa mengirim detail tiket ke grup target."
+    : null;
+
   await sock.sendMessage(sourceJid, {
-    text: formatImportSummary(result),
+    text: formatImportSummary(result, { mode: modeName, modeNote }),
   });
 
   if (!result.ok) {
@@ -1097,39 +1108,6 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       missingColumns: result.missing_columns,
     });
     return;
-  }
-
-  if (ticketOnlyMode) {
-    logger.info("Import is running in .update ticket-only mode", {
-      sourceJid,
-      validTickets: result.valid_tickets.length,
-    });
-    await sock.sendMessage(sourceJid, {
-      text: [
-        "⚙️ **Mode .update Aktif**",
-        "",
-        "➡️ Bot hanya mengirim **detail tiket** ke grup target.",
-        "🚫 Salam pembuka, Excel target, dan reminder summary **dilewati**.",
-        "",
-        "---",
-        "ℹ️ Gunakan mode ini untuk update cepat tanpa format tambahan.",
-      ].join("\n"),
-    });
-  }
-
-  if (summaryOnlyMode) {
-    logger.info("Import is running in .summary summary-only mode", {
-      sourceJid,
-      validTickets: result.valid_tickets.length,
-    });
-    await sock.sendMessage(sourceJid, {
-      text: [
-        "📊 **Mode .summary Aktif**",
-        "",
-        "➡️ Bot hanya membuat report dan summary dari file Excel.",
-        "🚫 Detail tiket tidak dikirim ke grup target.",
-      ].join("\n"),
-    });
   }
 
   const processingReport = formatProcessingReport(result);

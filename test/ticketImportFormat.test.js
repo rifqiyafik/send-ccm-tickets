@@ -60,8 +60,8 @@ test("formats processing report tables as fenced code blocks", () => {
   });
 
   assert.match(report, /📋 Detail tiket yang dilewati:/);
-  assert.match(report, /🗂️ Valid per Assignment:\n```\n\+-----------------\+-------\+/);
-  assert.match(report, /👤 Valid per PIC:\n```\n\+--------------\+-------\+/);
+  assert.match(report, /🗂️ \*\*Valid per Assignment\*\*:\n```\n\+-----------------\+-------\+/);
+  assert.match(report, /👤 \*\*Valid per PIC\*\*:\n```\n\+--------------\+-------\+/);
   assert.match(report, /```\n\+-+\+/);
   assert.equal(formatTelegramRichText(report).match(/<pre>/g).length, 4);
 });

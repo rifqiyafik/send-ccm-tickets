@@ -1068,6 +1068,42 @@ export async function sendReminderCommandResult(
         });
       }
     }
+
+    // Send SQA reminder summary to MAIN SQA group with pic_sqa tags
+    const mainSqaJid = resolveTargetJid({
+      assignment_type: "SQA",
+      cluster_area: "MAIN SQA",
+    });
+
+    if (mainSqaJid) {
+      try {
+        const mainSqaPayload = formatInProgressReminderMessagePayload(
+          sqaTickets,
+          {
+            isReminderCmd: true,
+            includeSummary: true,
+            usePicSqa: true,
+            targetGroupKey: "MAIN SQA",
+          },
+        );
+
+        if (mainSqaPayload.text) {
+          await sock.sendMessage(mainSqaJid, mainSqaPayload);
+          logger.info("Sent SQA /reminder payload to MAIN SQA group", {
+            mainSqaJid,
+            tickets: sqaTickets.length,
+          });
+        }
+      } catch (error) {
+        logger.error(
+          "Failed to send SQA /reminder payload to MAIN SQA group",
+          {
+            mainSqaJid,
+            error,
+          },
+        );
+      }
+    }
   }
 }
 
@@ -1186,6 +1222,19 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     sentTicketPlan.in_progress_reminder_tickets || [],
   );
 
+  if (ticketOnlyMode) {
+    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
+      sourceJid,
+    });
+  } else {
+    await sendMainSqaSummaryOnly(
+      sock,
+      sourceJid,
+      new Map(),
+      result.valid_tickets,
+    );
+  }
+
   if (sentTicketPlan.sendable_tickets.length === 0) {
     logger.info("No tickets left to send after deduplication/SLA checks", {
       sourceJid,
@@ -1202,19 +1251,6 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     sourceJid,
     sentTicketPlan.sendable_tickets,
   );
-
-  if (ticketOnlyMode) {
-    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
-      sourceJid,
-    });
-  } else {
-    await sendMainSqaSummaryOnly(
-      sock,
-      sourceJid,
-      ticketsByTarget,
-      sentTicketPlan.sendable_tickets,
-    );
-  }
 
   const targetEntries = [...ticketsByTarget.entries()];
   for (const [targetIndex, [targetJid, tickets]] of targetEntries.entries()) {

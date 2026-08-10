@@ -277,7 +277,7 @@ function formatWhatsAppGroupHelp({ sourceJid, senderJid, allowed }) {
     "• *Tanpa Caption / `.import` / `.send`*: Kirim tiket normal ke grup target SQA & NOP + Excel balasan.",
     "• `.update`: Kirim detail tiket eskalasi saja ke grup target (tanpa salam & summary).",
     "• `.summary`: Kirim report/summary & Excel balasan saja ke chat ini.",
-    "• `/reminder`: Kirim reminder semua tiket yang belum resolve di file Excel.",
+    "• `.reminder`: Kirim reminder semua tiket yang belum resolve di file Excel.",
     "",
     "--------------------------------------------------",
     "",
@@ -310,7 +310,7 @@ function formatWhatsAppPersonalHelp({ sourceJid, senderJid, allowed }) {
     "• `.import` / `.send` + File Excel : Kirim tiket normal ke grup target",
     "• `.update` + File Excel : Kirim detail tiket eskalasi saja ke grup target",
     "• `.summary` + File Excel : Kirim report & Excel balasan saja",
-    "• `/reminder` + File Excel : Kirim reminder tiket belum resolve",
+    "• `.reminder` + File Excel : Kirim reminder tiket belum resolve",
     "",
     "🔐 *Manajemen Session & Bot (via Telegram Command Center):*",
     "- Gunakan Bot Telegram untuk `/sessions`, `/login`, `/stop`, `/logout`, `/delete_session`, `/change_env`.",
@@ -974,7 +974,7 @@ export async function sendReminderCommandResult(
     (ticket) => ticket.assignment_type === "NOP",
   );
 
-  logger.info("Processing /reminder command result", {
+  logger.info("Processing .reminder command result", {
     sourceJid,
     totalValid: validTickets.length,
     sqaCount: sqaTickets.length,
@@ -998,7 +998,7 @@ export async function sendReminderCommandResult(
 
         if (payload.text) {
           await sock.sendMessage(targetJid, payload);
-          logger.info("Sent NOP /reminder payload to target group", {
+          logger.info("Sent NOP .reminder payload to target group", {
             targetJid,
             tickets: tickets.length,
           });
@@ -1037,14 +1037,14 @@ export async function sendReminderCommandResult(
       if (contact && contact.jid) {
         try {
           await sock.sendMessage(contact.jid, payload);
-          logger.info("Sent SQA /reminder JAPRI to PIC CCM", {
+          logger.info("Sent SQA .reminder JAPRI to PIC CCM", {
             ccmName: name,
             contactJid: contact.jid,
             tickets: tickets.length,
           });
         } catch (error) {
           logger.error(
-            "Failed to send SQA /reminder JAPRI, falling back to Telegram source chat",
+            "Failed to send SQA reminder JAPRI, falling back to Telegram source chat",
             {
               ccmName: name,
               contactJid: contact.jid,

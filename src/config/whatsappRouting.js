@@ -37,6 +37,11 @@ function getNopGroupKeyFromAssignmentGroup(assignmentGroup) {
 
 // menentukan key grup target berdasarkan tipe assignment tiket.
 export function getTargetGroupKey(ticket) {
+  const clusterAreaKey = String(ticket.cluster_area ?? "").trim().toUpperCase();
+  const targetGroupKey = String(ticket.targetGroupKey ?? "").trim().toUpperCase();
+  if (clusterAreaKey === "MAIN SQA" || targetGroupKey === "MAIN SQA") {
+    return "MAIN SQA";
+  }
   if (ticket.assignment_type === "SQA") {
     return "SQA";
   }

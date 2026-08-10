@@ -22,6 +22,15 @@ const HEADERS = [
   "kecamatan(Create Ticket)",
   "Description",
   "Problem Analysis",
+  "Assign Personal(L2 Assign)",
+  "Resolution Categorization Tier 1",
+  "Resolution Categorization Tier 3",
+  "Resolution Categorization Tier 2(L1 Assign)",
+  "Root Caused Tier 1(L2 Assign)",
+  "Root Caused Tier 2(L2 Assign)",
+  "Root Caused Tier 3(L2 Assign)",
+  "Root Caused Tier 8(L2 Assign)",
+  "Site ID(L2 Assign)",
 ];
 
 function row(overrides = {}) {
@@ -111,4 +120,43 @@ test("keeps analysis empty when CCH suggestion is invalid and Problem Analysis N
     ),
     ["notes"],
   );
+});
+
+test("sets use_reopen_message_format to false when ReOpen ticket does NOT have all 9 L2 columns filled", async () => {
+  const buffer = await createWorkbookBuffer([
+    row({
+      "Order ID": "CC-20260723-00000003",
+      "Business Status": "ReOpen",
+      "Assign Personal(L2 Assign)": "Herman",
+      // Only 1 column filled out of 9
+    }),
+  ]);
+  const result = await processTicketExcel(buffer);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.valid_tickets.length, 1);
+  assert.equal(result.valid_tickets[0].use_reopen_message_format, false);
+});
+
+test("sets use_reopen_message_format to true when ReOpen ticket has ALL 9 L2 columns filled", async () => {
+  const buffer = await createWorkbookBuffer([
+    row({
+      "Order ID": "CC-20260723-00000004",
+      "Business Status": "ReOpen",
+      "Assign Personal(L2 Assign)": "Herman",
+      "Resolution Categorization Tier 1": "NETWORK",
+      "Resolution Categorization Tier 3": "CELL DOWN",
+      "Resolution Categorization Tier 2(L1 Assign)": "RADIO",
+      "Root Caused Tier 1(L2 Assign)": "HARDWARE",
+      "Root Caused Tier 2(L2 Assign)": "BOARD",
+      "Root Caused Tier 3(L2 Assign)": "UBBP",
+      "Root Caused Tier 8(L2 Assign)": "FAULTY",
+      "Site ID(L2 Assign)": "JHO293",
+    }),
+  ]);
+  const result = await processTicketExcel(buffer);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.valid_tickets.length, 1);
+  assert.equal(result.valid_tickets[0].use_reopen_message_format, true);
 });

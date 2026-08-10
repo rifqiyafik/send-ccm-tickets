@@ -31,15 +31,71 @@ function resolveNopSitePath() {
 const defaultNopSiteRows = loadNopSiteRows();
 const defaultSiteIndex = buildSiteIndex(defaultNopSiteRows);
 
-// mengambil site ID dari teks Problem Analysis NSH dengan pola #Site Cover / #SiteCover.
-export function extractSiteCover(problemAnalysis) {
-  logger.debug("Extracting site cover from Problem Analysis NSH");
-  const text = String(problemAnalysis ?? "");
-  const match = text.match(/#\s*site\s*cover\s*:?\s*([A-Z]{2,5}\d{2,5})/i);
+// mengambil site ID dari teks dengan pola #Site Cover, Site Cover, Site ID, atau eNodeB cell.
+export function extractSiteCover(textInput) {
+  logger.debug("Extracting site cover from text");
+  const text = String(textInput ?? "");
+  if (!text.trim()) return null;
 
-  const siteId = match ? normalizeText(match[1]) : null;
-  logger.debug("Site cover extraction result", { siteId });
-  return siteId;
+  // 1. Match explicit #Site Cover, Site Cover, atau Site ID (dengan/tanpa #)
+  const siteCoverMatch = text.match(
+    /#?\s*site\s*(?:cover|id)\s*[:=-]?\s*([A-Z]{2,5}\d{2,5})/i,
+  );
+  if (siteCoverMatch) {
+    const siteId = normalizeText(siteCoverMatch[1]);
+    logger.debug("Site cover extraction result from pattern", { siteId });
+    return siteId;
+  }
+
+  // 2. Match eNodeB / cell pattern seperti E_RAP755SL1 atau N_RAP755MR1
+  const cellMatch = text.match(/\b[EN]_([A-Z]{3}\d{3})\w*\b/i);
+  if (cellMatch) {
+    const siteId = normalizeText(cellMatch[1]);
+    logger.debug("Site cover extraction result from cell pattern", { siteId });
+    return siteId;
+  }
+
+  return null;
+}
+
+export function extractSiteCoverFromRow(row, siteIndex = null) {
+  const candidateColumns = [
+    PROBLEM_ANALYSIS_NSH_COLUMN,
+    "CCH Suggestion(L1 Assign_cch_suggestion)",
+    "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)",
+    "Description",
+    "Problem Analysis",
+    "CCH Smartcare",
+  ];
+
+  for (const col of candidateColumns) {
+    const text = row?.[col];
+    if (text) {
+      const siteId = extractSiteCover(text);
+      if (siteId) return siteId;
+    }
+  }
+
+  // Fallback: jika siteIndex diberikan, cari token site_id (misal RAP755) di seluruh teks kolom yang cocok di DB site
+  if (siteIndex) {
+    for (const col of candidateColumns) {
+      const text = String(row?.[col] ?? "");
+      if (!text) continue;
+      const tokens = text.match(/\b[A-Z]{3}\d{3}\b/gi) || [];
+      for (const token of tokens) {
+        const normalized = normalizeText(token);
+        if (siteIndex.has(normalized)) {
+          logger.info("Site cover resolved from token match in text", {
+            siteId: normalized,
+            column: col,
+          });
+          return normalized;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 // membuat index site_id -> data site agar search ke JSON NOP cepat dan konsisten.
@@ -48,7 +104,7 @@ function buildSiteIndex(rows) {
   return new Map(
     rows
       .filter((row) => row && row.site_id)
-      .map((row) => [normalizeText(row.site_id), row])
+      .map((row) => [normalizeText(row.site_id), row]),
   );
 }
 
@@ -66,15 +122,17 @@ export function loadNopSiteRows(filePath = resolveNopSitePath()) {
   }
 }
 
-// membuat resolver city; prioritas kolom Kabupaten/Kota, fallback site cover dari Problem Analysis NSH.
+// membuat resolver city; prioritas kolom Kabupaten/Kota, fallback site cover dari Problem Analysis NSH / CCH Suggestion / Deskripsi / eNodeB.
 export function createCityResolver(options = {}) {
-  const rows = options.rows || (options.filePath ? loadNopSiteRows(options.filePath) : null);
-  const siteIndex = options.siteIndex || (rows ? buildSiteIndex(rows) : defaultSiteIndex);
+  const rows =
+    options.rows || (options.filePath ? loadNopSiteRows(options.filePath) : null);
+  const siteIndex =
+    options.siteIndex || (rows ? buildSiteIndex(rows) : defaultSiteIndex);
 
   return function resolveCityFromTicketRow(row) {
     logger.info("Resolving city from ticket row", { orderId: row?.["Order ID"] });
     const directCity = normalizeText(row?.[CITY_COLUMN]);
-    if (directCity) {
+    if (directCity && directCity !== "-") {
       logger.info("City resolved from city column", { city: directCity });
       return {
         ok: true,
@@ -84,7 +142,7 @@ export function createCityResolver(options = {}) {
       };
     }
 
-    const siteId = extractSiteCover(row?.[PROBLEM_ANALYSIS_NSH_COLUMN]);
+    const siteId = extractSiteCoverFromRow(row, siteIndex);
     if (!siteId) {
       logger.warn("City resolution failed: city empty and site cover not found", {
         orderId: row?.["Order ID"],

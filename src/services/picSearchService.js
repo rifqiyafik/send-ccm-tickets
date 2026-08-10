@@ -102,29 +102,96 @@ export function loadCcmHandlingRows(filePath = resolveCcmHandlingPath()) {
 }
 
 // membuat search PIC; SQA mengambil pic_sqa/ccm_handling, NOP mengambil pic_nop.
+import { extractCityFromDescription } from "../utils/descriptionCityExtractor.js";
+
+function isNopAreaMatch(cityRecord, normalizedAssignmentGroup) {
+  if (!cityRecord?.departement_ns) return true;
+  const recordDept = normalizeText(cityRecord.departement_ns);
+  const assignGroup = normalizeText(normalizedAssignmentGroup);
+  const tokens = ["ACEH", "BINJAI", "MEDAN", "PEMATANG", "RANTAU", "SIDEMPUAN"];
+  for (const token of tokens) {
+    if (assignGroup.includes(token)) {
+      return recordDept.includes(token);
+    }
+  }
+  return true;
+}
+
+// membuat search PIC; SQA mengambil pic_sqa/ccm_handling, NOP mengambil pic_nop.
 export function createPicSearch(options = {}) {
   const rows = options.rows || loadCcmHandlingRows(options.filePath);
   const cityIndex = buildCityIndex(rows);
 
-  return function searchPicByCityAndAssignment({ city, assignmentGroup }) {
-    logger.info("Searching PIC by city and assignment", { city, assignmentGroup });
+  return function searchPicByCityAndAssignment({
+    city,
+    assignmentGroup,
+    descriptionText = "",
+  }) {
+    logger.info("Searching PIC by city and assignment", {
+      city,
+      assignmentGroup,
+    });
     const normalizedCity = normalizeText(city);
-    const normalizedAssignmentGroup = normalizeAssignmentGroup(assignmentGroup);
+    const normalizedAssignmentGroup =
+      normalizeAssignmentGroup(assignmentGroup);
     const assignmentType = getAssignmentType(normalizedAssignmentGroup);
-    const cityRecord = cityIndex.get(normalizedCity);
 
-    if (!normalizedCity) {
-      logger.warn("PIC search failed: city empty", { assignmentGroup: normalizedAssignmentGroup });
-      return {
-        ok: false,
-        reason: "CITY_EMPTY",
-        city: null,
-        assignment_group: normalizedAssignmentGroup,
-        assignment_type: assignmentType,
-      };
+    let effectiveCityRecord = cityIndex.get(normalizedCity);
+    let anomalyInfo = null;
+
+    const needsDescriptionScan =
+      !effectiveCityRecord ||
+      (assignmentType === "NOP" &&
+        !isNopAreaMatch(effectiveCityRecord, normalizedAssignmentGroup));
+
+    if (needsDescriptionScan && descriptionText) {
+      const extractedCity = extractCityFromDescription(descriptionText, rows);
+      if (extractedCity) {
+        const descCityRecord = cityIndex.get(normalizeText(extractedCity));
+        if (descCityRecord) {
+          if (assignmentType === "NOP") {
+            if (isNopAreaMatch(descCityRecord, normalizedAssignmentGroup)) {
+              const primaryCityName =
+                effectiveCityRecord?.city || normalizedCity || "Unknown";
+              effectiveCityRecord = descCityRecord;
+              anomalyInfo = `Mismatch Kota Utama (${primaryCityName}) -> Ekstrak Deskripsi: ${descCityRecord.city}`;
+            }
+          } else {
+            effectiveCityRecord = descCityRecord;
+            anomalyInfo = `Ekstrak Deskripsi: ${descCityRecord.city}`;
+          }
+        }
+      }
     }
 
-    if (!cityRecord) {
+    if (
+      assignmentType === "NOP" &&
+      (!effectiveCityRecord ||
+        !isNopAreaMatch(effectiveCityRecord, normalizedAssignmentGroup))
+    ) {
+      const assignGroupToken = [
+        "ACEH",
+        "BINJAI",
+        "MEDAN",
+        "PEMATANG",
+        "RANTAU",
+        "SIDEMPUAN",
+      ].find((t) => normalizeText(normalizedAssignmentGroup).includes(t));
+      const fallbackRecord = rows.find(
+        (r) =>
+          r &&
+          r.departement_ns &&
+          normalizeText(r.departement_ns).includes(assignGroupToken),
+      );
+      if (fallbackRecord) {
+        const prevCity =
+          effectiveCityRecord?.city || normalizedCity || "Luar Region";
+        effectiveCityRecord = fallbackRecord;
+        anomalyInfo = `Site/Deskripsi Luar Region (${prevCity}) -> Fallback PIC Default ${fallbackRecord.departement_ns.trim()}`;
+      }
+    }
+
+    if (!effectiveCityRecord) {
       logger.warn("PIC search failed: city not found", {
         city: normalizedCity,
         assignmentGroup: normalizedAssignmentGroup,
@@ -135,6 +202,7 @@ export function createPicSearch(options = {}) {
         city: normalizedCity,
         assignment_group: normalizedAssignmentGroup,
         assignment_type: assignmentType,
+        anomaly_info: `Kota/Site (${normalizedCity || "Luar Region"}) di luar Region Sumbagut`,
       };
     }
 
@@ -143,13 +211,14 @@ export function createPicSearch(options = {}) {
         ok: true,
         assignment_type: "SQA",
         assignment_group: normalizedAssignmentGroup,
-        city: cityRecord.city,
-        nsa: cityRecord.nsa,
-        ccm_handling: cityRecord.ccm_handling,
-        pic: cityRecord.pic_sqa,
-        pic_sqa: cityRecord.pic_sqa,
-        pic_nop: cityRecord.pic_nop,
+        city: effectiveCityRecord.city,
+        nsa: effectiveCityRecord.nsa,
+        ccm_handling: effectiveCityRecord.ccm_handling,
+        pic: effectiveCityRecord.pic_sqa,
+        pic_sqa: effectiveCityRecord.pic_sqa,
+        pic_nop: effectiveCityRecord.pic_nop,
         source: "ccm_handling_sqa_region_sumbagut",
+        anomaly_info: anomalyInfo,
       };
       logger.info("PIC search success for SQA", result);
       return result;
@@ -160,30 +229,31 @@ export function createPicSearch(options = {}) {
         ok: true,
         assignment_type: "NOP",
         assignment_group: normalizedAssignmentGroup,
-        city: cityRecord.city,
-        nsa: cityRecord.nsa,
-        ccm_handling: cityRecord.ccm_handling,
-        pic: cityRecord.pic_nop,
-        pic_sqa: cityRecord.pic_sqa,
-        pic_nop: cityRecord.pic_nop,
+        city: effectiveCityRecord.city,
+        nsa: effectiveCityRecord.nsa,
+        ccm_handling: effectiveCityRecord.ccm_handling,
+        pic: effectiveCityRecord.pic_nop,
+        pic_sqa: effectiveCityRecord.pic_sqa,
+        pic_nop: effectiveCityRecord.pic_nop,
         source: "ccm_handling_sqa_region_sumbagut",
+        anomaly_info: anomalyInfo,
       };
       logger.info("PIC search success for NOP", result);
       return result;
     }
 
     logger.warn("PIC search failed: assignment group not supported", {
-      city: cityRecord.city,
+      city: effectiveCityRecord.city,
       assignmentGroup: normalizedAssignmentGroup,
     });
     return {
       ok: false,
       reason: "ASSIGNMENT_GROUP_NOT_SUPPORTED",
-      city: cityRecord.city,
+      city: effectiveCityRecord.city,
       assignment_group: normalizedAssignmentGroup,
       assignment_type: assignmentType,
-      nsa: cityRecord.nsa,
-      ccm_handling: cityRecord.ccm_handling,
+      nsa: effectiveCityRecord.nsa,
+      ccm_handling: effectiveCityRecord.ccm_handling,
     };
   };
 }
@@ -196,9 +266,16 @@ export const lookupPicByCityAndAssignment = searchPicByCityAndAssignment;
 // adapter untuk search PIC langsung dari row Excel yang sudah punya city dan assignment group.
 export function searchPicFromTicketRow(row) {
   logger.info("Searching PIC from ticket row", { orderId: row?.["Order ID"] });
+  const descriptionText =
+    row?.[
+      "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)"
+    ] ||
+    row?.["Description"] ||
+    "";
   return searchPicByCityAndAssignment({
     city: row?.[CITY_COLUMN],
     assignmentGroup: row?.[ASSIGNMENT_GROUP_COLUMN],
+    descriptionText,
   });
 }
 

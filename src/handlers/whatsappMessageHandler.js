@@ -277,7 +277,7 @@ function formatWhatsAppGroupHelp({ sourceJid, senderJid, allowed }) {
     "• *Tanpa Caption / `.import` / `.send`*: Kirim tiket normal ke grup target SQA & NOP + Excel balasan.",
     "• `.update`: Kirim detail tiket eskalasi saja ke grup target (tanpa salam & summary).",
     "• `.summary`: Kirim report/summary & Excel balasan saja ke chat ini.",
-    "• `/reminder`: Kirim reminder semua tiket yang belum resolve di file Excel.",
+    "• `.reminder`: Kirim reminder semua tiket yang belum resolve di file Excel.",
     "",
     "--------------------------------------------------",
     "",
@@ -310,7 +310,7 @@ function formatWhatsAppPersonalHelp({ sourceJid, senderJid, allowed }) {
     "• `.import` / `.send` + File Excel : Kirim tiket normal ke grup target",
     "• `.update` + File Excel : Kirim detail tiket eskalasi saja ke grup target",
     "• `.summary` + File Excel : Kirim report & Excel balasan saja",
-    "• `/reminder` + File Excel : Kirim reminder tiket belum resolve",
+    "• `.reminder` + File Excel : Kirim reminder tiket belum resolve",
     "",
     "🔐 *Manajemen Session & Bot (via Telegram Command Center):*",
     "- Gunakan Bot Telegram untuk `/sessions`, `/login`, `/stop`, `/logout`, `/delete_session`, `/change_env`.",
@@ -674,13 +674,17 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
   });
 }
 
-async function sendTargetGroupReminder(sock, targetJid, tickets) {
+async function sendTargetGroupReminder(sock, targetJid, tickets, options = {}) {
   logger.info("Sending target group reminder", {
     targetJid,
     tickets: tickets.length,
     assignmentType: tickets[0]?.assignment_type,
+    options,
   });
-  await sock.sendMessage(targetJid, formatReminderMessagePayload(tickets));
+  await sock.sendMessage(
+    targetJid,
+    formatReminderMessagePayload(tickets, options),
+  );
 }
 
 function getSummaryReminderGroupKey(ticket) {
@@ -741,7 +745,12 @@ async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
         continue;
       }
 
-      const payload = formatReminderMessagePayload(groupTickets);
+      const payload = formatReminderMessagePayload(groupTickets, {
+        targetGroupKey: isSqaSummary
+          ? "MAIN SQA"
+          : getTargetGroupKey(reminderTargetJid),
+        usePicSqa: isSqaSummary,
+      });
       logger.info("Sending .summary reminder message to target group", {
         sourceJid,
         targetJid: reminderTargetJid,
@@ -891,7 +900,10 @@ async function sendMainSqaSummaryOnly(
   });
   try {
     await sendTargetGroupPreamble(sock, mainSqaGroup.jid, sqaTickets);
-    await sendTargetGroupReminder(sock, mainSqaGroup.jid, sqaTickets);
+    await sendTargetGroupReminder(sock, mainSqaGroup.jid, sqaTickets, {
+      targetGroupKey: "MAIN SQA",
+      usePicSqa: true,
+    });
   } catch (error) {
     await sendTargetDeliveryFailedAlert(sock, sourceJid, {
       targetJid: mainSqaGroup.jid,
@@ -962,7 +974,7 @@ export async function sendReminderCommandResult(
     (ticket) => ticket.assignment_type === "NOP",
   );
 
-  logger.info("Processing /reminder command result", {
+  logger.info("Processing .reminder command result", {
     sourceJid,
     totalValid: validTickets.length,
     sqaCount: sqaTickets.length,
@@ -986,7 +998,7 @@ export async function sendReminderCommandResult(
 
         if (payload.text) {
           await sock.sendMessage(targetJid, payload);
-          logger.info("Sent NOP /reminder payload to target group", {
+          logger.info("Sent NOP .reminder payload to target group", {
             targetJid,
             tickets: tickets.length,
           });
@@ -1025,14 +1037,14 @@ export async function sendReminderCommandResult(
       if (contact && contact.jid) {
         try {
           await sock.sendMessage(contact.jid, payload);
-          logger.info("Sent SQA /reminder JAPRI to PIC CCM", {
+          logger.info("Sent SQA .reminder JAPRI to PIC CCM", {
             ccmName: name,
             contactJid: contact.jid,
             tickets: tickets.length,
           });
         } catch (error) {
           logger.error(
-            "Failed to send SQA /reminder JAPRI, falling back to Telegram source chat",
+            "Failed to send SQA reminder JAPRI, falling back to Telegram source chat",
             {
               ccmName: name,
               contactJid: contact.jid,
@@ -1056,6 +1068,42 @@ export async function sendReminderCommandResult(
         });
       }
     }
+
+    // Send SQA reminder summary to MAIN SQA group with pic_sqa tags
+    const mainSqaJid = resolveTargetJid({
+      assignment_type: "SQA",
+      cluster_area: "MAIN SQA",
+    });
+
+    if (mainSqaJid) {
+      try {
+        const mainSqaPayload = formatInProgressReminderMessagePayload(
+          sqaTickets,
+          {
+            isReminderCmd: true,
+            includeSummary: true,
+            usePicSqa: true,
+            targetGroupKey: "MAIN SQA",
+          },
+        );
+
+        if (mainSqaPayload.text) {
+          await sock.sendMessage(mainSqaJid, mainSqaPayload);
+          logger.info("Sent SQA /reminder payload to MAIN SQA group", {
+            mainSqaJid,
+            tickets: sqaTickets.length,
+          });
+        }
+      } catch (error) {
+        logger.error(
+          "Failed to send SQA /reminder payload to MAIN SQA group",
+          {
+            mainSqaJid,
+            error,
+          },
+        );
+      }
+    }
   }
 }
 
@@ -1075,8 +1123,23 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     reminderMode,
   });
 
+  const modeName = ticketOnlyMode
+    ? ".update"
+    : summaryOnlyMode
+    ? ".summary"
+    : reminderMode
+    ? ".reminder"
+    : null;
+  const modeNote = ticketOnlyMode
+    ? "Mode `.update` aktif: Detail tiket dikirim langsung ke grup target tanpa salam pembuka & reminder summary."
+    : summaryOnlyMode
+    ? "Mode `.summary` aktif: Bot hanya membuat report dan summary tanpa mengirim detail tiket ke grup target."
+    : reminderMode
+    ? "Mode `.reminder` aktif: Tiket baru dikirim lebih dulu jika ada, diikuti pengiriman reminder."
+    : null;
+
   await sock.sendMessage(sourceJid, {
-    text: formatImportSummary(result),
+    text: formatImportSummary(result, { mode: modeName, modeNote }),
   });
 
   if (!result.ok) {
@@ -1085,39 +1148,6 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       missingColumns: result.missing_columns,
     });
     return;
-  }
-
-  if (ticketOnlyMode) {
-    logger.info("Import is running in .update ticket-only mode", {
-      sourceJid,
-      validTickets: result.valid_tickets.length,
-    });
-    await sock.sendMessage(sourceJid, {
-      text: [
-        "⚙️ **Mode .update Aktif**",
-        "",
-        "➡️ Bot hanya mengirim **detail tiket** ke grup target.",
-        "🚫 Salam pembuka, Excel target, dan reminder summary **dilewati**.",
-        "",
-        "---",
-        "ℹ️ Gunakan mode ini untuk update cepat tanpa format tambahan.",
-      ].join("\n"),
-    });
-  }
-
-  if (summaryOnlyMode) {
-    logger.info("Import is running in .summary summary-only mode", {
-      sourceJid,
-      validTickets: result.valid_tickets.length,
-    });
-    await sock.sendMessage(sourceJid, {
-      text: [
-        "📊 **Mode .summary Aktif**",
-        "",
-        "➡️ Bot hanya membuat report dan summary dari file Excel.",
-        "🚫 Detail tiket tidak dikirim ke grup target.",
-      ].join("\n"),
-    });
   }
 
   const processingReport = formatProcessingReport(result);
@@ -1177,15 +1207,50 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
   }
 
   if (reminderMode) {
+    const sendableCount = sentTicketPlan.sendable_tickets.length;
+    if (sendableCount > 0) {
+      logger.info(
+        "Sending unsent ticket details first before reminder delivery in .reminder mode",
+        {
+          sourceJid,
+          sendableCount,
+        },
+      );
+      await sendTicketDetailsToTargetGroups(
+        sock,
+        sourceJid,
+        sentTicketPlan.sendable_tickets,
+        { skipPreamble: true },
+      );
+    }
+
     await sendReminderCommandResult(
       sock,
       sourceJid,
       result.valid_tickets,
       options,
     );
+
+    const reminderOutputLines = [
+      "✅ **Reminder Berhasil Dikirim**",
+      "",
+      sendableCount > 0
+        ? `📤 **${sendableCount} tiket baru** telah dikirimkan terlebih dahulu ke grup target.`
+        : "ℹ️ Tidak ada tiket baru yang belum terkirim pada file Excel.",
+      "",
+      "📋 **Status Pengiriman Reminder**:",
+      "• SQA: Reminder JAPRI terkirim ke PIC CCM & ringkasan terkirim ke MAIN SQA.",
+      "• NOP: Reminder terkirim ke grup NOP target.",
+    ];
+
+    await sock.sendMessage(sourceJid, {
+      text: reminderOutputLines.join("\n"),
+    });
+
     logger.info("Stopping import flow after reminder command mode", {
       sourceJid,
       validTickets: result.valid_tickets.length,
+      sendableCount,
     });
     return;
   }
@@ -1195,6 +1260,19 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     sourceJid,
     sentTicketPlan.in_progress_reminder_tickets || [],
   );
+
+  if (ticketOnlyMode) {
+    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
+      sourceJid,
+    });
+  } else {
+    await sendMainSqaSummaryOnly(
+      sock,
+      sourceJid,
+      new Map(),
+      result.valid_tickets,
+    );
+  }
 
   if (sentTicketPlan.sendable_tickets.length === 0) {
     logger.info("No tickets left to send after deduplication/SLA checks", {
@@ -1207,33 +1285,35 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
-  const ticketsByTarget = await groupTicketsByTarget(
+  await sendTicketDetailsToTargetGroups(
     sock,
     sourceJid,
     sentTicketPlan.sendable_tickets,
+    { skipPreamble: ticketOnlyMode },
   );
+}
 
-  if (ticketOnlyMode) {
-    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
-      sourceJid,
-    });
-  } else {
-    await sendMainSqaSummaryOnly(
-      sock,
-      sourceJid,
-      ticketsByTarget,
-      sentTicketPlan.sendable_tickets,
-    );
-  }
+async function sendTicketDetailsToTargetGroups(
+  sock,
+  sourceJid,
+  sendableTickets,
+  options = {},
+) {
+  const skipPreamble = Boolean(options.skipPreamble);
+  const ticketsByTarget = await groupTicketsByTarget(
+    sock,
+    sourceJid,
+    sendableTickets,
+  );
 
   const targetEntries = [...ticketsByTarget.entries()];
   for (const [targetIndex, [targetJid, tickets]] of targetEntries.entries()) {
     const targetLabel = formatTargetProgressLabel(tickets);
     let sentCount = 0;
 
-    if (ticketOnlyMode) {
+    if (skipPreamble) {
       logger.info(
-        "Skipping target group preamble in .update ticket-only mode",
+        "Skipping target group preamble for ticket detail delivery",
         {
           targetJid,
           tickets: tickets.length,
@@ -1243,7 +1323,9 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       try {
         await sendTargetGroupPreamble(sock, targetJid, tickets);
         if (tickets[0]?.assignment_type !== "SQA") {
-          await sendTargetGroupReminder(sock, targetJid, tickets);
+          await sendTargetGroupReminder(sock, targetJid, tickets, {
+            targetGroupKey: getTargetGroupKey(targetJid),
+          });
         }
       } catch (error) {
         await sendTargetDeliveryFailedAlert(sock, sourceJid, {

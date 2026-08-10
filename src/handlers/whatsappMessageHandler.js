@@ -1105,25 +1105,6 @@ export async function sendReminderCommandResult(
       }
     }
   }
-
-  await sock.sendMessage(sourceJid, {
-    text: [
-      "🔔 **Reminder Tiket Berhasil Dikirim**",
-      "",
-      `📊 Total Tiket Reminded: **${validTickets.length}**`,
-      sqaTickets.length > 0
-        ? `• SQA: **${sqaTickets.length}** tiket (JAPRI PIC CCM & MAIN SQA)`
-        : null,
-      nopTickets.length > 0
-        ? `• NOP: **${nopTickets.length}** tiket (Grup WA NOP Target)`
-        : null,
-      "",
-      "---",
-      "✅ Pesan reminder telah selesai dikirim ke seluruh grup target & PIC.",
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  });
 }
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
@@ -1146,11 +1127,15 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     ? ".update"
     : summaryOnlyMode
     ? ".summary"
+    : reminderMode
+    ? ".reminder"
     : null;
   const modeNote = ticketOnlyMode
     ? "Mode `.update` aktif: Detail tiket dikirim langsung ke grup target tanpa salam pembuka & reminder summary."
     : summaryOnlyMode
     ? "Mode `.summary` aktif: Bot hanya membuat report dan summary tanpa mengirim detail tiket ke grup target."
+    : reminderMode
+    ? "Mode `.reminder` aktif: Tiket baru dikirim lebih dulu jika ada, diikuti pengiriman reminder."
     : null;
 
   await sock.sendMessage(sourceJid, {
@@ -1221,6 +1206,55 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
+  if (reminderMode) {
+    const sendableCount = sentTicketPlan.sendable_tickets.length;
+    if (sendableCount > 0) {
+      logger.info(
+        "Sending unsent ticket details first before reminder delivery in .reminder mode",
+        {
+          sourceJid,
+          sendableCount,
+        },
+      );
+      await sendTicketDetailsToTargetGroups(
+        sock,
+        sourceJid,
+        sentTicketPlan.sendable_tickets,
+        { skipPreamble: true },
+      );
+    }
+
+    await sendReminderCommandResult(
+      sock,
+      sourceJid,
+      result.valid_tickets,
+      options,
+    );
+
+    const reminderOutputLines = [
+      "✅ **Reminder Berhasil Dikirim**",
+      "",
+      sendableCount > 0
+        ? `📤 **${sendableCount} tiket baru** telah dikirimkan terlebih dahulu ke grup target.`
+        : "ℹ️ Tidak ada tiket baru yang belum terkirim pada file Excel.",
+      "",
+      "📋 **Status Pengiriman Reminder**:",
+      "• SQA: Reminder JAPRI terkirim ke PIC CCM & ringkasan terkirim ke MAIN SQA.",
+      "• NOP: Reminder terkirim ke grup NOP target.",
+    ];
+
+    await sock.sendMessage(sourceJid, {
+      text: reminderOutputLines.join("\n"),
+    });
+
+    logger.info("Stopping import flow after reminder command mode", {
+      sourceJid,
+      validTickets: result.valid_tickets.length,
+      sendableCount,
+    });
+    return;
+  }
+
   await sendDailyInProgressReminders(
     sock,
     sourceJid,
@@ -1248,22 +1282,28 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       inProgressReminder:
         sentTicketPlan.in_progress_reminder_tickets?.length || 0,
     });
-
-    if (reminderMode) {
-      await sendReminderCommandResult(
-        sock,
-        sourceJid,
-        result.valid_tickets,
-        options,
-      );
-    }
     return;
   }
 
-  const ticketsByTarget = await groupTicketsByTarget(
+  await sendTicketDetailsToTargetGroups(
     sock,
     sourceJid,
     sentTicketPlan.sendable_tickets,
+    { skipPreamble: ticketOnlyMode },
+  );
+}
+
+async function sendTicketDetailsToTargetGroups(
+  sock,
+  sourceJid,
+  sendableTickets,
+  options = {},
+) {
+  const skipPreamble = Boolean(options.skipPreamble);
+  const ticketsByTarget = await groupTicketsByTarget(
+    sock,
+    sourceJid,
+    sendableTickets,
   );
 
   const targetEntries = [...ticketsByTarget.entries()];
@@ -1271,9 +1311,9 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     const targetLabel = formatTargetProgressLabel(tickets);
     let sentCount = 0;
 
-    if (ticketOnlyMode) {
+    if (skipPreamble) {
       logger.info(
-        "Skipping target group preamble in .update ticket-only mode",
+        "Skipping target group preamble for ticket detail delivery",
         {
           targetJid,
           tickets: tickets.length,
@@ -1391,19 +1431,6 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       });
       await sleep(TARGET_GROUP_COMPLETION_DELAY_MS);
     }
-  }
-
-  if (reminderMode) {
-    await sendReminderCommandResult(
-      sock,
-      sourceJid,
-      result.valid_tickets,
-      options,
-    );
-    logger.info("Completed reminder mode after sending unsent tickets", {
-      sourceJid,
-      validTickets: result.valid_tickets.length,
-    });
   }
 }
 

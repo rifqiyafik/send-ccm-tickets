@@ -1105,6 +1105,25 @@ export async function sendReminderCommandResult(
       }
     }
   }
+
+  await sock.sendMessage(sourceJid, {
+    text: [
+      "🔔 **Reminder Tiket Berhasil Dikirim**",
+      "",
+      `📊 Total Tiket Reminded: **${validTickets.length}**`,
+      sqaTickets.length > 0
+        ? `• SQA: **${sqaTickets.length}** tiket (JAPRI PIC CCM & MAIN SQA)`
+        : null,
+      nopTickets.length > 0
+        ? `• NOP: **${nopTickets.length}** tiket (Grup WA NOP Target)`
+        : null,
+      "",
+      "---",
+      "✅ Pesan reminder telah selesai dikirim ke seluruh grup target & PIC.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  });
 }
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
@@ -1202,20 +1221,6 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
-  if (reminderMode) {
-    await sendReminderCommandResult(
-      sock,
-      sourceJid,
-      result.valid_tickets,
-      options,
-    );
-    logger.info("Stopping import flow after reminder command mode", {
-      sourceJid,
-      validTickets: result.valid_tickets.length,
-    });
-    return;
-  }
-
   await sendDailyInProgressReminders(
     sock,
     sourceJid,
@@ -1243,6 +1248,15 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       inProgressReminder:
         sentTicketPlan.in_progress_reminder_tickets?.length || 0,
     });
+
+    if (reminderMode) {
+      await sendReminderCommandResult(
+        sock,
+        sourceJid,
+        result.valid_tickets,
+        options,
+      );
+    }
     return;
   }
 
@@ -1377,6 +1391,19 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       });
       await sleep(TARGET_GROUP_COMPLETION_DELAY_MS);
     }
+  }
+
+  if (reminderMode) {
+    await sendReminderCommandResult(
+      sock,
+      sourceJid,
+      result.valid_tickets,
+      options,
+    );
+    logger.info("Completed reminder mode after sending unsent tickets", {
+      sourceJid,
+      validTickets: result.valid_tickets.length,
+    });
   }
 }
 

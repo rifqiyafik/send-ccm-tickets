@@ -521,14 +521,15 @@ export function formatSentTicketPlanReport(plan) {
   const invalidMessageTickets = plan.invalid_message_tickets || [];
   const fallbackResolvedTickets = plan.fallback_resolved_tickets || [];
   const inProgressReminderTickets = plan.in_progress_reminder_tickets || [];
-  const newTicketCount = Math.max(
-    0,
-    plan.sendable_tickets.length - plan.reopened_tickets.length,
-  );
+  const newTickets =
+    plan.new_tickets ||
+    (plan.sendable_tickets || []).filter(
+      (ticket) => !ticket.use_reopen_message_format,
+    );
   const reportLines = [
     "📊 Rekapitulasi Tiket",
     "",
-    `🆕 Tiket Baru Terkirim: ${newTicketCount}`,
+    `🆕 Tiket Baru Terkirim: ${newTickets.length}`,
     `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
     `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,
     `🔔 Tiket In Progress Diremind: ${inProgressReminderTickets.length}`,
@@ -537,6 +538,15 @@ export function formatSentTicketPlanReport(plan) {
     `♻️ Tiket ReOpen dikirim ulang: ${plan.reopened_tickets.length}`,
     `🗄️ Retensi Data Lokal: ${plan.retention_days} hari`,
   ];
+
+  if (newTickets.length > 0) {
+    reportLines.push(
+      "",
+      "🆕 Tiket Baru Terkirim:",
+      "",
+      createOrderIdCodeTable(newTickets),
+    );
+  }
 
   if (plan.duplicate_tickets.length > 0) {
     reportLines.push(

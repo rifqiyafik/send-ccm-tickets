@@ -253,19 +253,32 @@ async function readStore() {
 
 async function writeStore(store) {
   const storePath = getStorePath();
+  const dir = path.dirname(storePath);
+  await fs.mkdir(dir, { recursive: true });
+
+  const tempPath = `${storePath}.tmp.${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   try {
-    await fs.mkdir(path.dirname(storePath), { recursive: true });
     await fs.writeFile(
-      storePath,
+      tempPath,
       `${JSON.stringify(store, null, 2)}\n`,
       "utf8",
     );
+    await fs.rename(tempPath, storePath);
     logger.info("Sent ticket store saved", {
       storePath,
       tickets: Object.keys(store.tickets || {}).length,
     });
   } catch (error) {
-    logger.error("Failed to save sent ticket store", error);
+    try {
+      await fs.unlink(tempPath);
+    } catch (_) {
+      // ignore cleanup errors for temp file
+    }
+    logger.error("Failed to save sent ticket store", {
+      error: error.message,
+      code: error.code,
+      storePath,
+    });
     throw error;
   }
 }

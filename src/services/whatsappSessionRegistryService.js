@@ -100,17 +100,35 @@ async function readRegistry() {
 
 async function writeRegistry(registry) {
   const registryPath = getRegistryPath();
-  await fs.mkdir(path.dirname(registryPath), { recursive: true });
-  await fs.writeFile(
-    registryPath,
-    `${JSON.stringify(registry, null, 2)}\n`,
-    "utf8",
-  );
-  logger.info("WhatsApp session registry saved", {
-    registryPath,
-    sessions: Object.keys(registry.sessions || {}).length,
-    activeSessionId: registry.active_session_id || "",
-  });
+  const dir = path.dirname(registryPath);
+  await fs.mkdir(dir, { recursive: true });
+
+  const tempPath = `${registryPath}.tmp.${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    await fs.writeFile(
+      tempPath,
+      `${JSON.stringify(registry, null, 2)}\n`,
+      "utf8",
+    );
+    await fs.rename(tempPath, registryPath);
+    logger.info("WhatsApp session registry saved", {
+      registryPath,
+      sessions: Object.keys(registry.sessions || {}).length,
+      activeSessionId: registry.active_session_id || "",
+    });
+  } catch (error) {
+    try {
+      await fs.unlink(tempPath);
+    } catch (_) {
+      // ignore cleanup errors for temp file
+    }
+    logger.error("Failed to write WhatsApp session registry", {
+      error: error.message,
+      code: error.code,
+      registryPath,
+    });
+    throw error;
+  }
 }
 
 function toSessionList(registry) {

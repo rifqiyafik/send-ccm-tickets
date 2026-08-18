@@ -1110,6 +1110,40 @@ function formatSkippedAnomalyDetail(t) {
   return `Kota & Site Cover tidak ditemukan pada tiket (${t.reason})`;
 }
 
+function formatValidAnomalyCard(t) {
+  const ref = getTicketRef(t);
+  const group = t.assignment_group || t.assignment_type || "-";
+  const pic = t.pic || "-";
+  const anomalyRaw = String(t.anomaly_info || "").trim();
+
+  let kasus = anomalyRaw;
+  let fallback = "Tetap diproses dengan mapping PIC alternatif";
+
+  if (anomalyRaw.includes(" -> ")) {
+    const [part1, part2] = anomalyRaw.split(" -> ");
+    kasus = part1.trim();
+    fallback = part2.trim();
+  }
+
+  return [
+    `📌 \`${ref}\` (${group})`,
+    `   ├ ⚠️ **Anomali**: ${kasus}`,
+    `   ├ 🔄 **Aksi Fallback**: ${fallback}`,
+    `   └ 👤 **PIC**: **${pic}**`,
+  ].join("\n");
+}
+
+function formatSkippedAnomalyCard(t) {
+  const ref = getTicketRef(t);
+  const group = t.assignment_group || "SQA";
+  const detail = formatSkippedAnomalyDetail(t);
+
+  return [
+    `❌ \`${ref}\` (${group})`,
+    `   └ ⚠️ **Alasan Skip**: ${detail}`,
+  ].join("\n");
+}
+
 // membuat report detail alasan tiket valid/dilewati agar proses filter bisa diaudit dari WhatsApp/Telegram.
 export function formatProcessingReport(result) {
   logger.info("Formatting processing report", { ok: result.ok });
@@ -1156,10 +1190,7 @@ export function formatProcessingReport(result) {
     lines.push(
       "",
       "⚠️ **Tiket Anomali (Tetap Terkirim ke WA)**:",
-      ...validAnomalies.map(
-        (t) =>
-          `• ${getTicketRef(t)} | ${t.assignment_group || t.assignment_type} | ${t.anomaly_info} | PIC: ${t.pic || "-"}`,
-      ),
+      ...validAnomalies.map((t) => formatValidAnomalyCard(t)),
     );
   }
 
@@ -1174,10 +1205,7 @@ export function formatProcessingReport(result) {
     lines.push(
       "",
       "⚠️ **Tiket Anomali Dilewati (Tidak Dikirim ke WA)**:",
-      ...skippedAnomalies.map(
-        (t) =>
-          `• ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${formatSkippedAnomalyDetail(t)}`,
-      ),
+      ...skippedAnomalies.map((t) => formatSkippedAnomalyCard(t)),
     );
   }
 

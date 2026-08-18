@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import qrcode from "qrcode-terminal";
 
 import { startBot } from "../handlers/whatsappMessageHandler.js";
@@ -19,6 +20,7 @@ import {
 const logger = createLogger("whatsappSessionService");
 const PENDING_LOGIN_TTL_MS = 5 * 60 * 1000;
 const PENDING_SESSION_SWITCH_TTL_MS = 2 * 60 * 1000;
+const PENDING_REAUTH_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_READY_TIMEOUT_MS = Number(
   process.env.WA_READY_TIMEOUT_MS || 30000,
 );
@@ -26,6 +28,8 @@ const AUTO_RECOVER_DELAY_MS = Number(
   process.env.WA_AUTO_RECOVER_DELAY_MS || 7000,
 );
 const WA_LOGGED_OUT_STATUS_CODE = 401;
+const WA_FORBIDDEN_STATUS_CODE = 403;
+const MAX_QR_NOTIFY_COUNT = 3;
 
 function formatQrText(qr) {
   let qrText = "";
@@ -53,9 +57,11 @@ export function createWhatsAppSessionService({
   let desiredSessionId = "";
   let connectionState = "stopped";
   let autoRecoverTimer = null;
+  let qrNotifyCount = 0;
   const qrSubscribers = new Set();
   const pendingLoginNames = new Map();
   const pendingSessionSwitches = new Map();
+  const pendingExpiredSessionReauth = new Map();
   const readyWaiters = new Set();
 
   async function notifySubscribers(text, options = {}) {
@@ -65,10 +71,46 @@ export function createWhatsAppSessionService({
   }
 
   async function notifyQr(qr) {
+    qrNotifyCount += 1;
     logger.info("Forwarding WhatsApp QR to Telegram subscribers", {
       subscribers: qrSubscribers.size,
       activeSessionId: activeSession?.id,
+      qrCount: qrNotifyCount,
+      maxQrCount: MAX_QR_NOTIFY_COUNT,
     });
+
+    if (qrNotifyCount > MAX_QR_NOTIFY_COUNT) {
+      logger.warn("QR notify limit reached, stopping QR session", {
+        sessionId: activeSession?.id,
+        qrNotifyCount,
+      });
+      await notifySubscribers(
+        [
+          "⌛ <b>Sesi Scan QR Berakhir</b>",
+          "",
+          `Session: <b>${escapeTelegramHtml(formatSessionLine(activeSession))}</b>`,
+          "",
+          `QR Code sudah dikirim <b>${MAX_QR_NOTIFY_COUNT} kali</b> tanpa di-scan.`,
+          "Sesi login QR dihentikan otomatis untuk keamanan.",
+          "",
+          "Ketik <code>/login &lt;nomor_urut&gt;</code> jika ingin mencoba kembali.",
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+      // Stop the socket without triggering auto-recover
+      if (controller?.getStatus?.().running) {
+        desiredSessionId = "";
+        clearAutoRecoverTimer();
+        await controller.stop("QR notify limit reached");
+        controller = null;
+        connectionState = "stopped";
+        if (activeSession) {
+          await markWhatsAppSessionStatus(activeSession.id, "stopped");
+        }
+      }
+      return;
+    }
+
     const qrText = formatQrText(qr);
     await notifySubscribers(
       [
@@ -79,6 +121,8 @@ export function createWhatsAppSessionService({
         "Scan dari <b>WhatsApp › Linked Devices › Link a Device</b>",
         "",
         `<pre>${escapeTelegramHtml(qrText)}</pre>`,
+        "",
+        `<i>QR ${qrNotifyCount}/${MAX_QR_NOTIFY_COUNT} — Ketik /cancel untuk membatalkan.</i>`,
       ].join("\n"),
       { parse_mode: "HTML" },
     );
@@ -188,11 +232,15 @@ export function createWhatsAppSessionService({
     );
   }
 
-  function isLoggedOutDisconnect(lastDisconnect) {
-    return getDisconnectStatusCode(lastDisconnect) === WA_LOGGED_OUT_STATUS_CODE;
+  function isExpiredSessionDisconnect(lastDisconnect) {
+    const code = getDisconnectStatusCode(lastDisconnect);
+    return (
+      code === WA_LOGGED_OUT_STATUS_CODE ||
+      code === WA_FORBIDDEN_STATUS_CODE
+    );
   }
 
-  async function handleLoggedOutSession(session) {
+  async function handleLoggedOutSession(session, statusCode = 401) {
     clearAutoRecoverTimer();
     desiredSessionId = "";
     connectionState = "logged_out";
@@ -200,22 +248,122 @@ export function createWhatsAppSessionService({
     activeSession = await markWhatsAppSessionStatus(session.id, "logged_out");
     rejectSocketReady(new Error("WhatsApp session logged out."));
 
+    // Simpan pending re-auth untuk semua subscriber saat ini
+    const chatIds = Array.from(qrSubscribers);
+    for (const chatId of chatIds) {
+      pendingExpiredSessionReauth.set(String(chatId), {
+        sessionId: session.id,
+        expiresAt: Date.now() + PENDING_REAUTH_TTL_MS,
+      });
+    }
+
+    logger.warn("WhatsApp session expired, asking subscribers for re-auth confirmation", {
+      sessionId: session.id,
+      statusCode,
+      subscribers: chatIds.length,
+    });
+
+    const statusLabel = statusCode === WA_FORBIDDEN_STATUS_CODE
+      ? "403 Forbidden (Kredensial ditolak server)"
+      : "401 Logged Out (Perangkat di-unlink)";
+
     await notifySubscribers(
       [
-        "🚪 <b>WhatsApp Session Logged Out</b>",
+        "⚠️ <b>WhatsApp Session Usang / Ditolak</b>",
         "",
         `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
         `Phone: <code>${escapeTelegramHtml(session.phone)}</code>`,
+        `Status: <code>${escapeTelegramHtml(statusLabel)}</code>`,
         "",
-        "Credential lokal session ini sudah tidak valid, jadi bot tidak bisa auto-recovery dan QR tidak akan muncul dari credential lama.",
+        "Sesi ini sudah tidak valid dan tidak bisa auto-recovery.",
         "",
-        "Langkah perbaikan:",
-        "1. Jalankan <code>/delete_session 1</code> untuk hapus credential lokal.",
-        `2. Jalankan <code>/login ${escapeTelegramHtml(session.phone)}</code> untuk membuat session baru.`,
-        "3. Isi nama session, lalu scan QR yang dikirim bot.",
+        "Apakah Anda ingin <b>membersihkan credential lama</b> dan menampilkan <b>QR Code baru</b> untuk login ulang?",
+        "",
+        "Balas <code>YA</code> untuk bersihkan credential lama dan tampilkan QR Code baru.",
+        "Balas <code>TIDAK</code> untuk batal.",
+        "",
+        "⏱️ Konfirmasi berlaku 5 menit.",
       ].join("\n"),
       { parse_mode: "HTML" },
     );
+  }
+
+  async function completePendingExpiredSessionReauth(chatId, answer) {
+    const key = String(chatId);
+    const pending = pendingExpiredSessionReauth.get(key);
+    if (!pending) {
+      return null;
+    }
+
+    const normalizedAnswer = String(answer || "").trim().toUpperCase();
+    if (Date.now() > pending.expiresAt) {
+      pendingExpiredSessionReauth.delete(key);
+      return [
+        "⌛ <b>Konfirmasi Re-Auth Expired</b>",
+        "",
+        "Jalankan ulang <code>/login &lt;nomor_urut&gt;</code> jika masih ingin login ulang.",
+      ].join("\n");
+    }
+
+    if (![ "YA", "Y", "YES", "TIDAK", "N", "NO" ].includes(normalizedAnswer)) {
+      return [
+        "⚠️ <b>Menunggu konfirmasi re-auth session usang</b>",
+        "",
+        "Balas <code>YA</code> untuk bersihkan credential lama dan tampilkan QR baru.",
+        "Balas <code>TIDAK</code> untuk membatalkan.",
+      ].join("\n");
+    }
+
+    pendingExpiredSessionReauth.delete(key);
+
+    if ([ "TIDAK", "N", "NO" ].includes(normalizedAnswer)) {
+      return [
+        "✅ <b>Re-Auth Dibatalkan</b>",
+        "",
+        "Session tetap dalam status tidak aktif.",
+        "Jalankan <code>/login &lt;nomor_urut&gt;</code> kapan saja jika ingin login ulang.",
+      ].join("\n");
+    }
+
+    // YA — hapus credential lama dan mulai fresh auth
+    const session = await resolveWhatsAppSession(pending.sessionId);
+    if (!session) {
+      return [
+        "❌ <b>Session Tidak Ditemukan</b>",
+        "",
+        "Session yang dimaksud tidak lagi terdaftar.",
+        "Jalankan <code>/sessions</code> untuk melihat daftar session terbaru.",
+      ].join("\n");
+    }
+
+    logger.info("Purging expired session auth dir for fresh re-auth", {
+      sessionId: session.id,
+      authDir: session.auth_dir,
+    });
+
+    try {
+      await fs.rm(session.auth_dir, { recursive: true, force: true });
+      logger.info("Expired session auth dir purged", { authDir: session.auth_dir });
+    } catch (error) {
+      logger.warn("Failed to purge expired session auth dir", {
+        authDir: session.auth_dir,
+        message: error.message,
+      });
+    }
+
+    releaseProcessLockByDir(session.auth_dir);
+    qrNotifyCount = 0;
+
+    const startResult = await startSession(session, chatId, { confirmedSwitch: true });
+    return [
+      "🔄 <b>Membuat Sesi Baru</b>",
+      "",
+      `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
+      "",
+      "Credential lama berhasil dihapus. Memulai autentikasi ulang...",
+      "",
+      startResult,
+    ].join("\n");
   }
 
   function createPendingSessionSwitch(chatId, currentSession, nextSession) {
@@ -298,6 +446,7 @@ export function createWhatsAppSessionService({
     }
 
     clearAutoRecoverTimer();
+    qrNotifyCount = 0;
     desiredSessionId = session.id;
     connectionState = options.autoRecover ? "reconnecting" : "starting";
     activeSession = await markWhatsAppSessionStatus(session.id, "starting");
@@ -314,6 +463,7 @@ export function createWhatsAppSessionService({
       },
       onConnectionUpdate: async ({ connection, lastDisconnect }) => {
         if (connection === "open") {
+          qrNotifyCount = 0;
           connectionState = "connected";
           await markWhatsAppSessionStatus(session.id, "connected");
           resolveSocketReady();
@@ -328,12 +478,13 @@ export function createWhatsAppSessionService({
           );
         }
         if (connection === "close") {
-          if (isLoggedOutDisconnect(lastDisconnect)) {
-            logger.warn("WhatsApp session logged out, auto recovery disabled", {
+          const statusCode = getDisconnectStatusCode(lastDisconnect);
+          if (isExpiredSessionDisconnect(lastDisconnect)) {
+            logger.warn("WhatsApp session credential expired or rejected, asking for re-auth", {
               sessionId: session.id,
-              statusCode: getDisconnectStatusCode(lastDisconnect),
+              statusCode,
             });
-            await handleLoggedOutSession(session);
+            await handleLoggedOutSession(session, statusCode);
             return;
           }
 
@@ -807,7 +958,53 @@ export function createWhatsAppSessionService({
     return socket;
   }
 
+  async function cancelQr(chatId) {
+    const key = chatId ? String(chatId) : null;
+
+    // Clear any pending re-auth confirmation for this user
+    if (key) {
+      pendingExpiredSessionReauth.delete(key);
+    }
+
+    if (!controller?.getStatus?.().running || connectionState === "connected") {
+      return [
+        "ℹ️ <b>Tidak Ada Sesi QR Aktif</b>",
+        "",
+        "Tidak ada proses scan QR yang sedang berjalan saat ini.",
+      ].join("\n");
+    }
+
+    const stoppedSession = activeSession;
+    desiredSessionId = "";
+    clearAutoRecoverTimer();
+    qrNotifyCount = 0;
+    await controller.stop("Telegram /cancel QR");
+    controller = null;
+    connectionState = "stopped";
+    if (stoppedSession) {
+      await markWhatsAppSessionStatus(stoppedSession.id, "stopped");
+    }
+
+    logger.info("WhatsApp QR session cancelled by user", {
+      chatId: key,
+      sessionId: stoppedSession?.id,
+    });
+
+    return [
+      "🛑 <b>Sesi Scan QR Dibatalkan</b>",
+      "",
+      stoppedSession
+        ? `Session: <b>${escapeTelegramHtml(stoppedSession.label)}</b>`
+        : "",
+      "",
+      "Proses login QR dihentikan.",
+      "Gunakan <code>/login &lt;nomor_urut&gt;</code> untuk memulai kembali kapan saja.",
+    ].join("\n");
+  }
+
   return {
+    cancelQr,
+    completePendingExpiredSessionReauth,
     completePendingLoginName,
     completePendingSessionSwitch,
     deleteSession,

@@ -220,9 +220,12 @@ test("does not auto recover logged out WhatsApp session and asks for new QR sess
   assert.deepEqual(events.map((event) => event.type), ["start"]);
   assert.equal(service.getStatus().connection_state, "logged_out");
   assert.equal(service.getStatus().desired_session_id, "");
-  assert.match(messages.at(-1).text, /WhatsApp Session Logged Out/);
-  assert.match(messages.at(-1).text, /\/delete_session 1/);
-  assert.match(messages.at(-1).text, /\/login 6282160478546/);
+  // New behavior: ask for re-auth confirmation instead of showing manual steps
+  assert.match(messages.at(-1).text, /WhatsApp Session Usang/);
+  assert.match(messages.at(-1).text, /YA/);
+  assert.match(messages.at(-1).text, /TIDAK/);
+  assert.match(messages.at(-1).text, /5 menit/);
 
   context.cleanup();
 });
+

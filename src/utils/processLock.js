@@ -95,17 +95,20 @@ export function acquireProcessLock(lockDir, owner, options = {}) {
     const samePid = currentLock?.pid === process.pid;
     const sameHostname = !currentLock?.hostname || currentLock?.hostname === os.hostname();
 
-    if (samePid || (sameHostname && !activeLocks.has(lockPath))) {
-      logger.warn("Removing orphan/stale process lock for current process session switch", {
+    // 1. Lock dari container/host lama (saat container di-recreate atau hostname berganti)
+    if (!sameHostname) {
+      logger.warn("Removing stale process lock from previous container/host", {
         lockPath,
-        currentLock,
-        pid: process.pid,
+        lockHostname: currentLock?.hostname,
+        currentHostname: os.hostname(),
+        lockPid: currentLock?.pid,
       });
       fs.rmSync(lockPath, { force: true });
       return acquireProcessLock(lockDir, owner, options);
     }
 
-    if (isPidRunning(currentLock?.pid)) {
+    // 2. Lock pada host yang sama: cek apakah proses lain benar-benar masih aktif
+    if (currentLock?.pid && currentLock.pid !== process.pid && isPidRunning(currentLock.pid)) {
       const message = [
         `Session WhatsApp sedang dipakai proses lain (${currentLock.owner || "unknown"}, PID ${currentLock.pid}).`,
         "Tutup proses npm start/npm run jid yang masih berjalan, lalu jalankan ulang.",
@@ -113,7 +116,11 @@ export function acquireProcessLock(lockDir, owner, options = {}) {
       throw new Error(message);
     }
 
-    logger.warn("Removing stale process lock", { lockPath, currentLock });
+    logger.warn("Removing orphan/stale process lock", {
+      lockPath,
+      currentLock,
+      pid: process.pid,
+    });
     fs.rmSync(lockPath, { force: true });
     return acquireProcessLock(lockDir, owner, options);
   }

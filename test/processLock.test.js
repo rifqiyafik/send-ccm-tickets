@@ -69,3 +69,33 @@ test("releaseProcessLockByDir forcibly removes lock file from disk", () => {
 
   context.cleanup();
 });
+
+test("automatically removes stale lock from previous container with different hostname even if PID matches", () => {
+  const context = setupLockDir("stale-container-lock");
+  fs.writeFileSync(
+    context.lockPath,
+    `${JSON.stringify(
+      {
+        owner: "whatsapp-bot",
+        hostname: "old-dead-container-id-123",
+        pid: process.pid,
+        started_at: new Date(Date.now() - 300_000).toISOString(),
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+
+  const release = acquireProcessLock(context.lockDir, "whatsapp-bot");
+  const lock = JSON.parse(fs.readFileSync(context.lockPath, "utf8"));
+
+  assert.equal(lock.pid, process.pid);
+  assert.equal(lock.owner, "whatsapp-bot");
+
+  release();
+  assert.equal(fs.existsSync(context.lockPath), false);
+
+  context.cleanup();
+});
+

@@ -337,18 +337,18 @@ export function createWhatsAppSessionService({
     if (Date.now() > pending.expiresAt) {
       pendingExpiredSessionReauth.delete(key);
       return [
-        "⌛ <b>Konfirmasi Re-Auth Expired</b>",
+        "⌛ **Konfirmasi Re-Auth Expired**",
         "",
-        "Jalankan ulang <code>/login &lt;nomor_urut&gt;</code> jika masih ingin login ulang.",
+        "Jalankan ulang `/login <nomor_urut>` jika masih ingin login ulang.",
       ].join("\n");
     }
 
     if (![ "YA", "Y", "YES", "TIDAK", "N", "NO" ].includes(normalizedAnswer)) {
       return [
-        "⚠️ <b>Menunggu konfirmasi re-auth session usang</b>",
+        "⚠️ **Menunggu konfirmasi re-auth session usang**",
         "",
-        "Balas <code>YA</code> untuk bersihkan credential lama dan tampilkan QR baru.",
-        "Balas <code>TIDAK</code> untuk membatalkan.",
+        "Balas `YA` untuk bersihkan credential lama dan tampilkan QR baru.",
+        "Balas `TIDAK` untuk membatalkan.",
       ].join("\n");
     }
 
@@ -356,10 +356,10 @@ export function createWhatsAppSessionService({
 
     if ([ "TIDAK", "N", "NO" ].includes(normalizedAnswer)) {
       return [
-        "✅ <b>Re-Auth Dibatalkan</b>",
+        "✅ **Re-Auth Dibatalkan**",
         "",
         "Session tetap dalam status tidak aktif.",
-        "Jalankan <code>/login &lt;nomor_urut&gt;</code> kapan saja jika ingin login ulang.",
+        "Jalankan `/login <nomor_urut>` kapan saja jika ingin login ulang.",
       ].join("\n");
     }
 
@@ -367,10 +367,10 @@ export function createWhatsAppSessionService({
     const session = await resolveWhatsAppSession(pending.sessionId);
     if (!session) {
       return [
-        "❌ <b>Session Tidak Ditemukan</b>",
+        "❌ **Session Tidak Ditemukan**",
         "",
         "Session yang dimaksud tidak lagi terdaftar.",
-        "Jalankan <code>/sessions</code> untuk melihat daftar session terbaru.",
+        "Jalankan `/sessions` untuk melihat daftar session terbaru.",
       ].join("\n");
     }
 
@@ -394,9 +394,9 @@ export function createWhatsAppSessionService({
 
     const startResult = await startSession(session, chatId, { confirmedSwitch: true });
     return [
-      "🔄 <b>Membuat Sesi Baru</b>",
+      "🔄 **Membuat Sesi Baru**",
       "",
-      `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
+      `Session: **${session.label}**`,
       "",
       "Credential lama berhasil dihapus. Memulai autentikasi ulang...",
       "",
@@ -1006,7 +1006,7 @@ export function createWhatsAppSessionService({
 
     if (!controller?.getStatus?.().running || connectionState === "connected") {
       return [
-        "ℹ️ <b>Tidak Ada Sesi QR Aktif</b>",
+        "ℹ️ **Tidak Ada Sesi QR Aktif**",
         "",
         "Tidak ada proses scan QR yang sedang berjalan saat ini.",
       ].join("\n");
@@ -1029,15 +1029,15 @@ export function createWhatsAppSessionService({
     });
 
     return [
-      "🛑 <b>Sesi Scan QR Dibatalkan</b>",
+      "🛑 **Sesi Scan QR Dibatalkan**",
       "",
       stoppedSession
-        ? `Session: <b>${escapeTelegramHtml(stoppedSession.label)}</b>`
+        ? `Session: **${stoppedSession.label}**`
         : "",
       "",
       "Proses login QR dihentikan.",
-      "Gunakan <code>/login &lt;nomor_urut&gt;</code> untuk memulai kembali kapan saja.",
-    ].join("\n");
+      "Gunakan `/login <nomor_urut>` untuk memulai kembali kapan saja.",
+    ].filter(Boolean).join("\n");
   }
 
   return {

@@ -618,7 +618,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       const pendingReauthResult =
         await whatsappSession.completePendingExpiredSessionReauth?.(chatId, text);
       if (pendingReauthResult) {
-        await sendRichMessage(sendMessage, chatId, pendingReauthResult, { parse_mode: "HTML" });
+        await sendRichMessage(sendMessage, chatId, pendingReauthResult);
         return;
       }
     }
@@ -888,7 +888,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
     if (command === "/cancel") {
       try {
         const result = await whatsappSession.cancelQr(chatId);
-        await sendRichMessage(sendMessage, chatId, result, { parse_mode: "HTML" });
+        await sendRichMessage(sendMessage, chatId, result);
       } catch (error) {
         await sendTelegramCommandError(sendMessage, chatId, command, error);
       }

@@ -118,3 +118,42 @@ test("skips out-of-region SQA ticket and records anomaly for Telegram report", (
   assert.match(report, /⚠️ .*Tiket Anomali Dilewati/);
   assert.match(report, /CC-20260803-00000509/);
 });
+
+test("preserves original city PADANG LAWAS when NOP RANTAU PRAPAT ticket uses fallback PIC", () => {
+  const picResult = searchPicByCityAndAssignment({
+    city: "PADANG LAWAS",
+    assignmentGroup: "NETWORK OPERATIONS AND PRODUCTIVITY RANTAU PRAPAT",
+    descriptionText: "",
+  });
+
+  assert.equal(picResult.ok, true);
+  assert.equal(picResult.assignment_type, "NOP");
+  assert.equal(picResult.city, "PADANG LAWAS");
+  assert.equal(picResult.pic_nop, "Nasrul Amin S");
+  assert.match(picResult.anomaly_info, /PADANG LAWAS/);
+});
+
+test("processes NOP RANTAU PRAPAT ticket with PSP404 and preserves PADANG LAWAS in ticket.city", () => {
+  const rows = [
+    {
+      "Order ID": "CC-20260817-00000190",
+      "Ticket Id": "1-S800190",
+      "Create Time": "2026-08-17 10:00:00",
+      "Business Status": "In Progress",
+      "Assign to L2(L2 Assign)": "NETWORK OPERATIONS AND PRODUCTIVITY RANTAU PRAPAT",
+      "Kabupaten/Kota(Create Ticket)": "-",
+      "site_id1(L1 Assign)": "PSP404",
+      "Problem Analysis NSH": "#Site Cover : PSP404",
+      "CCH Suggestion(L1 Assign_cch_suggestion)": "-",
+      "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)": "Tiket Padang Lawas",
+      "Customer MSISDN(Create Ticket_customer_msisdn)": "628218333005",
+    },
+  ];
+
+  const result = processTicketRows(rows);
+  assert.equal(result.valid_count, 1);
+  const ticket = result.valid_tickets[0];
+  assert.equal(ticket.city, "PADANG LAWAS");
+  assert.equal(ticket.assignment_group, "NETWORK OPERATIONS AND PRODUCTIVITY RANTAU PRAPAT");
+  assert.equal(ticket.pic, "Nasrul Amin S");
+});

@@ -190,8 +190,14 @@ export function createPicSearch(options = {}) {
           ? effectiveCityRecord.departement_ns.trim()
           : null;
         const targetDept = fallbackRecord.departement_ns.trim();
+        const originalCity =
+          effectiveCityRecord?.city || normalizedCity || fallbackRecord.city;
 
-        effectiveCityRecord = fallbackRecord;
+        effectiveCityRecord = {
+          ...fallbackRecord,
+          city: originalCity,
+        };
+
         if (prevDept && prevDept !== targetDept) {
           anomalyInfo = `Kota ${prevCity} masuk area ${prevDept} (bukan ${targetDept}) -> Fallback PIC Default ${targetDept}`;
         } else {

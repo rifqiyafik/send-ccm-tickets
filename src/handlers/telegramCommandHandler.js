@@ -12,6 +12,7 @@ import {
   registerTelegramChat,
 } from "../services/telegramAccessService.js";
 import {
+  cancelActiveDelivery,
   formatWhatsAppGroupsCommand,
   formatWhatsAppPrivateCommand,
   sendImportResult,
@@ -916,10 +917,20 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
-    if (command === "/cancel") {
+    if (command === "/cancel" || command === ".cancel") {
       try {
-        const result = await whatsappSession.cancelQr(chatId);
-        await sendRichMessage(sendMessage, chatId, result);
+        const qrResult = await whatsappSession.cancelQr(chatId);
+        cancelActiveDelivery("Telegram /cancel command");
+
+        const isQrCancelled = qrResult && qrResult.includes("Dibatalkan");
+        const cancelStatusLines = [
+          "🛑 **Pembatalan Proses Selesai**",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "✅ **Pengiriman Tiket**: Seluruh antrian & pengiriman tiket aktif berhasil dihentikan.",
+          "✅ **Sesi Login QR**: " + (isQrCancelled ? "Sesi scan QR dibatalkan." : "Tidak ada sesi QR aktif."),
+        ];
+
+        await sendRichMessage(sendMessage, chatId, cancelStatusLines.join("\n"));
       } catch (error) {
         await sendTelegramCommandError(sendMessage, chatId, command, error);
       }

@@ -8,12 +8,49 @@ const BATCH_EXTRA_DELAY_MS = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000)
 
 let queue = Promise.resolve();
 const sentCountByAssignment = new Map();
+let isCancelled = false;
+let currentSleepTimer = null;
+let currentSleepResolve = null;
 
-// jeda async sederhana untuk menghindari pola blast pesan WhatsApp.
-function sleep(ms) {
+// jeda async dengan kemampuan interrupt seketika saat cancel.
+function interruptibleSleep(ms) {
   return new Promise((resolve) => {
-    setTimeout(resolve, ms);
+    currentSleepResolve = resolve;
+    currentSleepTimer = setTimeout(() => {
+      currentSleepTimer = null;
+      currentSleepResolve = null;
+      resolve();
+    }, ms);
   });
+}
+
+// membatalkan seluruh antrian pesan dan menghentikan delay yang sedang berjalan.
+export function cancelQueue(reason = "Cancelled by user") {
+  logger.warn("Message queue cancelled", { reason });
+  isCancelled = true;
+
+  if (currentSleepTimer) {
+    clearTimeout(currentSleepTimer);
+    currentSleepTimer = null;
+  }
+  if (currentSleepResolve) {
+    currentSleepResolve();
+    currentSleepResolve = null;
+  }
+
+  queue = Promise.resolve();
+  sentCountByAssignment.clear();
+
+  // Reset cancellation flag setelah microtask selesai agar send berikutnya bisa berjalan.
+  setTimeout(() => {
+    isCancelled = false;
+  }, 100);
+
+  return true;
+}
+
+export function isQueueCancelled() {
+  return isCancelled;
 }
 
 // menghitung jeda setelah pesan terkirim, termasuk extra delay setiap 10 tiket per assignment.
@@ -38,13 +75,25 @@ function getPostSendDelay(assignmentType) {
 
 // memasukkan pengiriman tiket ke antrian global agar upload bersamaan tetap terkirim berurutan.
 export function enqueueTicketMessage(sendFn, meta = {}) {
+  if (isCancelled) {
+    logger.warn("enqueueTicketMessage skipped because queue is cancelled", meta);
+    return Promise.resolve();
+  }
+
   queue = queue
     .catch((error) => {
       logger.error("Previous queue task failed, continuing queue", error);
     })
     .then(async () => {
+      if (isCancelled) {
+        logger.warn("Skipping queued ticket message execution because queue is cancelled", meta);
+        return;
+      }
+
       logger.info("Sending queued ticket message", meta);
       await sendFn();
+
+      if (isCancelled) return;
 
       const delayMs = getPostSendDelay(meta.assignmentType);
       if (delayMs > 0) {
@@ -53,7 +102,7 @@ export function enqueueTicketMessage(sendFn, meta = {}) {
           orderId: meta.orderId,
           assignmentType: meta.assignmentType,
         });
-        await sleep(delayMs);
+        await interruptibleSleep(delayMs);
       }
     });
 

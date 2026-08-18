@@ -24,7 +24,11 @@ import {
 } from "../utils/jid.js";
 import { cleanInlineText } from "../utils/text.js";
 import { acquireProcessLock } from "../utils/processLock.js";
-import { enqueueTicketMessage } from "../services/messageQueueService.js";
+import {
+  cancelQueue,
+  enqueueTicketMessage,
+  isQueueCancelled,
+} from "../services/messageQueueService.js";
 import { getWhatsAppAccessDecision } from "../services/accessControlService.js";
 import {
   createSentTicketPlan,
@@ -404,6 +408,8 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
       ".send",
       ".update",
       ".summary",
+      ".cancel",
+      "/cancel",
     ].includes(command)
   ) {
     logger.warn("Bot command ignored: unsupported command", {
@@ -427,6 +433,18 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
     reason: accessDecision.reason,
     sourceType: accessDecision.source_type,
   });
+
+  if (command === ".cancel" || command === "/cancel") {
+    cancelActiveDelivery("WhatsApp .cancel command");
+    await sock.sendMessage(sourceJid, {
+      text: [
+        "🛑 **Pembatalan Proses Selesai**",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "✅ Seluruh antrian dan pengiriman tiket WhatsApp yang sedang berjalan berhasil dihentikan.",
+      ].join("\n"),
+    });
+    return;
+  }
 
   if (command === "." || command === ".help") {
     await sock.sendMessage(sourceJid, {
@@ -797,6 +815,53 @@ function formatProgressBar(current, total, length = 10) {
 }
 
 const activeProgressTracker = new Map();
+let activeDeliveryCancelled = false;
+let activeDeliverySleepTimer = null;
+let activeDeliverySleepResolve = null;
+
+// membatalkan seluruh proses pengiriman tiket yang sedang berjalan dan mereset kartu progress.
+export function cancelActiveDelivery(reason = "Cancelled by user") {
+  logger.warn("Active ticket delivery cancelled", { reason });
+  activeDeliveryCancelled = true;
+  cancelQueue(reason);
+
+  if (activeDeliverySleepTimer) {
+    clearTimeout(activeDeliverySleepTimer);
+    activeDeliverySleepTimer = null;
+  }
+  if (activeDeliverySleepResolve) {
+    activeDeliverySleepResolve();
+    activeDeliverySleepResolve = null;
+  }
+
+  for (const [sourceJid, existingKey] of activeProgressTracker.entries()) {
+    if (activeSock?.sendMessage) {
+      activeSock
+        .sendMessage(sourceJid, {
+          text: [
+            "🛑 **PENGIRIMAN TIKET DIBATALKAN**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ Proses pengiriman tiket berhasil dihentikan oleh pengguna (`/cancel`).",
+          ].join("\n"),
+          edit: existingKey,
+          isProgress: true,
+          isFinal: true,
+        })
+        .catch(() => {});
+    }
+  }
+  activeProgressTracker.clear();
+
+  setTimeout(() => {
+    activeDeliveryCancelled = false;
+  }, 100);
+
+  return true;
+}
+
+export function isDeliveryCancelled() {
+  return activeDeliveryCancelled || isQueueCancelled();
+}
 
 async function sendTicketProgressMessage(sock, sourceJid, text, meta = {}) {
   try {
@@ -824,10 +889,13 @@ async function sendTicketProgressMessage(sock, sourceJid, text, meta = {}) {
         }
         return editResult;
       } catch (editError) {
-        logger.warn("Failed to edit existing progress message, fallback to sending new message", {
-          sourceJid,
-          error: editError.message,
-        });
+        logger.warn(
+          "Failed to edit existing progress message, fallback to sending new message",
+          {
+            sourceJid,
+            error: editError.message,
+          },
+        );
       }
     }
 
@@ -1361,6 +1429,11 @@ async function sendTicketDetailsToTargetGroups(
   let overallSentCount = 0;
 
   for (const [targetIndex, [targetJid, tickets]] of targetEntries.entries()) {
+    if (isDeliveryCancelled()) {
+      logger.warn("Stopping sendTicketDetailsToTargetGroups: delivery cancelled");
+      break;
+    }
+
     const targetLabel = formatTargetProgressLabel(tickets);
     let sentCount = 0;
     const nextEntry = targetEntries[targetIndex + 1];
@@ -1393,6 +1466,13 @@ async function sendTicketDetailsToTargetGroups(
     }
 
     for (const ticket of tickets) {
+      if (isDeliveryCancelled()) {
+        logger.warn("Stopping ticket iteration: delivery cancelled", {
+          orderId: ticket.order_id,
+        });
+        break;
+      }
+
       logger.info("Sending escalation ticket", {
         orderId: ticket.order_id,
         assignmentType: ticket.assignment_type,
@@ -1401,6 +1481,13 @@ async function sendTicketDetailsToTargetGroups(
       });
       await enqueueTicketMessage(
         async () => {
+          if (isDeliveryCancelled()) {
+            logger.warn("Skipping ticket send: delivery cancelled", {
+              orderId: ticket.order_id,
+            });
+            return;
+          }
+
           try {
             await sock.sendMessage(
               targetJid,
@@ -1472,6 +1559,11 @@ async function sendTicketDetailsToTargetGroups(
       );
     }
 
+    if (isDeliveryCancelled()) {
+      logger.warn("Stopping target groups: delivery cancelled");
+      break;
+    }
+
     if (nextEntry && TARGET_GROUP_COMPLETION_DELAY_MS > 0) {
       const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
       const groupDelaySec = Math.round(
@@ -1506,8 +1598,20 @@ async function sendTicketDetailsToTargetGroups(
         nextTargetLabel,
         delayMs: TARGET_GROUP_COMPLETION_DELAY_MS,
       });
-      await sleep(TARGET_GROUP_COMPLETION_DELAY_MS);
+      await new Promise((resolve) => {
+        activeDeliverySleepResolve = resolve;
+        activeDeliverySleepTimer = setTimeout(() => {
+          activeDeliverySleepTimer = null;
+          activeDeliverySleepResolve = null;
+          resolve();
+        }, TARGET_GROUP_COMPLETION_DELAY_MS);
+      });
     }
+  }
+
+  if (isDeliveryCancelled()) {
+    logger.info("sendTicketDetailsToTargetGroups finished early due to cancellation");
+    return;
   }
 
   await sendTicketProgressMessage(

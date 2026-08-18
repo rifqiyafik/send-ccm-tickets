@@ -1111,7 +1111,9 @@ function formatSkippedAnomalyDetail(t) {
 }
 
 export function shortenNopName(value) {
-  const text = String(value || "").trim();
+  const text = String(value || "")
+    .trim()
+    .replace(/^group\s*:\s*/i, "");
   if (!text) {
     return "-";
   }

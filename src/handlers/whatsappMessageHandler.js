@@ -786,13 +786,63 @@ function formatTargetProgressLabel(tickets) {
 
   return assignmentType || cleanInlineText(firstTicket.assignment_group) || "Target";
 }
+
+function formatProgressBar(current, total, length = 10) {
+  if (!total || total <= 0) return "[░░░░░░░░░░] 0%";
+  const ratio = Math.min(Math.max(current / total, 0), 1);
+  const filled = Math.round(ratio * length);
+  const empty = length - filled;
+  const percent = Math.round(ratio * 100);
+  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${current}/${total} Tiket (${percent}%)`;
+}
+
+const activeProgressTracker = new Map();
+
 async function sendTicketProgressMessage(sock, sourceJid, text, meta = {}) {
   try {
     logger.info("Sending ticket progress message", {
       sourceJid,
       ...meta,
     });
-    await sock.sendMessage(sourceJid, { text });
+
+    const isFinal = Boolean(meta.isFinal);
+    const existingKey = activeProgressTracker.get(sourceJid);
+
+    if (existingKey && sock?.sendMessage) {
+      try {
+        const payload = {
+          text,
+          edit: existingKey,
+          isProgress: true,
+          ...meta,
+        };
+        const editResult = await sock.sendMessage(sourceJid, payload);
+        if (isFinal) {
+          activeProgressTracker.delete(sourceJid);
+        } else if (editResult?.key) {
+          activeProgressTracker.set(sourceJid, editResult.key);
+        }
+        return editResult;
+      } catch (editError) {
+        logger.warn("Failed to edit existing progress message, fallback to sending new message", {
+          sourceJid,
+          error: editError.message,
+        });
+      }
+    }
+
+    const payload = {
+      text,
+      isProgress: true,
+      ...meta,
+    };
+    const sent = await sock.sendMessage(sourceJid, payload);
+    if (isFinal) {
+      activeProgressTracker.delete(sourceJid);
+    } else if (sent?.key) {
+      activeProgressTracker.set(sourceJid, sent.key);
+    }
+    return sent;
   } catch (error) {
     logger.error("Failed to send ticket progress message", {
       sourceJid,
@@ -1367,16 +1417,18 @@ async function sendTicketDetailsToTargetGroups(
             );
 
             const progressLines = [
-              "⏳ **Progress Pengiriman Tiket ke WhatsApp**",
-              "━━━━━━━━━━━━━━━━━━━━",
-              `📍 **Target**       : ${targetLabel} (${sentCount}/${tickets.length} tiket)`,
-              `📦 **Total Kirim**  : ${overallSentCount}/${totalTicketsCount} tiket`,
-              `✅ **Terkirim**     : \`${currentOrder}\` (${ticket.pic || "-"})`,
+              "⏳ **PROGRESS PENGIRIMAN TIKET**",
+              "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+              `📊 **Total Progress** : ${formatProgressBar(overallSentCount, totalTicketsCount)}`,
+              `📍 **Target Group**   : ${targetLabel} (${sentCount}/${tickets.length})`,
+              "",
+              `✅ **Terkirim**       : \`${currentOrder}\``,
+              `👤 **PIC**            : **${ticket.pic || "-"}**`,
             ];
 
             if (nextTicket) {
               progressLines.push(
-                `⏳ **Selanjutnya** : \`${nextTicket.order_id || "-"}\` (jeda ${delaySec} detik...)`,
+                `⏳ **Tiket Berikut**  : \`${nextTicket.order_id || "-"}\` (jeda ${delaySec}s...)`,
               );
             } else if (nextEntry) {
               const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
@@ -1384,7 +1436,7 @@ async function sendTicketDetailsToTargetGroups(
                 TARGET_GROUP_COMPLETION_DELAY_MS / 1000,
               );
               progressLines.push(
-                `⏳ **Selanjutnya** : Lanjut ke **${nextTargetLabel}** (jeda ${groupDelaySec} detik...)`,
+                `⏳ **Status**         : Lanjut ke **${nextTargetLabel}** (jeda ${groupDelaySec}s...)`,
               );
             }
 
@@ -1430,11 +1482,12 @@ async function sendTicketDetailsToTargetGroups(
         sock,
         sourceJid,
         [
-          "⏳ **Progress Pengiriman Tiket ke WhatsApp**",
-          "━━━━━━━━━━━━━━━━━━━━",
-          `📍 **Target Selesai**: ${targetLabel} (${sentCount}/${tickets.length} tiket)`,
-          `📦 **Total Kirim**   : ${overallSentCount}/${totalTicketsCount} tiket`,
-          `⏳ **Status**        : Menunggu jeda ${groupDelaySec} detik sebelum lanjut ke **${nextTargetLabel}**...`,
+          "⏳ **PROGRESS PENGIRIMAN TIKET**",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          `📊 **Total Progress** : ${formatProgressBar(overallSentCount, totalTicketsCount)}`,
+          `📍 **Target Selesai** : ${targetLabel} (${sentCount}/${tickets.length})`,
+          "",
+          `⏳ **Status**         : Menunggu jeda ${groupDelaySec}s sebelum lanjut ke **${nextTargetLabel}**...`,
         ].join("\n"),
         {
           isProgress: true,
@@ -1461,17 +1514,19 @@ async function sendTicketDetailsToTargetGroups(
     sock,
     sourceJid,
     [
-      "✅ **Pengiriman Tiket ke WhatsApp Selesai**",
-      "━━━━━━━━━━━━━━━━━━━━",
-      `📦 **Total Terkirim**: **${overallSentCount}/${totalTicketsCount} tiket**`,
+      "✅ **PENGIRIMAN TIKET SELESAI**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📦 **Total Terkirim** : **${overallSentCount}/${totalTicketsCount} Tiket**`,
+      "",
+      "🗂️ **Rincian per Target:**",
       ...targetEntries.map(
         ([, tList]) =>
           `• ${formatTargetProgressLabel(tList)}: **${tList.length} tiket**`,
       ),
       "",
-      "📋 **Status Pengiriman Reminder:**",
-      "• SQA: Reminder JAPRI terkirim ke PIC CCM & ringkasan terkirim ke MAIN SQA.",
-      "• NOP: Reminder terkirim ke grup NOP target.",
+      "📋 **Status Pengiriman:**",
+      "• Seluruh tiket valid telah berhasil diteruskan ke grup WhatsApp masing-masing.",
+      "• Reminder summary terkirim.",
     ].join("\n"),
     {
       isProgress: true,

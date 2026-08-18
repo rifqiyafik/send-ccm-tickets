@@ -590,11 +590,12 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             chatId,
             statusMsgId,
             [
-              "📂 **File Excel Sedang Diproses**",
+              "📂 **File Excel Selesai Diparsing**",
               "",
               `📄 File: \`${document.file_name || "-"}\``,
               `📊 Data: **${result.total_rows} total** | **${result.valid_count || 0} valid** | **${result.skipped_count || 0} skip**`,
-              "⏳ Meneruskan tiket ke grup WhatsApp target...",
+              "",
+              "⬇️ Laporan & progres pengiriman tiket ditampilkan di bawah.",
             ].join("\n"),
           );
         }
@@ -607,7 +608,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           sendDocument,
           sendMessage,
           editMessageText,
-          initialProgressMessageId: statusMsgId,
+          initialProgressMessageId: null,
         });
 
         sendImportResult(adapter, adapter.sourceJid, result, importOptions).catch(

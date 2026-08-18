@@ -247,6 +247,11 @@ export function formatEnvironmentStatus() {
   let configReadable = false;
   let readError = "";
 
+  const sendDelayMs = Number(process.env.WA_SEND_DELAY_MS || 5000);
+  const batchSize = Number(process.env.WA_BATCH_SIZE || 10);
+  const batchExtraDelayMs = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000);
+  const targetDelayMs = Number(process.env.TARGET_GROUP_COMPLETION_DELAY_MS || 10000);
+
   try {
     const config = readJsonObject(configPath, "WhatsApp config");
     configReadable = true;
@@ -277,6 +282,13 @@ export function formatEnvironmentStatus() {
           `- Mentions: **${configCounts.mentions}**`,
         ].join("\n")
       : ["⚠️ **Config tidak bisa dibaca**", `Error: \`${readError}\``].join("\n"),
+    "",
+    "⏱️ **Anti-Spam Pacing (Delay):**",
+    `- Delay per Tiket: **${sendDelayMs / 1000}s** (\`${sendDelayMs}ms\`)`,
+    `- Batch Size: **${batchSize} tiket**`,
+    `- Extra Delay Batch: **${batchExtraDelayMs / 1000}s** (\`${batchExtraDelayMs}ms\`)`,
+    `- Total Jeda Kelipatan ${batchSize}: **${(sendDelayMs + batchExtraDelayMs) / 1000}s**`,
+    `- Jeda Antar Target Group: **${targetDelayMs / 1000}s** (\`${targetDelayMs}ms\`)`,
   ].join("\n");
 }
 

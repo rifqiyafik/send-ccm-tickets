@@ -131,6 +131,22 @@ export function createTelegramBot({ config, handleUpdate }) {
     return body.result;
   }
 
+  async function editMessageText(chatId, messageId, text, options = {}) {
+    logger.info("Editing Telegram message", {
+      chatId: String(chatId),
+      messageId,
+      length: String(text || "").length,
+    });
+
+    return callTelegramApi(config.bot_token, "editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      disable_web_page_preview: true,
+      ...options,
+    });
+  }
+
   async function downloadFile(fileId) {
     logger.info("Downloading Telegram file", { fileId });
     const file = await callTelegramApi(config.bot_token, "getFile", {
@@ -154,7 +170,7 @@ export function createTelegramBot({ config, handleUpdate }) {
 
     for (const update of updates) {
       offset = update.update_id + 1;
-      await handleUpdate(update, { downloadFile, sendDocument, sendMessage, sendPhoto });
+      await handleUpdate(update, { downloadFile, sendDocument, sendMessage, sendPhoto, editMessageText });
     }
   }
 
@@ -192,6 +208,7 @@ export function createTelegramBot({ config, handleUpdate }) {
 
   return {
     sendMessage,
+    editMessageText,
     sendDocument,
     sendPhoto,
     start,

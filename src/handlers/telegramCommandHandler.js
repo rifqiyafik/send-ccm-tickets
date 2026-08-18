@@ -342,15 +342,36 @@ async function sendRichMessage(sendMessage, chatId, text, options = {}) {
     originalLength: String(text || "").length,
   });
 
+  let lastResult = null;
   for (const [index, chunk] of chunks.entries()) {
     const message = createTelegramRichMessage(chunk, options);
-    await sendMessage(chatId, message.text, message.options);
+    lastResult = await sendMessage(chatId, message.text, message.options);
     logger.info("Telegram rich message chunk sent", {
       chatId,
       chunk: index + 1,
       chunks: chunks.length,
       length: message.text.length,
     });
+  }
+
+  return lastResult;
+}
+
+async function editRichMessage(editMessageText, chatId, messageId, text, options = {}) {
+  if (!editMessageText || !messageId) {
+    return null;
+  }
+
+  const message = createTelegramRichMessage(text, options);
+  try {
+    return await editMessageText(chatId, messageId, message.text, message.options);
+  } catch (error) {
+    logger.warn("Telegram editRichMessage failed, ignored", {
+      chatId,
+      messageId,
+      error: error.message,
+    });
+    return null;
   }
 }
 
@@ -394,7 +415,7 @@ async function sendTelegramCommandError(sendMessage, chatId, command, error) {
 export function createTelegramCommandHandler({ config, whatsappSession }) {
   return async function handleTelegramUpdate(
     update,
-    { downloadFile, sendDocument, sendMessage },
+    { downloadFile, sendDocument, sendMessage, editMessageText },
   ) {
     const chatId = getChatId(update);
     const chat = getChat(update);
@@ -410,38 +431,17 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       logger.info("Incoming Telegram document", {
         chatId,
         fileName: document.file_name,
-        authorized: accessDecision.allowed,
-        accessReason: accessDecision.reason,
-        sourceType: accessDecision.source_type,
+        mimeType: document.mime_type,
         caption,
-        ticketOnlyMode: importOptions.ticketOnlyMode,
-        summaryOnlyMode: importOptions.summaryOnlyMode,
+        importOptions,
+        accessDecision,
       });
-
-      if (importOptions.missingCommand) {
-        logger.info("Telegram document ignored: caption command is required", {
-          chatId,
-          fileName: document.file_name,
-        });
-        return;
-      }
 
       if (!accessDecision.allowed) {
         await sendRichMessage(
           sendMessage,
           chatId,
-          [
-            "⛔ **File Excel ditolak.**",
-            "",
-            "🚫 Chat ini belum masuk **whitelist Telegram**.",
-            "",
-            "📋 **Detail:**",
-            `🆔 Chat ID: \`${chatId}\``,
-            `📄 File: \`${document.file_name || "-"}\``,
-            `🔎 Reason: \`${accessDecision.reason}\``,
-            "",
-            "👉 Kirim `/register` untuk minta approval admin.",
-          ].join("\n"),
+          formatAccessDeniedMessage(chatId, accessDecision),
         );
         return;
       }
@@ -472,31 +472,21 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
       if (!isSupportedTelegramExcelFile(document)) {
-        logger.warn("Telegram document rejected: unsupported format", {
-          chatId,
-          fileName: document.file_name,
-          mimetype: document.mime_type,
-        });
         await sendRichMessage(
           sendMessage,
           chatId,
           [
-            "⚠️ **Format File Belum Didukung**",
+            "⚠️ **Format File Tidak Didukung**",
             "",
-            "📄 Bot hanya membaca file Excel `.xlsx`.",
-            "",
-            "📋 **Detail:**",
             `📄 File: \`${document.file_name || "-"}\``,
-            `🧾 MIME: \`${document.mime_type || "-"}\``,
-            "",
-            "👉 Save As ke **Excel Workbook (*.xlsx)** lalu kirim ulang.",
+            "📌 Kirim file spreadsheet berformat `.xlsx` (Excel OpenXML).",
           ].join("\n"),
         );
         return;
       }
 
       try {
-        await whatsappSession.ensureReady(chatId);
+        await whatsappSession.ensureReady(chatId, { interactive: true });
       } catch (error) {
         logger.warn("Telegram Excel rejected: WhatsApp session is not ready", {
           chatId,
@@ -517,14 +507,14 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
 
-      await sendRichMessage(
+      const statusMsg = await sendRichMessage(
         sendMessage,
         chatId,
         importOptions.reminderMode
           ? [
               "📂 **File Excel Diterima (Mode /reminder)**",
               "",
-              "⏳ Sedang memproses reminder untuk seluruh tiket valid pada file...",
+              "⏳ Mengunduh dan membaca file Excel...",
               "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
               `📄 File Name: \`${document.file_name || "-"}\``,
             ].join("\n")
@@ -532,24 +522,27 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             ? [
                 "📂 **File Excel Diterima (Mode .summary)**",
                 "",
-                "⏳ Sedang memproses report dan summary saja...",
+                "⏳ Mengunduh dan membaca file Excel...",
                 `📄 File Name: \`${document.file_name || "-"}\``,
               ].join("\n")
             : importOptions.ticketOnlyMode
               ? [
                   "📂 **File Excel Diterima (Mode .update)**",
                   "",
-                  "⏳ Sedang memproses detail tiket saja dan meneruskan ke grup WhatsApp target...",
+                  "⏳ Mengunduh dan membaca file Excel...",
                   "🚫 Salam pembuka, Excel target, dan reminder summary akan dilewati.",
                   `📄 File Name: \`${document.file_name || "-"}\``,
                 ].join("\n")
               : [
                   "📂 **File Excel Diterima**",
                   "",
-                  "⏳ Sedang memproses tiket dan meneruskan ke grup WhatsApp target...",
+                  "⏳ Mengunduh dan membaca file Excel...",
                   `📄 File Name: \`${document.file_name || "-"}\``,
                 ].join("\n"),
       );
+
+      const statusMsgId = statusMsg?.message_id;
+
       try {
         const buffer = await downloadFile(document.file_id);
         logger.info("Starting Telegram ticket Excel process", {
@@ -569,6 +562,21 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           summaryOnlyMode: importOptions.summaryOnlyMode,
         });
 
+        if (statusMsgId && editMessageText) {
+          await editRichMessage(
+            editMessageText,
+            chatId,
+            statusMsgId,
+            [
+              "📂 **File Excel Sedang Diproses**",
+              "",
+              `📄 File: \`${document.file_name || "-"}\``,
+              `📊 Data: **${result.total_rows} total** | **${result.valid_count || 0} valid** | **${result.skipped_count || 0} skip**`,
+              "⏳ Meneruskan tiket ke grup WhatsApp target...",
+            ].join("\n"),
+          );
+        }
+
         const adapter = createTelegramWhatsAppAdapter({
           ensureWhatsAppReady: (options) =>
             whatsappSession.ensureReady(chatId, options),
@@ -578,6 +586,20 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           sendMessage,
         });
         await sendImportResult(adapter, adapter.sourceJid, result, importOptions);
+
+        if (statusMsgId && editMessageText) {
+          await editRichMessage(
+            editMessageText,
+            chatId,
+            statusMsgId,
+            [
+              "✅ **File Excel Selesai Diproses**",
+              "",
+              `📄 File: \`${document.file_name || "-"}\``,
+              `📊 Selesai: **${result.valid_count || 0} tiket valid** berhasil diproses & diteruskan ke WhatsApp.`,
+            ].join("\n"),
+          );
+        }
       } catch (error) {
         logger.error("Failed to process Telegram Excel", error);
         await sendRichMessage(
@@ -588,7 +610,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             "",
             `🛑 Error: \`${error.message}\``,
             "",
-            "👉 Pastikan format file sesuai lalu kirim ulang.",
+            "👉 Pastikan format kolom file sesuai template CCM.",
           ].join("\n"),
         );
       }

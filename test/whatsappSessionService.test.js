@@ -229,3 +229,43 @@ test("does not auto recover logged out WhatsApp session and asks for new QR sess
   context.cleanup();
 });
 
+test("sends QR code as PNG image when sendTelegramPhoto is provided", async () => {
+  const context = setupContext("whatsapp-session-qr-photo");
+  const photos = [];
+  let capturedOnQr = null;
+
+  const service = createWhatsAppSessionService({
+    sendTelegramMessage: async () => {},
+    sendTelegramPhoto: async (chatId, buffer, options) => {
+      photos.push({ chatId, buffer, options });
+    },
+    startWhatsAppBot: async (options) => {
+      capturedOnQr = options.onQr;
+      return {
+        getStatus: () => ({ running: true }),
+        stop: async () => {},
+      };
+    },
+  });
+
+  await upsertWhatsAppSession({
+    phone: "6282160478546",
+    label: "Rifqi Yafik",
+  });
+
+  await service.login("5085979770", "1");
+  assert.ok(capturedOnQr, "onQr callback should be passed to startWhatsAppBot");
+
+  await capturedOnQr("test-qr-string-data");
+
+  assert.equal(photos.length, 1);
+  assert.equal(photos[0].chatId, "5085979770");
+  assert.ok(Buffer.isBuffer(photos[0].buffer));
+  assert.ok(photos[0].buffer.length > 0);
+  assert.match(photos[0].options.caption, /WhatsApp Login QR/);
+  assert.match(photos[0].options.caption, /Rifqi Yafik/);
+
+  context.cleanup();
+});
+
+

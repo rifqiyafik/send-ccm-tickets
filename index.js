@@ -25,6 +25,8 @@ async function main() {
   const whatsappSession = createWhatsAppSessionService({
     sendTelegramMessage: (chatId, text, options) =>
       telegramBot.sendMessage(chatId, text, options),
+    sendTelegramPhoto: (chatId, photo, options) =>
+      telegramBot.sendPhoto(chatId, photo, options),
   });
   const handleTelegramUpdate = createTelegramCommandHandler({
     config: telegramConfig,

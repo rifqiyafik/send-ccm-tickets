@@ -94,6 +94,43 @@ export function createTelegramBot({ config, handleUpdate }) {
     return body.result;
   }
 
+  async function sendPhoto(chatId, photo, options = {}) {
+    logger.info("Sending Telegram photo", {
+      chatId: String(chatId),
+      fileName: options.fileName || options.filename || "qr.png",
+      bytes: Buffer.isBuffer(photo) ? photo.length : undefined,
+    });
+
+    const form = new FormData();
+    form.append("chat_id", String(chatId));
+    form.append(
+      "photo",
+      new Blob([photo], {
+        type: options.mimetype || "image/png",
+      }),
+      options.fileName || options.filename || "qr.png",
+    );
+
+    if (options.caption) {
+      form.append("caption", options.caption);
+    }
+    if (options.parse_mode) {
+      form.append("parse_mode", options.parse_mode);
+    }
+
+    const response = await fetch(buildTelegramUrl(config.bot_token, "sendPhoto"), {
+      method: "POST",
+      body: form,
+    });
+    const body = await response.json();
+    if (!response.ok || !body.ok) {
+      const message = body.description || response.statusText;
+      throw new Error(`Telegram API sendPhoto failed: ${message}`);
+    }
+
+    return body.result;
+  }
+
   async function downloadFile(fileId) {
     logger.info("Downloading Telegram file", { fileId });
     const file = await callTelegramApi(config.bot_token, "getFile", {
@@ -117,7 +154,7 @@ export function createTelegramBot({ config, handleUpdate }) {
 
     for (const update of updates) {
       offset = update.update_id + 1;
-      await handleUpdate(update, { downloadFile, sendDocument, sendMessage });
+      await handleUpdate(update, { downloadFile, sendDocument, sendMessage, sendPhoto });
     }
   }
 
@@ -156,6 +193,7 @@ export function createTelegramBot({ config, handleUpdate }) {
   return {
     sendMessage,
     sendDocument,
+    sendPhoto,
     start,
     stop,
     downloadFile,

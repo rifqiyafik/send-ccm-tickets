@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
 
 import { startBot } from "../handlers/whatsappMessageHandler.js";
@@ -50,6 +51,7 @@ function formatSessionLine(session) {
 // #penjelasan: membungkus lifecycle WhatsApp agar bisa dikontrol dari Telegram tanpa command terminal.
 export function createWhatsAppSessionService({
   sendTelegramMessage,
+  sendTelegramPhoto,
   startWhatsAppBot = startBot,
 }) {
   let controller = null;
@@ -67,6 +69,23 @@ export function createWhatsAppSessionService({
   async function notifySubscribers(text, options = {}) {
     for (const chatId of qrSubscribers) {
       await sendTelegramMessage(chatId, text, options);
+    }
+  }
+
+  async function notifySubscribersPhoto(photoBuffer, caption, options = {}) {
+    for (const chatId of qrSubscribers) {
+      if (sendTelegramPhoto) {
+        try {
+          await sendTelegramPhoto(chatId, photoBuffer, { caption, ...options });
+          continue;
+        } catch (error) {
+          logger.warn("Failed to send QR photo to subscriber, falling back to text", {
+            chatId,
+            error: error.message,
+          });
+        }
+      }
+      await sendTelegramMessage(chatId, caption, options);
     }
   }
 
@@ -111,21 +130,40 @@ export function createWhatsAppSessionService({
       return;
     }
 
-    const qrText = formatQrText(qr);
-    await notifySubscribers(
-      [
-        "📱 <b>WhatsApp Login QR</b>",
-        "",
-        `Session: <b>${escapeTelegramHtml(formatSessionLine(activeSession))}</b>`,
-        "",
-        "Scan dari <b>WhatsApp › Linked Devices › Link a Device</b>",
-        "",
-        `<pre>${escapeTelegramHtml(qrText)}</pre>`,
-        "",
-        `<i>QR ${qrNotifyCount}/${MAX_QR_NOTIFY_COUNT} — Ketik /cancel untuk membatalkan.</i>`,
-      ].join("\n"),
-      { parse_mode: "HTML" },
-    );
+    const caption = [
+      "📱 <b>WhatsApp Login QR</b>",
+      "",
+      `Session: <b>${escapeTelegramHtml(formatSessionLine(activeSession))}</b>`,
+      "",
+      "Scan dari <b>WhatsApp › Linked Devices › Link a Device</b>",
+      "",
+      `<i>QR ${qrNotifyCount}/${MAX_QR_NOTIFY_COUNT} — Ketik /cancel untuk membatalkan.</i>`,
+    ].join("\n");
+
+    let qrImageBuffer = null;
+    try {
+      qrImageBuffer = await QRCode.toBuffer(qr, {
+        type: "png",
+        margin: 2,
+        scale: 8,
+      });
+    } catch (error) {
+      logger.error("Failed to generate QR image buffer", error);
+    }
+
+    if (qrImageBuffer && sendTelegramPhoto) {
+      await notifySubscribersPhoto(qrImageBuffer, caption, { parse_mode: "HTML" });
+    } else {
+      const qrText = formatQrText(qr);
+      await notifySubscribers(
+        [
+          caption,
+          "",
+          `<pre>${escapeTelegramHtml(qrText)}</pre>`,
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+    }
   }
 
   function isSessionRunning() {

@@ -609,7 +609,21 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           editMessageText,
           initialProgressMessageId: statusMsgId,
         });
-        await sendImportResult(adapter, adapter.sourceJid, result, importOptions);
+
+        sendImportResult(adapter, adapter.sourceJid, result, importOptions).catch(
+          (error) => {
+            logger.error("Failed to deliver ticket results in background", error);
+            sendRichMessage(
+              sendMessage,
+              chatId,
+              [
+                "❌ **Gagal Mengirim Tiket ke WhatsApp**",
+                "",
+                `🛑 Error: \`${error.message}\``,
+              ].join("\n"),
+            ).catch(() => {});
+          },
+        );
       } catch (error) {
         logger.error("Failed to process Telegram Excel", error);
         await sendRichMessage(

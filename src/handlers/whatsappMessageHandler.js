@@ -1770,7 +1770,18 @@ async function handleIncomingMessage(sock, messageEvent) {
       ticketOnlyMode: importOptions.ticketOnlyMode,
       summaryOnlyMode: importOptions.summaryOnlyMode,
     });
-    await sendImportResult(sock, sourceJid, result, importOptions);
+    sendImportResult(sock, sourceJid, result, importOptions).catch((err) => {
+      logger.error("Failed to process ticket delivery in background", err);
+      sock
+        .sendMessage(sourceJid, {
+          text: [
+            "❌ **Gagal Mengirim Tiket ke WhatsApp**",
+            "",
+            `🛑 Error: ${err.message}`,
+          ].join("\n"),
+        })
+        .catch(() => {});
+    });
   } catch (error) {
     logger.error("Failed to process incoming Excel", error);
     await sock.sendMessage(sourceJid, {

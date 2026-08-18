@@ -186,8 +186,17 @@ export function createPicSearch(options = {}) {
       if (fallbackRecord) {
         const prevCity =
           effectiveCityRecord?.city || normalizedCity || "Luar Region";
+        const prevDept = effectiveCityRecord?.departement_ns
+          ? effectiveCityRecord.departement_ns.trim()
+          : null;
+        const targetDept = fallbackRecord.departement_ns.trim();
+
         effectiveCityRecord = fallbackRecord;
-        anomalyInfo = `Site/Deskripsi Luar Region (${prevCity}) -> Fallback PIC Default ${fallbackRecord.departement_ns.trim()}`;
+        if (prevDept && prevDept !== targetDept) {
+          anomalyInfo = `Kota ${prevCity} masuk area ${prevDept} (bukan ${targetDept}) -> Fallback PIC Default ${targetDept}`;
+        } else {
+          anomalyInfo = `Lokasi/Site (${prevCity}) di luar area ${targetDept} -> Fallback PIC Default ${targetDept}`;
+        }
       }
     }
 

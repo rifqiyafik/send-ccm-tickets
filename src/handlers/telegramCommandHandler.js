@@ -118,8 +118,11 @@ function createTelegramWhatsAppAdapter({
   sourceChatId,
   sendDocument,
   sendMessage,
+  editMessageText,
+  initialProgressMessageId = null,
 }) {
   const sourceJid = `${TELEGRAM_SOURCE_PREFIX}${sourceChatId}`;
+  let progressMessageId = initialProgressMessageId;
 
   return {
     sourceJid,
@@ -135,8 +138,26 @@ function createTelegramWhatsAppAdapter({
         }
 
         if (payload?.text) {
-          await sendRichMessage(sendMessage, sourceChatId, payload.text);
-          return;
+          if (payload.isProgress && editMessageText) {
+            if (progressMessageId) {
+              await editRichMessage(
+                editMessageText,
+                sourceChatId,
+                progressMessageId,
+                payload.text,
+              );
+              return { message_id: progressMessageId };
+            }
+            const sent = await sendRichMessage(
+              sendMessage,
+              sourceChatId,
+              payload.text,
+            );
+            progressMessageId = sent?.message_id || null;
+            return sent;
+          }
+
+          return await sendRichMessage(sendMessage, sourceChatId, payload.text);
         }
 
         logger.warn("Telegram source payload skipped: unsupported payload", {
@@ -584,22 +605,10 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           sourceChatId: chatId,
           sendDocument,
           sendMessage,
+          editMessageText,
+          initialProgressMessageId: statusMsgId,
         });
         await sendImportResult(adapter, adapter.sourceJid, result, importOptions);
-
-        if (statusMsgId && editMessageText) {
-          await editRichMessage(
-            editMessageText,
-            chatId,
-            statusMsgId,
-            [
-              "✅ **File Excel Selesai Diproses**",
-              "",
-              `📄 File: \`${document.file_name || "-"}\``,
-              `📊 Selesai: **${result.valid_count || 0} tiket valid** berhasil diproses & diteruskan ke WhatsApp.`,
-            ].join("\n"),
-          );
-        }
       } catch (error) {
         logger.error("Failed to process Telegram Excel", error);
         await sendRichMessage(

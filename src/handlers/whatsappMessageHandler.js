@@ -1307,9 +1307,13 @@ async function sendTicketDetailsToTargetGroups(
   );
 
   const targetEntries = [...ticketsByTarget.entries()];
+  const totalTicketsCount = sendableTickets.length;
+  let overallSentCount = 0;
+
   for (const [targetIndex, [targetJid, tickets]] of targetEntries.entries()) {
     const targetLabel = formatTargetProgressLabel(tickets);
     let sentCount = 0;
+    const nextEntry = targetEntries[targetIndex + 1];
 
     if (skipPreamble) {
       logger.info(
@@ -1354,29 +1358,50 @@ async function sendTicketDetailsToTargetGroups(
             );
             await markTicketAsSent(ticket, { sourceJid, targetJid });
             sentCount += 1;
+            overallSentCount += 1;
 
-            if (
-              TICKET_PROGRESS_INTERVAL > 0 &&
-              sentCount % TICKET_PROGRESS_INTERVAL === 0
-            ) {
-              await sendTicketProgressMessage(
-                sock,
-                sourceJid,
-                [
-                  "✅ PROGRESS KIRIM TIKET",
-                  "━━━━━━━━━━━━━━━━━━━━",
-                  `📍 Target   : ${targetLabel}`,
-                  `📦 Terkirim : ${sentCount}/${tickets.length} tiket`,
-                  `🎫 Order ID : ${ticket.order_id || "-"}`,
-                ].join("\n"),
-                {
-                  targetJid,
-                  targetLabel,
-                  sentCount,
-                  totalTickets: tickets.length,
-                },
+            const currentOrder = ticket.order_id || "-";
+            const nextTicket = tickets[sentCount];
+            const delaySec = Math.round(
+              Number(process.env.WA_SEND_DELAY_MS || 20000) / 1000,
+            );
+
+            const progressLines = [
+              "⏳ **Progress Pengiriman Tiket ke WhatsApp**",
+              "━━━━━━━━━━━━━━━━━━━━",
+              `📍 **Target**       : ${targetLabel} (${sentCount}/${tickets.length} tiket)`,
+              `📦 **Total Kirim**  : ${overallSentCount}/${totalTicketsCount} tiket`,
+              `✅ **Terkirim**     : \`${currentOrder}\` (${ticket.pic || "-"})`,
+            ];
+
+            if (nextTicket) {
+              progressLines.push(
+                `⏳ **Selanjutnya** : \`${nextTicket.order_id || "-"}\` (jeda ${delaySec} detik...)`,
+              );
+            } else if (nextEntry) {
+              const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
+              const groupDelaySec = Math.round(
+                TARGET_GROUP_COMPLETION_DELAY_MS / 1000,
+              );
+              progressLines.push(
+                `⏳ **Selanjutnya** : Lanjut ke **${nextTargetLabel}** (jeda ${groupDelaySec} detik...)`,
               );
             }
+
+            await sendTicketProgressMessage(
+              sock,
+              sourceJid,
+              progressLines.join("\n"),
+              {
+                isProgress: true,
+                targetJid,
+                targetLabel,
+                sentCount,
+                totalTickets: tickets.length,
+                overallSentCount,
+                totalTicketsCount,
+              },
+            );
           } catch (error) {
             await sendTargetDeliveryFailedAlert(sock, sourceJid, {
               targetJid,
@@ -1395,33 +1420,32 @@ async function sendTicketDetailsToTargetGroups(
       );
     }
 
-    const nextEntry = targetEntries[targetIndex + 1];
-    const nextTargetLabel = nextEntry
-      ? formatTargetProgressLabel(nextEntry[1])
-      : "";
-
-    await sendTicketProgressMessage(
-      sock,
-      sourceJid,
-      [
-        "✅ TARGET SELESAI DIPROSES",
-        "━━━━━━━━━━━━━━━━━━━━",
-        `📍 Target   : ${targetLabel}`,
-        `📦 Terkirim : ${sentCount}/${tickets.length} tiket`,
-        nextTargetLabel
-          ? `⏳ Jeda     : ${Math.round(TARGET_GROUP_COMPLETION_DELAY_MS / 1000)} detik sebelum lanjut ke ${nextTargetLabel}`
-          : "🏁 Status   : Semua target tiket sudah selesai diproses",
-      ].join("\n"),
-      {
-        targetJid,
-        targetLabel,
-        sentCount,
-        totalTickets: tickets.length,
-        nextTargetLabel,
-      },
-    );
-
     if (nextEntry && TARGET_GROUP_COMPLETION_DELAY_MS > 0) {
+      const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
+      const groupDelaySec = Math.round(
+        TARGET_GROUP_COMPLETION_DELAY_MS / 1000,
+      );
+
+      await sendTicketProgressMessage(
+        sock,
+        sourceJid,
+        [
+          "⏳ **Progress Pengiriman Tiket ke WhatsApp**",
+          "━━━━━━━━━━━━━━━━━━━━",
+          `📍 **Target Selesai**: ${targetLabel} (${sentCount}/${tickets.length} tiket)`,
+          `📦 **Total Kirim**   : ${overallSentCount}/${totalTicketsCount} tiket`,
+          `⏳ **Status**        : Menunggu jeda ${groupDelaySec} detik sebelum lanjut ke **${nextTargetLabel}**...`,
+        ].join("\n"),
+        {
+          isProgress: true,
+          targetJid,
+          targetLabel,
+          sentCount,
+          totalTickets: tickets.length,
+          nextTargetLabel,
+        },
+      );
+
       logger.info("Waiting before next target group", {
         targetJid,
         targetLabel,
@@ -1432,6 +1456,28 @@ async function sendTicketDetailsToTargetGroups(
       await sleep(TARGET_GROUP_COMPLETION_DELAY_MS);
     }
   }
+
+  await sendTicketProgressMessage(
+    sock,
+    sourceJid,
+    [
+      "✅ **Pengiriman Tiket ke WhatsApp Selesai**",
+      "━━━━━━━━━━━━━━━━━━━━",
+      `📦 **Total Terkirim**: **${overallSentCount}/${totalTicketsCount} tiket**`,
+      ...targetEntries.map(
+        ([, tList]) =>
+          `• ${formatTargetProgressLabel(tList)}: **${tList.length} tiket**`,
+      ),
+      "",
+      "📋 **Status Pengiriman Reminder:**",
+      "• SQA: Reminder JAPRI terkirim ke PIC CCM & ringkasan terkirim ke MAIN SQA.",
+      "• NOP: Reminder terkirim ke grup NOP target.",
+    ].join("\n"),
+    {
+      isProgress: true,
+      isFinal: true,
+    },
+  );
 }
 
 // handler utama pesan masuk; hanya memproses dokumen Excel dari grup/private yang diizinkan.

@@ -614,6 +614,13 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         await sendRichMessage(sendMessage, chatId, pendingSwitchResult);
         return;
       }
+
+      const pendingReauthResult =
+        await whatsappSession.completePendingExpiredSessionReauth?.(chatId, text);
+      if (pendingReauthResult) {
+        await sendRichMessage(sendMessage, chatId, pendingReauthResult, { parse_mode: "HTML" });
+        return;
+      }
     }
 
     if (!chatId || !text.startsWith("/")) {
@@ -872,6 +879,16 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       try {
         const result = await whatsappSession.deleteSession(argument);
         await sendRichMessage(sendMessage, chatId, result);
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
+      return;
+    }
+
+    if (command === "/cancel") {
+      try {
+        const result = await whatsappSession.cancelQr(chatId);
+        await sendRichMessage(sendMessage, chatId, result, { parse_mode: "HTML" });
       } catch (error) {
         await sendTelegramCommandError(sendMessage, chatId, command, error);
       }

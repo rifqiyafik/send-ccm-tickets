@@ -1110,22 +1110,38 @@ function formatSkippedAnomalyDetail(t) {
   return `Kota & Site Cover tidak ditemukan pada tiket (${t.reason})`;
 }
 
-export function formatShortGroupName(value) {
+export function shortenNopName(value) {
   const text = String(value || "").trim();
   if (!text) {
     return "-";
   }
 
   return text
-    .replace(/^NETWORK OPERATIONS? AND PRODUCTIVITY\s+/i, "NOP ")
-    .replace(/^SERVICE QUALITY ASSURANCE\s+/i, "SQA ")
-    .replace(/PEMATANGSIANTAR/i, "PEMATANG SIANTAR");
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+PADANG\s+SIDEMPUAN\b/gi, "NOP PSP")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+RANTAU\s+PRAPAT\b/gi, "NOP RAP")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+PEMATANG\s*SIANTAR\b/gi, "NOP PMS")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+BINJAI\b/gi, "NOP BNJ")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+MEDAN\b/gi, "NOP MDN")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+BANDA\s+ACEH\b/gi, "NOP ACH")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+ACEH\b/gi, "NOP ACH")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+/gi, "NOP ")
+    .replace(/\bNOP\s+PADANG\s+SIDEMPUAN\b/gi, "NOP PSP")
+    .replace(/\bNOP\s+RANTAU\s+PRAPAT\b/gi, "NOP RAP")
+    .replace(/\bNOP\s+PEMATANG\s*SIANTAR\b/gi, "NOP PMS")
+    .replace(/\bNOP\s+BINJAI\b/gi, "NOP BNJ")
+    .replace(/\bNOP\s+MEDAN\b/gi, "NOP MDN")
+    .replace(/\bNOP\s+BANDA\s+ACEH\b/gi, "NOP ACH")
+    .replace(/\bNOP\s+ACEH\b/gi, "NOP ACH")
+    .replace(/\bSERVICE QUALITY ASSURANCE\s+SUMBAGUT\b/gi, "SQA")
+    .replace(/\bSERVICE QUALITY ASSURANCE\b/gi, "SQA");
 }
+
+export const formatShortGroupName = shortenNopName;
 
 function formatValidAnomalyCard(t) {
   const ref = getTicketRef(t);
   const rawGroup = t.assignment_group || t.assignment_type || "-";
-  const group = formatShortGroupName(rawGroup);
+  const group = shortenNopName(rawGroup);
   const pic = t.pic || "-";
   const anomalyRaw = String(t.anomaly_info || "").trim();
 
@@ -1138,6 +1154,9 @@ function formatValidAnomalyCard(t) {
     fallback = part2.trim();
   }
 
+  kasus = shortenNopName(kasus);
+  fallback = shortenNopName(fallback);
+
   return [
     `📌 \`${ref}\` (${group})`,
     `   ├ ⚠️ **Anomali**: ${kasus}`,
@@ -1149,12 +1168,12 @@ function formatValidAnomalyCard(t) {
 function formatSkippedAnomalyCard(t) {
   const ref = getTicketRef(t);
   const rawGroup = t.assignment_group || "SQA";
-  const group = formatShortGroupName(rawGroup);
+  const group = shortenNopName(rawGroup);
   const detail = formatSkippedAnomalyDetail(t);
 
   return [
     `❌ \`${ref}\` (${group})`,
-    `   └ ⚠️ **Alasan Skip**: ${detail}`,
+    `   └ ⚠️ **Alasan Skip**: ${shortenNopName(detail)}`,
   ].join("\n");
 }
 

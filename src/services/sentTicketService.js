@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { createLogger } from "../utils/logger.js";
 import { cleanTableValue } from "../utils/text.js";
+import { shortenNopName } from "./ticketImportService.js";
 
 const logger = createLogger("sentTicketService");
 const DEFAULT_STORE_PATH = path.join(
@@ -312,6 +313,48 @@ function cleanupExpiredRecords(store, now = new Date()) {
   };
 }
 
+function resolveEffectiveTarget(ticket) {
+  if (!ticket) return "";
+  if (ticket.assignment_type === "SQA") {
+    return "SQA";
+  }
+  if (ticket.assignment_type === "NOP") {
+    return shortenNopName(
+      ticket.cluster_area ||
+        ticket.nsa ||
+        ticket.assignment_group ||
+        "NOP",
+    );
+  }
+  if (ticket.cluster_area || ticket.assignment_group) {
+    return shortenNopName(ticket.cluster_area || ticket.assignment_group);
+  }
+  return "";
+}
+
+function resolvePreviousTarget(existingRecord) {
+  if (!existingRecord) return "";
+  if (existingRecord.effective_target) {
+    return existingRecord.effective_target;
+  }
+  if (existingRecord.assignment_type === "SQA") {
+    return "SQA";
+  }
+  if (existingRecord.assignment_type === "NOP") {
+    return shortenNopName(
+      existingRecord.cluster_area ||
+        existingRecord.assignment_group ||
+        "NOP",
+    );
+  }
+  if (existingRecord.cluster_area || existingRecord.assignment_group) {
+    return shortenNopName(
+      existingRecord.cluster_area || existingRecord.assignment_group,
+    );
+  }
+  return "";
+}
+
 function resolveTicketSendDecision(ticket, existingRecord, today) {
   const orderId = normalizeOrderId(ticket.order_id);
 
@@ -336,6 +379,25 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
     return {
       send: true,
       reason: isOutSla(ticket) ? "OUT_SLA_REMINDER_TODAY" : "NEW_TODAY",
+    };
+  }
+
+  // Cek apakah tiket dipindahkan ke assignment group lain (misal NOP ACEH -> SQA atau sebaliknya)
+  const previousTarget = resolvePreviousTarget(existingRecord);
+  const currentTarget = resolveEffectiveTarget(ticket);
+
+  if (
+    previousTarget &&
+    currentTarget &&
+    previousTarget !== currentTarget &&
+    previousTarget !== "-" &&
+    currentTarget !== "-"
+  ) {
+    ticket.escalated_from = previousTarget;
+    return {
+      send: true,
+      reason: "ESCALATED_REASSIGNMENT",
+      escalated_from: previousTarget,
     };
   }
 
@@ -402,6 +464,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
   const duplicateTickets = [];
   const outSlaTickets = [];
   const reopenedTickets = [];
+  const escalatedTickets = [];
   const invalidMessageTickets = [];
   const inProgressReminderTickets = [];
   const inSlaReminderTickets = [];
@@ -420,17 +483,21 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
       today,
       decision: decision.reason,
       send: decision.send,
+      escalatedFrom: decision.escalated_from,
       missingFields: decision.missing_fields,
     });
 
     if (decision.send) {
-      sendableTickets.push(ticket);
-      if (
+      if (decision.reason === "ESCALATED_REASSIGNMENT" && decision.escalated_from) {
+        ticket.escalated_from = decision.escalated_from;
+        escalatedTickets.push(ticket);
+      } else if (
         decision.reason === "REOPEN_AFTER_IN_PROGRESS" ||
         decision.reason === "REOPEN_COUNT_INCREASED"
       ) {
         reopenedTickets.push(ticket);
       }
+      sendableTickets.push(ticket);
       continue;
     }
 
@@ -463,6 +530,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     in_sla_reminder_tickets: inSlaReminderTickets,
     in_progress_reminder_tickets: inProgressReminderTickets,
     reopened_tickets: reopenedTickets,
+    escalated_tickets: escalatedTickets,
     invalid_message_tickets: invalidMessageTickets,
     fallback_resolved_tickets: sendableTickets.filter(
       (ticket) => (ticket.fallback_resolutions || []).length > 0,
@@ -479,6 +547,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     inSlaReminder: inSlaReminderTickets.length,
     inProgressReminder: inProgressReminderTickets.length,
     reopened: reopenedTickets.length,
+    escalated: escalatedTickets.length,
     invalidMessageData: invalidMessageTickets.length,
     fallbackResolved: plan.fallback_resolved_tickets.length,
     sentDate: today,
@@ -508,12 +577,18 @@ export async function markTicketAsSent(ticket, metadata = {}) {
       ? reopenCountValue
       : 0;
 
+  const effectiveTarget = resolveEffectiveTarget(ticket);
+
   store.tickets[orderId] = {
     order_id: ticket.order_id,
     assignment_type: ticket.assignment_type,
+    assignment_group: ticket.assignment_group || "",
+    cluster_area: ticket.cluster_area || "",
+    effective_target: effectiveTarget,
     business_status: ticket.business_status,
     sla_status: ticket.sla_status,
     reopen_count: reopenCount,
+    escalated_from: ticket.escalated_from || "",
     target_jid: metadata.targetJid || "",
     source_jid: metadata.sourceJid || "",
     sent_at: now.toISOString(),
@@ -524,6 +599,7 @@ export async function markTicketAsSent(ticket, metadata = {}) {
     orderId: ticket.order_id,
     businessStatus: ticket.business_status,
     slaStatus: ticket.sla_status,
+    effectiveTarget,
     targetJid: metadata.targetJid,
   });
 
@@ -534,15 +610,17 @@ export function formatSentTicketPlanReport(plan) {
   const invalidMessageTickets = plan.invalid_message_tickets || [];
   const fallbackResolvedTickets = plan.fallback_resolved_tickets || [];
   const inProgressReminderTickets = plan.in_progress_reminder_tickets || [];
+  const escalatedTickets = plan.escalated_tickets || [];
   const newTickets =
     plan.new_tickets ||
     (plan.sendable_tickets || []).filter(
-      (ticket) => !ticket.use_reopen_message_format,
+      (ticket) => !ticket.use_reopen_message_format && !ticket.escalated_from,
     );
   const reportLines = [
     "📊 Rekapitulasi Tiket",
     "",
     `🆕 Tiket Baru Terkirim: ${newTickets.length}`,
+    `🔀 Tiket Escalated Pindah Assignment: ${escalatedTickets.length}`,
     `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
     `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,
     `🔔 Tiket In Progress Diremind: ${inProgressReminderTickets.length}`,
@@ -558,6 +636,26 @@ export function formatSentTicketPlanReport(plan) {
       "🆕 Tiket Baru Terkirim:",
       "",
       createOrderIdCodeTable(newTickets),
+    );
+  }
+
+  if (escalatedTickets.length > 0) {
+    reportLines.push(
+      "",
+      "🔀 Tiket Escalated Pindah Assignment:",
+      "",
+      createCodeTable(
+        [
+          { key: "orderId", header: "Order ID" },
+          { key: "from", header: "Dari" },
+          { key: "to", header: "Ke" },
+        ],
+        escalatedTickets.map((ticket) => ({
+          orderId: ticket.order_id,
+          from: ticket.escalated_from || "-",
+          to: resolveEffectiveTarget(ticket),
+        })),
+      ),
     );
   }
 

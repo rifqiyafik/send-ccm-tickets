@@ -1917,7 +1917,7 @@ export function formatEscalationMessagePayload(ticket) {
   const nopTag = resolveMentionTag(ticket.pic_nop);
   const isSqa = ticket.assignment_type === "SQA";
 
-  if (ticket.use_reopen_message_format) {
+  if (ticket.use_reopen_message_format && !ticket.escalated_from) {
     const mentions = uniqueMentionJids(isSqa ? [ccmTag, sqaTag] : [nopTag]);
     const text = formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag });
 
@@ -1933,7 +1933,7 @@ export function formatEscalationMessagePayload(ticket) {
     };
   }
 
-  if (isOutSlaInProgressTicket(ticket)) {
+  if (isOutSlaInProgressTicket(ticket) && !ticket.escalated_from) {
     const mentions = uniqueMentionJids(isSqa ? [ccmTag] : [nopTag]);
     const text = formatOutSlaInProgressEscalationText(ticket, {
       ccmTag,
@@ -1942,7 +1942,7 @@ export function formatEscalationMessagePayload(ticket) {
 
     logger.info("OUT SLA In Progress reminder mention payload created", {
       orderId: ticket.order_id,
-      mentionDetails: isSqa ? [ccmTag] : [nopTag],
+      mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
       mentions,
     });
 
@@ -1960,11 +1960,14 @@ export function formatEscalationMessagePayload(ticket) {
       ]
     : [`Mohon dibantu bang ${nopTag.text || "-"}`, ticket.order_id || "-"];
   const repeatedOrderId = isSqa ? [ticket.order_id || "-", ""] : [];
+  const middleHeader = ticket.escalated_from
+    ? [`Ticket Escalated from ${ticket.escalated_from}`, ticket.order_id || "-", ""]
+    : repeatedOrderId;
 
   const text = [
     ...intro,
     "",
-    ...repeatedOrderId,
+    ...middleHeader,
     ticket.notes || "-",
     "",
     "====================",

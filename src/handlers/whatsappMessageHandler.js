@@ -162,17 +162,25 @@ function getDocumentImportOptions(text) {
   }
 
   const { command } = parseBotCommand(trimmedText);
-  const normalMode = [".import", ".send"].includes(command);
-  const ticketOnlyMode = command === ".update";
-  const summaryOnlyMode = command === ".summary";
+  const normalMode = [".import", ".send", "/import", "/send"].includes(command);
+  const ticketOnlyMode = [".update", "/update"].includes(command);
+  const summaryOnlyMode = [".summary", "/summary"].includes(command);
   const reminderMode = [".reminder", "/reminder"].includes(command);
+  const specialMode = [".special", "/special"].includes(command);
+
   return {
     command,
-    supported: normalMode || ticketOnlyMode || summaryOnlyMode || reminderMode,
+    supported:
+      normalMode ||
+      ticketOnlyMode ||
+      summaryOnlyMode ||
+      reminderMode ||
+      specialMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
+    specialMode,
   };
 }
 
@@ -1227,6 +1235,7 @@ export async function sendReminderCommandResult(
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 export async function sendImportResult(sock, sourceJid, result, options = {}) {
+  const specialMode = Boolean(options.specialMode);
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   const summaryOnlyMode = Boolean(options.summaryOnlyMode);
   const reminderMode = Boolean(options.reminderMode);
@@ -1236,19 +1245,24 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     total: result.total_rows,
     valid: result.valid_count,
     skipped: result.skipped_count,
+    specialMode,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
   });
 
-  const modeName = ticketOnlyMode
+  const modeName = specialMode
+    ? ".special"
+    : ticketOnlyMode
     ? ".update"
     : summaryOnlyMode
     ? ".summary"
     : reminderMode
     ? ".reminder"
     : null;
-  const modeNote = ticketOnlyMode
+  const modeNote = specialMode
+    ? "Mode `.special` aktif: Seluruh tiket valid dikirim ulang ke grup target dan sent_tickets.json diperbarui (bypass cek duplikat)."
+    : ticketOnlyMode
     ? "Mode `.update` aktif: Detail tiket dikirim langsung ke grup target tanpa salam pembuka & reminder summary."
     : summaryOnlyMode
     ? "Mode `.summary` aktif: Bot hanya membuat report dan summary tanpa mengirim detail tiket ke grup target."
@@ -1290,7 +1304,11 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     });
   }
 
-  const sentTicketPlan = await createSentTicketPlan(result.valid_tickets);
+  const sentTicketPlan = await createSentTicketPlan(
+    result.valid_tickets,
+    new Date(),
+    options,
+  );
   await sock.sendMessage(sourceJid, {
     text: formatSentTicketPlanReport(sentTicketPlan),
   });
@@ -1703,6 +1721,8 @@ async function handleIncomingMessage(sock, messageEvent) {
         "➡️ Flow normal: gunakan caption `.import` atau `.send`.",
         "📌 Update tiket saja: gunakan caption `.update`.",
         "📊 Summary saja: gunakan caption `.summary`.",
+        "⏰ Reminder saja: gunakan caption `.reminder`.",
+        "⚡ Kirim ulang tiket (bypass duplikat): gunakan caption `.special`.",
         "",
         "---",
         "ℹ️ File tanpa caption command akan diabaikan.",
@@ -1738,23 +1758,35 @@ async function handleIncomingMessage(sock, messageEvent) {
   }
 
   await sock.sendMessage(sourceJid, {
-    text: importOptions.summaryOnlyMode
+    text: importOptions.specialMode
+      ? [
+          "📂 **File Excel Diterima (Mode .special)**",
+          "",
+          "⏳ Sedang memproses **pengiriman ulang seluruh tiket**...",
+        ].join("\n")
+      : importOptions.summaryOnlyMode
       ? [
           "📂 **File Excel Diterima (Mode .summary)**",
           "",
           "⏳ Sedang memproses **report dan summary saja**...",
         ].join("\n")
+      : importOptions.reminderMode
+      ? [
+          "📂 **File Excel Diterima (Mode .reminder)**",
+          "",
+          "⏳ Sedang memproses **pengiriman reminder**...",
+        ].join("\n")
       : importOptions.ticketOnlyMode
-        ? [
-            "📂 **File Excel Diterima (Mode .update)**",
-            "",
-            "⏳ Sedang memproses **detail tiket saja**...",
-          ].join("\n")
-        : [
-            "📂 **File Excel Diterima**",
-            "",
-            "⏳ Sedang memproses **tiket lengkap**...",
-          ].join("\n"),
+      ? [
+          "📂 **File Excel Diterima (Mode .update)**",
+          "",
+          "⏳ Sedang memproses **detail tiket saja**...",
+        ].join("\n")
+      : [
+          "📂 **File Excel Diterima**",
+          "",
+          "⏳ Sedang memproses **tiket lengkap**...",
+        ].join("\n"),
   });
   try {
     const buffer = await downloadDocumentBuffer(documentMessage);

@@ -87,17 +87,25 @@ function getTelegramDocumentImportOptions(caption) {
   }
 
   const { command } = parseCommand(text);
-  const normalMode = [".import", ".send"].includes(command);
-  const ticketOnlyMode = command === ".update";
-  const summaryOnlyMode = command === ".summary";
+  const normalMode = [".import", ".send", "/import", "/send"].includes(command);
+  const ticketOnlyMode = [".update", "/update"].includes(command);
+  const summaryOnlyMode = [".summary", "/summary"].includes(command);
   const reminderMode = [".reminder", "/reminder"].includes(command);
+  const specialMode = [".special", "/special"].includes(command);
+
   return {
     command,
-    supported: normalMode || ticketOnlyMode || summaryOnlyMode || reminderMode,
+    supported:
+      normalMode ||
+      ticketOnlyMode ||
+      summaryOnlyMode ||
+      reminderMode ||
+      specialMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
+    specialMode,
   };
 }
 
@@ -264,7 +272,8 @@ function formatTelegramGroupHelp() {
     "• **Tanpa Caption / `.import` / `.send`**: Pengiriman Normal. Detail tiket dikirim ke grup target (SQA & NOP), file balasan Excel dibuat, dan summary dikirim.",
     "• `.update`: Mode Update Cepat. Hanya mengirim detail tiket eskalasi ke grup target (tanpa salam pembuka & summary).",
     "• `.summary`: Mode Ringkasan. Hanya membuat report/summary dan file Excel balasan di chat ini tanpa mengirim detail ke grup target.",
-    "• `/reminder`: Mode Reminder Tiket Unresolved. Hanya mengirimkan reminder untuk semua tiket yang belum resolve di file Excel.",
+    "• `.reminder`: Mode Reminder Tiket Unresolved. Hanya mengirimkan reminder untuk semua tiket yang belum resolve di file Excel.",
+    "• `.special`: Mode Force Resend Tiket. Mengabaikan riwayat database (sent_tickets) dan mengirim ulang seluruh tiket valid.",
     "",
     "--------------------------------------------------",
     "",
@@ -314,6 +323,7 @@ function formatTelegramPersonalHelp() {
     "- `.update` → Kirim detail tiket eskalasi saja ke grup target",
     "- `.summary` → Kirim ringkasan & Excel balasan saja ke pengirim",
     "- `.reminder` → Kirim reminder semua tiket yang belum resolve",
+    "- `.special` → Kirim ulang seluruh tiket valid (bypass cek duplikat sent_tickets)",
     "",
     "---",
     "📝 **Catatan Alur:**",
@@ -486,6 +496,8 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             "➡️ Flow normal: gunakan caption `.import` atau `.send`.",
             "📌 Update tiket saja: gunakan caption `.update`.",
             "📊 Summary saja: gunakan caption `.summary`.",
+            "⏰ Reminder saja: gunakan caption `.reminder`.",
+            "⚡ Kirim ulang tiket (bypass duplikat): gunakan caption `.special`.",
             "",
             "---",
             "ℹ️ File tanpa caption command akan diabaikan.",
@@ -532,9 +544,17 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       const statusMsg = await sendRichMessage(
         sendMessage,
         chatId,
-        importOptions.reminderMode
+        importOptions.specialMode
           ? [
-              "📂 **File Excel Diterima (Mode /reminder)**",
+              "📂 **File Excel Diterima (Mode .special)**",
+              "",
+              "⏳ Mengunduh dan membaca file Excel...",
+              "⚡ Seluruh tiket valid akan dikirim ulang dan riwayat sent_tickets diperbarui...",
+              `📄 File Name: \`${document.file_name || "-"}\``,
+            ].join("\n")
+          : importOptions.reminderMode
+          ? [
+              "📂 **File Excel Diterima (Mode .reminder)**",
               "",
               "⏳ Mengunduh dan membaca file Excel...",
               "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",

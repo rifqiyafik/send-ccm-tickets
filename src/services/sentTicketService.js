@@ -372,7 +372,7 @@ function isCrossAssignmentEscalation(previousTarget, currentTarget) {
   return true;
 }
 
-function resolveTicketSendDecision(ticket, existingRecord, today) {
+function resolveTicketSendDecision(ticket, existingRecord, today, options = {}) {
   const orderId = normalizeOrderId(ticket.order_id);
 
   if (!orderId || orderId === "-") {
@@ -389,6 +389,13 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
       send: false,
       reason: "INVALID_MESSAGE_DATA",
       missing_fields: validation.missing_fields,
+    };
+  }
+
+  if (options.specialMode) {
+    return {
+      send: true,
+      reason: "SPECIAL_FORCE_RESEND",
     };
   }
 
@@ -465,7 +472,7 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
 }
 
 // membersihkan riwayat lama, lalu memisahkan tiket yang boleh dikirim dan tiket yang harus dilewati.
-export async function createSentTicketPlan(tickets, now = new Date()) {
+export async function createSentTicketPlan(tickets, now = new Date(), options = {}) {
   const rawStore = await readStore();
   const store = cleanupExpiredRecords(rawStore, now);
   await writeStore(store);
@@ -483,7 +490,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
   for (const ticket of tickets) {
     const orderId = normalizeOrderId(ticket.order_id);
     const existingRecord = store.tickets[orderId];
-    const decision = resolveTicketSendDecision(ticket, existingRecord, today);
+    const decision = resolveTicketSendDecision(ticket, existingRecord, today, options);
 
     logger.info("Sent ticket decision resolved", {
       orderId: ticket.order_id,
@@ -494,6 +501,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
       today,
       decision: decision.reason,
       send: decision.send,
+      specialMode: Boolean(options.specialMode),
       escalatedFrom: decision.escalated_from,
       missingFields: decision.missing_fields,
     });
@@ -548,6 +556,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     ),
     retention_days: getRetentionDays(),
     sent_date: today,
+    special_mode: Boolean(options.specialMode),
   };
 
   logger.info("Sent ticket plan created", {
@@ -559,6 +568,7 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     inProgressReminder: inProgressReminderTickets.length,
     reopened: reopenedTickets.length,
     escalated: escalatedTickets.length,
+    specialMode: plan.special_mode,
     invalidMessageData: invalidMessageTickets.length,
     fallbackResolved: plan.fallback_resolved_tickets.length,
     sentDate: today,
@@ -627,10 +637,13 @@ export function formatSentTicketPlanReport(plan) {
     (plan.sendable_tickets || []).filter(
       (ticket) => !ticket.use_reopen_message_format && !ticket.escalated_from,
     );
+  const isSpecial = Boolean(plan.special_mode);
   const reportLines = [
     "📊 Rekapitulasi Tiket",
+    ...(isSpecial ? ["⚡ **Mode: Force Resend (.special)**"] : []),
     "",
     `🆕 Tiket Baru Terkirim: ${newTickets.length}`,
+    ...(isSpecial ? [`⚡ Tiket Force Resend: ${plan.sendable_tickets.length}`] : []),
     `🔀 Tiket Escalated Pindah Assignment: ${escalatedTickets.length}`,
     `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
     `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,

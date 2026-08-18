@@ -119,3 +119,57 @@ test("Escalated Reassignment: Detects transfer from SQA to NOP", async () => {
     await fs.rm(tmpDir, { recursive: true, force: true });
   }
 });
+
+test("Escalated Reassignment: Does NOT treat legacy generic NOP record as cross-assignment when imported to NOP ACEH", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "escalate-legacy-nop-"));
+  const tmpStore = path.join(tmpDir, "sent_tickets.json");
+  process.env.SENT_TICKET_STORE_PATH = tmpStore;
+
+  try {
+    // Legacy record only had assignment_type: "NOP" (no effective_target)
+    await fs.writeFile(
+      tmpStore,
+      JSON.stringify({
+        version: 1,
+        tickets: {
+          "CC-20260814-00000410": {
+            order_id: "CC-20260814-00000410",
+            assignment_type: "NOP",
+            business_status: "InProgress",
+            sla_status: "IN SLA",
+            reopen_count: 0,
+            target_jid: "120363411415015747@g.us",
+            source_jid: "telegram:5085979770",
+            sent_at: "2026-08-18T04:13:52.732Z",
+            sent_date: "2026-08-18",
+          },
+        },
+      }),
+      "utf8",
+    );
+
+    const newExcelTicket = {
+      order_id: "CC-20260814-00000410",
+      assignment_type: "NOP",
+      assignment_group: "Network Operations and Productivity Banda Aceh",
+      cluster_area: "NOP ACEH",
+      business_status: "InProgress",
+      sla_status: "IN SLA",
+      reopen_number: "-",
+      pic_nop: "Irwan Saleh",
+      resolve_target_22h_text: "Sabtu / 15 Agu 2026, 04:47:00 PM",
+      notes: "Problem note",
+      analysis_text: "Analysis note",
+    };
+
+    const plan = await createSentTicketPlan([newExcelTicket], new Date("2026-08-18T10:00:00Z"));
+    // Since it was sent today and didn't change assignment, it should be a duplicate today!
+    assert.equal(plan.sendable_tickets.length, 0);
+    assert.equal(plan.duplicate_tickets.length, 1);
+    assert.equal(plan.escalated_tickets.length, 0);
+  } finally {
+    delete process.env.SENT_TICKET_STORE_PATH;
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  }
+});
+

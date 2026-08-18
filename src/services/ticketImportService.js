@@ -1961,7 +1961,7 @@ export function formatEscalationMessagePayload(ticket) {
     : [`Mohon dibantu bang ${nopTag.text || "-"}`, ticket.order_id || "-"];
   const repeatedOrderId = isSqa ? [ticket.order_id || "-", ""] : [];
   const middleHeader = ticket.escalated_from
-    ? [`Ticket Escalated from ${ticket.escalated_from}`, ticket.order_id || "-", ""]
+    ? [`*Ticket Escalated from ${ticket.escalated_from}*`, ticket.order_id || "-", ""]
     : repeatedOrderId;
 
   const text = [

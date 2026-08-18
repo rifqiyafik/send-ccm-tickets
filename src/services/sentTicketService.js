@@ -355,6 +355,23 @@ function resolvePreviousTarget(existingRecord) {
   return "";
 }
 
+function isCrossAssignmentEscalation(previousTarget, currentTarget) {
+  if (!previousTarget || !currentTarget) return false;
+  if (previousTarget === currentTarget) return false;
+  if (previousTarget === "-" || currentTarget === "-") return false;
+
+  // Jika salah satu adalah generic "NOP" (karena legacy record) dan target sekarang adalah cabang NOP (misal "NOP ACEH"),
+  // maka keduanya adalah sama-sama assignment NOP, sehingga jangan dianggap pindah assignment.
+  if (
+    (previousTarget === "NOP" && currentTarget.startsWith("NOP")) ||
+    (currentTarget === "NOP" && previousTarget.startsWith("NOP"))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 function resolveTicketSendDecision(ticket, existingRecord, today) {
   const orderId = normalizeOrderId(ticket.order_id);
 
@@ -386,13 +403,7 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
   const previousTarget = resolvePreviousTarget(existingRecord);
   const currentTarget = resolveEffectiveTarget(ticket);
 
-  if (
-    previousTarget &&
-    currentTarget &&
-    previousTarget !== currentTarget &&
-    previousTarget !== "-" &&
-    currentTarget !== "-"
-  ) {
+  if (isCrossAssignmentEscalation(previousTarget, currentTarget)) {
     ticket.escalated_from = previousTarget;
     return {
       send: true,

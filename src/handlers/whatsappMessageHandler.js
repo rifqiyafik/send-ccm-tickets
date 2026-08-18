@@ -1630,7 +1630,7 @@ async function sendTicketDetailsToTargetGroups(
       "",
       "📋 **Status Pengiriman:**",
       "• Seluruh tiket valid telah berhasil diteruskan ke grup WhatsApp masing-masing.",
-      "• Reminder summary terkirim.",
+      // "• Reminder summary terkirim.",
     ].join("\n"),
     {
       isProgress: true,

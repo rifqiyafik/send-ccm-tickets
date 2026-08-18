@@ -1110,9 +1110,22 @@ function formatSkippedAnomalyDetail(t) {
   return `Kota & Site Cover tidak ditemukan pada tiket (${t.reason})`;
 }
 
+export function formatShortGroupName(value) {
+  const text = String(value || "").trim();
+  if (!text) {
+    return "-";
+  }
+
+  return text
+    .replace(/^NETWORK OPERATIONS? AND PRODUCTIVITY\s+/i, "NOP ")
+    .replace(/^SERVICE QUALITY ASSURANCE\s+/i, "SQA ")
+    .replace(/PEMATANGSIANTAR/i, "PEMATANG SIANTAR");
+}
+
 function formatValidAnomalyCard(t) {
   const ref = getTicketRef(t);
-  const group = t.assignment_group || t.assignment_type || "-";
+  const rawGroup = t.assignment_group || t.assignment_type || "-";
+  const group = formatShortGroupName(rawGroup);
   const pic = t.pic || "-";
   const anomalyRaw = String(t.anomaly_info || "").trim();
 
@@ -1135,7 +1148,8 @@ function formatValidAnomalyCard(t) {
 
 function formatSkippedAnomalyCard(t) {
   const ref = getTicketRef(t);
-  const group = t.assignment_group || "SQA";
+  const rawGroup = t.assignment_group || "SQA";
+  const group = formatShortGroupName(rawGroup);
   const detail = formatSkippedAnomalyDetail(t);
 
   return [

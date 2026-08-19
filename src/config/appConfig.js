@@ -76,4 +76,28 @@ export function getGroupConfig(groupKey) {
   return group;
 }
 
+export function getGroupKeyByJid(jid) {
+  if (!jid) return null;
+  const config = getAppConfig();
+  const rawTargetGroups = config.raw.target_groups || {};
+  for (const [key, val] of Object.entries(rawTargetGroups)) {
+    if (val?.jid === jid) {
+      return key;
+    }
+  }
+  return null;
+}
+
+export function getMentionNameByJid(jid) {
+  if (!jid) return null;
+  const config = getAppConfig();
+  const rawMentions = config.raw.mentions || {};
+  for (const [name, val] of Object.entries(rawMentions)) {
+    if (val?.jid === jid) {
+      return val.label || name;
+    }
+  }
+  return null;
+}
+
 export { normalizeKey };

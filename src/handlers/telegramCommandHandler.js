@@ -10,7 +10,12 @@ import {
   isAuthorizedTelegramChat,
   listAuthorizedTelegramChats,
   registerTelegramChat,
+  resolveTelegramTargetChatId,
 } from "../services/telegramAccessService.js";
+import {
+  getGroupKeyByJid,
+  getMentionNameByJid,
+} from "../config/appConfig.js";
 import {
   cancelActiveDelivery,
   formatWhatsAppGroupsCommand,
@@ -86,12 +91,16 @@ function getTelegramDocumentImportOptions(caption) {
     };
   }
 
-  const { command } = parseCommand(text);
-  const normalMode = [".import", ".send", "/import", "/send"].includes(command);
-  const ticketOnlyMode = [".update", "/update"].includes(command);
-  const summaryOnlyMode = [".summary", "/summary"].includes(command);
-  const reminderMode = [".reminder", "/reminder"].includes(command);
-  const specialMode = [".special", "/special"].includes(command);
+  const { command, argument } = parseCommand(text);
+  const words = text.toLowerCase().split(/\s+/);
+  const manualMode = words.includes("manual");
+
+  const baseCommand = command.toLowerCase();
+  const normalMode = [".import", ".send", "/import", "/send", ".manual", "/manual"].includes(baseCommand);
+  const ticketOnlyMode = [".update", "/update"].includes(baseCommand);
+  const summaryOnlyMode = [".summary", "/summary"].includes(baseCommand);
+  const reminderMode = [".reminder", "/reminder"].includes(baseCommand);
+  const specialMode = [".special", "/special"].includes(baseCommand);
 
   return {
     command,
@@ -106,6 +115,7 @@ function getTelegramDocumentImportOptions(caption) {
     summaryOnlyMode,
     reminderMode,
     specialMode,
+    manualMode: manualMode || baseCommand === ".manual" || baseCommand === "/manual",
   };
 }
 
@@ -129,6 +139,7 @@ function createTelegramWhatsAppAdapter({
   sendMessage,
   editMessageText,
   initialProgressMessageId = null,
+  manualMode = false,
 }) {
   const sourceJid = `${TELEGRAM_SOURCE_PREFIX}${sourceChatId}`;
   let progressMessageId = initialProgressMessageId;
@@ -173,6 +184,58 @@ function createTelegramWhatsAppAdapter({
           sourceChatId,
           keys: Object.keys(payload || {}),
         });
+        return;
+      }
+
+      // Jika dalam manualMode, jangan kirim ke WhatsApp, melainkan kirim ke Telegram!
+      if (manualMode) {
+        const groupKey = getGroupKeyByJid(jid);
+        const mentionLabel = !groupKey ? getMentionNameByJid(jid) : null;
+        const targetChatId = groupKey
+          ? await resolveTelegramTargetChatId(groupKey)
+          : null;
+
+        const destinationChatId = targetChatId || sourceChatId;
+        const targetLabel = groupKey || mentionLabel || jid;
+
+        logger.info("Routing payload in Telegram manual mode", {
+          sourceChatId,
+          destinationChatId,
+          targetJid: jid,
+          groupKey,
+          targetLabel,
+          hasConfiguredGroup: Boolean(targetChatId),
+        });
+
+        if (payload?.document) {
+          const docCaption = [
+            !targetChatId ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n` : "",
+            payload.caption || "",
+          ]
+            .filter(Boolean)
+            .join("\n");
+
+          await sendDocument(destinationChatId, payload.document, {
+            mimetype: payload.mimetype,
+            fileName: payload.fileName,
+            caption: docCaption,
+          });
+          return;
+        }
+
+        if (payload?.text) {
+          const messageText = [
+            !targetChatId
+              ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
+              : "",
+            payload.text,
+          ]
+            .filter(Boolean)
+            .join("");
+
+          return await sendRichMessage(sendMessage, destinationChatId, messageText);
+        }
+
         return;
       }
 
@@ -287,6 +350,7 @@ function formatTelegramGroupHelp() {
     "• `.summary`: Mode Ringkasan. Hanya membuat report/summary dan file Excel balasan di chat ini tanpa mengirim detail ke grup target.",
     "• `.reminder`: Mode Reminder Tiket Unresolved. Hanya mengirimkan reminder untuk semua tiket yang belum resolve di file Excel.",
     "• `.special`: Mode Force Resend Tiket. Mengabaikan riwayat database (sent_tickets) dan mengirim ulang seluruh tiket valid.",
+    "• `manual` (Modifier): Tambahkan kata `manual` di belakang command (contoh: `.update manual`, `.reminder manual`) untuk mengirim tiket ke grup **Telegram** target tanpa melibatkan WhatsApp.",
     "",
     "--------------------------------------------------",
     "",
@@ -337,6 +401,7 @@ function formatTelegramPersonalHelp() {
     "- `.summary` → Kirim ringkasan & Excel balasan saja ke pengirim",
     "- `.reminder` → Kirim reminder semua tiket yang belum resolve",
     "- `.special` → Kirim ulang seluruh tiket valid (bypass cek duplikat sent_tickets)",
+    "- `... manual` → Tambahkan `manual` di belakang command untuk routing via **Telegram Only** (tanpa WA)",
     "",
     "---",
     "📝 **Catatan Alur:**",
@@ -532,34 +597,38 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
 
-      try {
-        await whatsappSession.ensureReady(chatId, { interactive: true });
-      } catch (error) {
-        logger.warn("Telegram Excel rejected: WhatsApp session is not ready", {
-          chatId,
-          fileName: document.file_name,
-          message: error.message,
-        });
-        await sendRichMessage(
-          sendMessage,
-          chatId,
-          [
-            "⚠️ **WhatsApp Session Belum Aktif**",
-            "",
-            "📤 File sudah diterima Telegram, tapi bot belum bisa meneruskan tiket ke grup WhatsApp.",
-            "",
-            "👉 Jalankan `/login`, scan QR WhatsApp, lalu kirim ulang file Excel.",
-          ].join("\n"),
-        );
-        return;
+      if (!importOptions.manualMode) {
+        try {
+          await whatsappSession.ensureReady(chatId, { interactive: true });
+        } catch (error) {
+          logger.warn("Telegram Excel rejected: WhatsApp session is not ready", {
+            chatId,
+            fileName: document.file_name,
+            message: error.message,
+          });
+          await sendRichMessage(
+            sendMessage,
+            chatId,
+            [
+              "⚠️ **WhatsApp Session Belum Aktif**",
+              "",
+              "📤 File sudah diterima Telegram, tapi bot belum bisa meneruskan tiket ke grup WhatsApp.",
+              "",
+              "👉 Jalankan `/login`, scan QR WhatsApp, lalu kirim ulang file Excel.",
+              "👉 Atau gunakan mode manual (contoh: `.update manual`, `.import manual`) untuk mengirim tiket langsung ke grup Telegram tanpa WhatsApp.",
+            ].join("\n"),
+          );
+          return;
+        }
       }
 
+      const manualTag = importOptions.manualMode ? " (Mode Manual / Telegram Only)" : "";
       const statusMsg = await sendRichMessage(
         sendMessage,
         chatId,
         importOptions.specialMode
           ? [
-              "📂 **File Excel Diterima (Mode .special)**",
+              `📂 **File Excel Diterima (Mode .special${manualTag})**`,
               "",
               "⏳ Mengunduh dan membaca file Excel...",
               "⚡ Seluruh tiket valid akan dikirim ulang dan riwayat sent_tickets diperbarui...",
@@ -567,29 +636,31 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             ].join("\n")
           : importOptions.reminderMode
           ? [
-              "📂 **File Excel Diterima (Mode .reminder)**",
+              `📂 **File Excel Diterima (Mode .reminder${manualTag})**`,
               "",
               "⏳ Mengunduh dan membaca file Excel...",
-              "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
+              importOptions.manualMode
+                ? "📱 Seluruh tiket dan reminder diteruskan ke Telegram untuk diteruskan manual..."
+                : "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
               `📄 File Name: \`${document.file_name || "-"}\``,
             ].join("\n")
           : importOptions.summaryOnlyMode
             ? [
-                "📂 **File Excel Diterima (Mode .summary)**",
+                `📂 **File Excel Diterima (Mode .summary${manualTag})**`,
                 "",
                 "⏳ Mengunduh dan membaca file Excel...",
                 `📄 File Name: \`${document.file_name || "-"}\``,
               ].join("\n")
             : importOptions.ticketOnlyMode
               ? [
-                  "📂 **File Excel Diterima (Mode .update)**",
+                  `📂 **File Excel Diterima (Mode .update${manualTag})**`,
                   "",
                   "⏳ Mengunduh dan membaca file Excel...",
                   "🚫 Salam pembuka, Excel target, dan reminder summary akan dilewati.",
                   `📄 File Name: \`${document.file_name || "-"}\``,
                 ].join("\n")
               : [
-                  "📂 **File Excel Diterima**",
+                  `📂 **File Excel Diterima${manualTag}**`,
                   "",
                   "⏳ Mengunduh dan membaca file Excel...",
                   `📄 File Name: \`${document.file_name || "-"}\``,
@@ -642,6 +713,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           sendMessage,
           editMessageText,
           initialProgressMessageId: null,
+          manualMode: importOptions.manualMode,
         });
 
         sendImportResult(adapter, adapter.sourceJid, result, importOptions).catch(

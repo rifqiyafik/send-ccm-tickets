@@ -16,5 +16,41 @@
       "registered_by": "123456789",
       "registered_at": "2026-07-21T00:00:00.000Z"
     }
+  },
+  "target_groups": {
+    "MAIN SQA": {
+      "id": "",
+      "label": "Service Quality Assurance Sumbagut"
+    },
+    "SQA": {
+      "id": "",
+      "label": "Service Quality Assurance Sumbagut"
+    },
+    "NOP ACEH": {
+      "id": "",
+      "label": "Network Operations and Productivity Aceh"
+    },
+    "NOP BINJAI": {
+      "id": "",
+      "label": "Network Operations and Productivity Binjai"
+    },
+    "NOP MEDAN": {
+      "id": "",
+      "label": "Network Operations and Productivity Medan"
+    },
+    "NOP PEMATANG SIANTAR": {
+      "id": "",
+      "label": "Network Operations and Productivity Pematangsiantar"
+    },
+    "NOP RANTAU PRAPAT": {
+      "id": "",
+      "label": "Network Operations and Productivity Rantau Prapat"
+    },
+    "NOP PADANG SIDEMPUAN": {
+      "id": "",
+      "label": "Network Operations and Productivity Padang Sidempuan"
+    }
   }
 }
+
+

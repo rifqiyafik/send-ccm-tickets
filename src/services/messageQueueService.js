@@ -54,7 +54,11 @@ export function isQueueCancelled() {
 }
 
 // menghitung jeda setelah pesan terkirim, termasuk extra delay setiap 10 tiket per assignment.
-function getPostSendDelay(assignmentType) {
+function getPostSendDelay(assignmentType, options = {}) {
+  if (options.manualMode) {
+    return 300;
+  }
+
   const key = String(assignmentType || "UNKNOWN").toUpperCase();
   const sentCount = (sentCountByAssignment.get(key) || 0) + 1;
   sentCountByAssignment.set(key, sentCount);
@@ -95,12 +99,15 @@ export function enqueueTicketMessage(sendFn, meta = {}) {
 
       if (isCancelled) return;
 
-      const delayMs = getPostSendDelay(meta.assignmentType);
+      const delayMs = getPostSendDelay(meta.assignmentType, {
+        manualMode: Boolean(meta.manualMode),
+      });
       if (delayMs > 0) {
         logger.info("Waiting before next queued ticket message", {
           delayMs,
           orderId: meta.orderId,
           assignmentType: meta.assignmentType,
+          manualMode: Boolean(meta.manualMode),
         });
         await interruptibleSleep(delayMs);
       }

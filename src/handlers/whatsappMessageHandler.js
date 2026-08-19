@@ -161,8 +161,11 @@ function getDocumentImportOptions(text) {
     };
   }
 
-  const { command } = parseBotCommand(trimmedText);
-  const normalMode = [".import", ".send", "/import", "/send"].includes(command);
+  const { command, argument } = parseBotCommand(trimmedText);
+  const words = trimmedText.toLowerCase().split(/\s+/);
+  const manualMode = words.includes("manual");
+
+  const normalMode = [".import", ".send", "/import", "/send", ".manual", "/manual"].includes(command);
   const ticketOnlyMode = [".update", "/update"].includes(command);
   const summaryOnlyMode = [".summary", "/summary"].includes(command);
   const reminderMode = [".reminder", "/reminder"].includes(command);
@@ -181,6 +184,7 @@ function getDocumentImportOptions(text) {
     summaryOnlyMode,
     reminderMode,
     specialMode,
+    manualMode: manualMode || command === ".manual" || command === "/manual",
   };
 }
 
@@ -1232,6 +1236,7 @@ export async function sendReminderCommandResult(
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 export async function sendImportResult(sock, sourceJid, result, options = {}) {
   activeDeliveryCancelled = false;
+  const manualMode = Boolean(options.manualMode);
   const specialMode = Boolean(options.specialMode);
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   const summaryOnlyMode = Boolean(options.summaryOnlyMode);
@@ -1242,13 +1247,14 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     total: result.total_rows,
     valid: result.valid_count,
     skipped: result.skipped_count,
+    manualMode,
     specialMode,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
   });
 
-  const modeName = specialMode
+  const baseMode = specialMode
     ? ".special"
     : ticketOnlyMode
     ? ".update"
@@ -1256,8 +1262,11 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     ? ".summary"
     : reminderMode
     ? ".reminder"
-    : null;
-  const modeNote = specialMode
+    : ".import";
+  const modeName = manualMode ? `${baseMode} manual` : (baseMode === ".import" ? null : baseMode);
+  const modeNote = manualMode
+    ? "Mode `manual` aktif: Seluruh tiket, file Excel, dan reminder dikirimkan ke Telegram untuk diteruskan secara manual ke WhatsApp."
+    : specialMode
     ? "Mode `.special` aktif: Seluruh tiket valid dikirim ulang ke grup target dan sent_tickets.json diperbarui (bypass cek duplikat)."
     : ticketOnlyMode
     ? "Mode `.update` aktif: Detail tiket dikirim langsung ke grup target tanpa salam pembuka & reminder summary."
@@ -1458,7 +1467,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     sock,
     sourceJid,
     sentTicketPlan.sendable_tickets,
-    { skipPreamble: ticketOnlyMode },
+    { skipPreamble: ticketOnlyMode, manualMode },
   );
 }
 
@@ -1529,6 +1538,7 @@ async function sendTicketDetailsToTargetGroups(
         assignmentType: ticket.assignment_type,
         targetJid,
         pic: ticket.pic,
+        manualMode: Boolean(options.manualMode),
       });
       await enqueueTicketMessage(
         async () => {

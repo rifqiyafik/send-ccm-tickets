@@ -14,6 +14,7 @@ function createEmptyConfig() {
   return {
     authorized_groups: {},
     authorized_users: {},
+    target_groups: {},
   };
 }
 
@@ -44,6 +45,7 @@ async function loadConfig() {
     return {
       authorized_groups: parsed.authorized_groups || {},
       authorized_users: parsed.authorized_users || {},
+      target_groups: parsed.target_groups || {},
     };
   } catch (error) {
     if (error.code === "ENOENT") {
@@ -202,4 +204,30 @@ export function formatRegisteredTelegramChatsList({ groups, users }) {
   ];
 
   return lines.join("\n");
+}
+
+export async function getTelegramTargetGroups() {
+  const config = await loadConfig();
+  return config.target_groups || {};
+}
+
+export async function resolveTelegramTargetChatId(groupKey) {
+  if (!groupKey) return null;
+  const config = await loadConfig();
+  const targetGroups = config.target_groups || {};
+  const normalizedKey = String(groupKey).trim().toUpperCase();
+
+  // Exact match
+  if (targetGroups[normalizedKey]?.id) {
+    return String(targetGroups[normalizedKey].id).trim();
+  }
+
+  // Case-insensitive match
+  for (const [key, val] of Object.entries(targetGroups)) {
+    if (key.trim().toUpperCase() === normalizedKey && val?.id) {
+      return String(val.id).trim();
+    }
+  }
+
+  return null;
 }

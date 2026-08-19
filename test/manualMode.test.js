@@ -156,6 +156,32 @@ test("manual mode processes document without requiring active WhatsApp session",
 });
 
 test("replaceJidMentionsWithLabels replaces phone numbers with contact names for Telegram", async () => {
+  const baseDir = path.join("tmp", "manual-mode-mentions");
+  fs.rmSync(baseDir, { recursive: true, force: true });
+  fs.mkdirSync(baseDir, { recursive: true });
+
+  const waConfigPath = path.join(baseDir, "whatsapp.json");
+  fs.writeFileSync(
+    waConfigPath,
+    JSON.stringify(
+      {
+        mentions: {
+          Ferry: {
+            jid: "6282160478546@s.whatsapp.net",
+            label: "Bg Ferry CCM",
+          },
+          Herman: {
+            jid: "62811704400@s.whatsapp.net",
+            label: "Bg Herman PIC SQA Telkomsel",
+          },
+        },
+      },
+      null,
+      2,
+    ),
+  );
+  process.env.WHATSAPP_CONFIG_PATH = waConfigPath;
+
   const { replaceJidMentionsWithLabels } = await import(
     "../src/config/appConfig.js"
   );
@@ -169,6 +195,9 @@ test("replaceJidMentionsWithLabels replaces phone numbers with contact names for
   ].join("\n");
 
   const formatted = replaceJidMentionsWithLabels(rawText);
+  delete process.env.WHATSAPP_CONFIG_PATH;
+  fs.rmSync(baseDir, { recursive: true, force: true });
+
   assert.ok(
     formatted.includes("Mohon dibantu bang @Bg Ferry CCM"),
     "Phone number 6282160478546 should be replaced with @Bg Ferry CCM",

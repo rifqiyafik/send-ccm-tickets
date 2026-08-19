@@ -6,22 +6,47 @@ function buildTelegramUrl(token, method) {
   return `https://api.telegram.org/bot${token}/${method}`;
 }
 
-async function callTelegramApi(token, method, payload = {}) {
-  const response = await fetch(buildTelegramUrl(token, method), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
+async function callTelegramApi(token, method, payload = {}, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch(buildTelegramUrl(token, method), {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
 
-  const body = await response.json();
-  if (!response.ok || !body.ok) {
+    const body = await response.json();
+    if (response.ok && body.ok) {
+      return body.result;
+    }
+
+    const isRateLimit =
+      response.status === 429 ||
+      body.error_code === 429 ||
+      /too many requests/i.test(body.description || "");
+
+    if (isRateLimit && attempt < maxRetries) {
+      const retryAfterSec =
+        body.parameters?.retry_after ||
+        Number((body.description || "").match(/retry after (\d+)/i)?.[1]) ||
+        3;
+      const waitMs = (Math.min(retryAfterSec, 60) + 1) * 1000;
+      logger.warn(
+        `Telegram API ${method} rate-limited (429), retrying after ${waitMs}ms`,
+        {
+          attempt: attempt + 1,
+          retryAfterSec,
+          chatId: payload.chat_id,
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      continue;
+    }
+
     const message = body.description || response.statusText;
     throw new Error(`Telegram API ${method} failed: ${message}`);
   }
-
-  return body.result;
 }
 
 async function callTelegramFileApi(token, filePath) {
@@ -62,36 +87,64 @@ export function createTelegramBot({ config, handleUpdate }) {
       bytes: Buffer.isBuffer(document) ? document.length : undefined,
     });
 
-    const form = new FormData();
-    form.append("chat_id", String(chatId));
-    form.append(
-      "document",
-      new Blob([document], {
-        type:
-          options.mimetype ||
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      }),
-      options.fileName || options.filename || "document.xlsx",
-    );
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      const form = new FormData();
+      form.append("chat_id", String(chatId));
+      form.append(
+        "document",
+        new Blob([document], {
+          type:
+            options.mimetype ||
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        }),
+        options.fileName || options.filename || "document.xlsx",
+      );
 
-    if (options.caption) {
-      form.append("caption", options.caption);
-    }
-    if (options.parse_mode) {
-      form.append("parse_mode", options.parse_mode);
-    }
+      if (options.caption) {
+        form.append("caption", options.caption);
+      }
+      if (options.parse_mode) {
+        form.append("parse_mode", options.parse_mode);
+      }
 
-    const response = await fetch(buildTelegramUrl(config.bot_token, "sendDocument"), {
-      method: "POST",
-      body: form,
-    });
-    const body = await response.json();
-    if (!response.ok || !body.ok) {
+      const response = await fetch(
+        buildTelegramUrl(config.bot_token, "sendDocument"),
+        {
+          method: "POST",
+          body: form,
+        },
+      );
+      const body = await response.json();
+      if (response.ok && body.ok) {
+        return body.result;
+      }
+
+      const isRateLimit =
+        response.status === 429 ||
+        body.error_code === 429 ||
+        /too many requests/i.test(body.description || "");
+
+      if (isRateLimit && attempt < 3) {
+        const retryAfterSec =
+          body.parameters?.retry_after ||
+          Number((body.description || "").match(/retry after (\d+)/i)?.[1]) ||
+          3;
+        const waitMs = (Math.min(retryAfterSec, 60) + 1) * 1000;
+        logger.warn(
+          `Telegram API sendDocument rate-limited (429), retrying after ${waitMs}ms`,
+          {
+            attempt: attempt + 1,
+            retryAfterSec,
+            chatId,
+          },
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+
       const message = body.description || response.statusText;
       throw new Error(`Telegram API sendDocument failed: ${message}`);
     }
-
-    return body.result;
   }
 
   async function sendPhoto(chatId, photo, options = {}) {
@@ -101,34 +154,62 @@ export function createTelegramBot({ config, handleUpdate }) {
       bytes: Buffer.isBuffer(photo) ? photo.length : undefined,
     });
 
-    const form = new FormData();
-    form.append("chat_id", String(chatId));
-    form.append(
-      "photo",
-      new Blob([photo], {
-        type: options.mimetype || "image/png",
-      }),
-      options.fileName || options.filename || "qr.png",
-    );
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      const form = new FormData();
+      form.append("chat_id", String(chatId));
+      form.append(
+        "photo",
+        new Blob([photo], {
+          type: options.mimetype || "image/png",
+        }),
+        options.fileName || options.filename || "qr.png",
+      );
 
-    if (options.caption) {
-      form.append("caption", options.caption);
-    }
-    if (options.parse_mode) {
-      form.append("parse_mode", options.parse_mode);
-    }
+      if (options.caption) {
+        form.append("caption", options.caption);
+      }
+      if (options.parse_mode) {
+        form.append("parse_mode", options.parse_mode);
+      }
 
-    const response = await fetch(buildTelegramUrl(config.bot_token, "sendPhoto"), {
-      method: "POST",
-      body: form,
-    });
-    const body = await response.json();
-    if (!response.ok || !body.ok) {
+      const response = await fetch(
+        buildTelegramUrl(config.bot_token, "sendPhoto"),
+        {
+          method: "POST",
+          body: form,
+        },
+      );
+      const body = await response.json();
+      if (response.ok && body.ok) {
+        return body.result;
+      }
+
+      const isRateLimit =
+        response.status === 429 ||
+        body.error_code === 429 ||
+        /too many requests/i.test(body.description || "");
+
+      if (isRateLimit && attempt < 3) {
+        const retryAfterSec =
+          body.parameters?.retry_after ||
+          Number((body.description || "").match(/retry after (\d+)/i)?.[1]) ||
+          3;
+        const waitMs = (Math.min(retryAfterSec, 60) + 1) * 1000;
+        logger.warn(
+          `Telegram API sendPhoto rate-limited (429), retrying after ${waitMs}ms`,
+          {
+            attempt: attempt + 1,
+            retryAfterSec,
+            chatId,
+          },
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+
       const message = body.description || response.statusText;
       throw new Error(`Telegram API sendPhoto failed: ${message}`);
     }
-
-    return body.result;
   }
 
   async function editMessageText(chatId, messageId, text, options = {}) {

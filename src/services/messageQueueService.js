@@ -5,6 +5,7 @@ const logger = createLogger("messageQueueService");
 const MESSAGE_DELAY_MS = Number(process.env.WA_SEND_DELAY_MS || 5000);
 const BATCH_SIZE = Number(process.env.WA_BATCH_SIZE || 10);
 const BATCH_EXTRA_DELAY_MS = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000);
+const MANUAL_SEND_DELAY_MS = Number(process.env.TELEGRAM_SEND_DELAY_MS || 1500);
 
 let queue = Promise.resolve();
 const sentCountByAssignment = new Map();
@@ -56,7 +57,7 @@ export function isQueueCancelled() {
 // menghitung jeda setelah pesan terkirim, termasuk extra delay setiap 10 tiket per assignment.
 function getPostSendDelay(assignmentType, options = {}) {
   if (options.manualMode) {
-    return 300;
+    return MANUAL_SEND_DELAY_MS;
   }
 
   const key = String(assignmentType || "UNKNOWN").toUpperCase();

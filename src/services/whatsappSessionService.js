@@ -270,12 +270,46 @@ export function createWhatsAppSessionService({
     );
   }
 
-  function isExpiredSessionDisconnect(lastDisconnect) {
+  const authFailureCounts = new Map();
+  const sessionWasConnected = new Map();
+
+  function isExpiredSessionDisconnect(session, lastDisconnect) {
     const code = getDisconnectStatusCode(lastDisconnect);
-    return (
+    const isAuthError =
       code === WA_LOGGED_OUT_STATUS_CODE ||
-      code === WA_FORBIDDEN_STATUS_CODE
-    );
+      code === WA_FORBIDDEN_STATUS_CODE;
+
+    if (!isAuthError) {
+      if (session?.id) {
+        authFailureCounts.delete(session.id);
+      }
+      return false;
+    }
+
+    const wasConnected = Boolean(sessionWasConnected.get(session?.id));
+
+    // Jika sesi sebelumnya sudah connected lalu terputus dan mendapat 401/403 pada reconnect pertama,
+    // beri kesempatan 1x auto-recovery sebelum mematikan sesi permanen.
+    if (wasConnected) {
+      const currentFailures = (authFailureCounts.get(session?.id) || 0) + 1;
+      if (session?.id) {
+        authFailureCounts.set(session.id, currentFailures);
+      }
+
+      if (currentFailures <= 1 && desiredSessionId === session?.id) {
+        logger.warn(
+          "Transient WhatsApp auth failure detected on reconnect, attempting auto-recovery before logout",
+          {
+            sessionId: session?.id,
+            statusCode: code,
+            attempt: currentFailures,
+          },
+        );
+        return false;
+      }
+    }
+
+    return true;
   }
 
   async function handleLoggedOutSession(session, statusCode = 401) {
@@ -502,6 +536,10 @@ export function createWhatsAppSessionService({
       onConnectionUpdate: async ({ connection, lastDisconnect }) => {
         if (connection === "open") {
           qrNotifyCount = 0;
+          if (session?.id) {
+            authFailureCounts.delete(session.id);
+            sessionWasConnected.set(session.id, true);
+          }
           connectionState = "connected";
           await markWhatsAppSessionStatus(session.id, "connected");
           resolveSocketReady();
@@ -517,7 +555,7 @@ export function createWhatsAppSessionService({
         }
         if (connection === "close") {
           const statusCode = getDisconnectStatusCode(lastDisconnect);
-          if (isExpiredSessionDisconnect(lastDisconnect)) {
+          if (isExpiredSessionDisconnect(session, lastDisconnect)) {
             logger.warn("WhatsApp session credential expired or rejected, asking for re-auth", {
               sessionId: session.id,
               statusCode,
@@ -999,12 +1037,15 @@ export function createWhatsAppSessionService({
   async function cancelQr(chatId) {
     const key = chatId ? String(chatId) : null;
 
-    // Clear any pending re-auth confirmation for this user
+    // Clear any pending re-auth confirmation or switch for this user
     if (key) {
       pendingExpiredSessionReauth.delete(key);
+      pendingSessionSwitches.delete(key);
+      pendingLoginNames.delete(key);
     }
 
-    if (!controller?.getStatus?.().running || connectionState === "connected") {
+    // Jika sesi sudah terhubung atau tidak sedang menunggu scan QR, jangan hentikan sesi yang sudah login!
+    if (connectionState === "connected" || qrNotifyCount === 0 || !controller?.getStatus?.().running) {
       return [
         "ℹ️ **Tidak Ada Sesi QR Aktif**",
         "",

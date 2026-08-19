@@ -860,10 +860,6 @@ export function cancelActiveDelivery(reason = "Cancelled by user") {
   }
   activeProgressTracker.clear();
 
-  setTimeout(() => {
-    activeDeliveryCancelled = false;
-  }, 100);
-
   return true;
 }
 
@@ -1235,6 +1231,7 @@ export async function sendReminderCommandResult(
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 export async function sendImportResult(sock, sourceJid, result, options = {}) {
+  activeDeliveryCancelled = false;
   const specialMode = Boolean(options.specialMode);
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   const summaryOnlyMode = Boolean(options.summaryOnlyMode);
@@ -1274,10 +1271,11 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     text: formatImportSummary(result, { mode: modeName, modeNote }),
   });
 
-  if (!result.ok) {
-    logger.warn("Import result is not OK, stopping outbound ticket send", {
+  if (!result.ok || isDeliveryCancelled()) {
+    logger.warn("Import result is not OK or cancelled, stopping outbound ticket send", {
       reason: result.reason,
       missingColumns: result.missing_columns,
+      cancelled: isDeliveryCancelled(),
     });
     return;
   }
@@ -1288,6 +1286,10 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     await sock.sendMessage(sourceJid, {
       text: processingReport,
     });
+  }
+
+  if (isDeliveryCancelled()) {
+    return;
   }
 
   if (result.valid_tickets.length > 0) {
@@ -1304,6 +1306,10 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     });
   }
 
+  if (isDeliveryCancelled()) {
+    return;
+  }
+
   const sentTicketPlan = await createSentTicketPlan(
     result.valid_tickets,
     new Date(),
@@ -1312,6 +1318,10 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
   await sock.sendMessage(sourceJid, {
     text: formatSentTicketPlanReport(sentTicketPlan),
   });
+
+  if (isDeliveryCancelled()) {
+    return;
+  }
 
   const sqaAreaFollowUpMessage = formatSqaAreaFollowUpMessage(
     result.valid_tickets,
@@ -1360,12 +1370,26 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       );
     }
 
+    if (isDeliveryCancelled()) {
+      logger.info("Stopping reminder flow because delivery was cancelled", {
+        sourceJid,
+      });
+      return;
+    }
+
     await sendReminderCommandResult(
       sock,
       sourceJid,
       result.valid_tickets,
       options,
     );
+
+    if (isDeliveryCancelled()) {
+      logger.info("Skipping reminder success message because delivery was cancelled", {
+        sourceJid,
+      });
+      return;
+    }
 
     const reminderOutputLines = [
       "✅ **Reminder Berhasil Dikirim**",
@@ -1391,11 +1415,19 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
+  if (isDeliveryCancelled()) {
+    return;
+  }
+
   await sendDailyInProgressReminders(
     sock,
     sourceJid,
     sentTicketPlan.in_progress_reminder_tickets || [],
   );
+
+  if (isDeliveryCancelled()) {
+    return;
+  }
 
   if (ticketOnlyMode) {
     logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
@@ -1410,11 +1442,12 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     );
   }
 
-  if (sentTicketPlan.sendable_tickets.length === 0) {
-    logger.info("No tickets left to send after deduplication/SLA checks", {
+  if (isDeliveryCancelled() || sentTicketPlan.sendable_tickets.length === 0) {
+    logger.info("No tickets left to send or delivery cancelled after deduplication/SLA checks", {
       sourceJid,
       duplicate: sentTicketPlan.duplicate_tickets.length,
       outSla: sentTicketPlan.out_sla_tickets.length,
+      cancelled: isDeliveryCancelled(),
       inProgressReminder:
         sentTicketPlan.in_progress_reminder_tickets?.length || 0,
     });
@@ -1891,6 +1924,15 @@ export async function startBot(options = {}) {
     browser: Browsers.ubuntu("Chrome"),
     version,
     logger: pino({ level: BAILEYS_LOG_LEVEL }),
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    defaultQueryTimeoutMs: 60_000,
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 30_000,
+    retryRequestDelayMs: 500,
+    maxMsgRetryCount: 5,
+    generateHighQualityLinkPreview: false,
+    getMessage: async () => ({ conversation: "" }),
   });
   activeSock = sock;
 

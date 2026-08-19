@@ -268,4 +268,31 @@ test("sends QR code as PNG image when sendTelegramPhoto is provided", async () =
   context.cleanup();
 });
 
+test("cancelQr does not stop or close an already connected WhatsApp session", async () => {
+  const context = setupContext("whatsapp-session-cancel-connected");
+  const events = [];
+  const service = createWhatsAppSessionService({
+    sendTelegramMessage: async () => {},
+    startWhatsAppBot: createMockStartBot(events),
+  });
+
+  await upsertWhatsAppSession({
+    phone: "6282160478546",
+    label: "Rifqi Yafik",
+  });
+
+  await service.login("5085979770", "1");
+  assert.equal(service.getStatus().connection_state, "connected");
+
+  // Call cancelQr while session is connected
+  const cancelResult = await service.cancelQr("5085979770");
+  assert.match(cancelResult, /Tidak Ada Sesi QR Aktif/);
+  assert.equal(service.getStatus().connection_state, "connected");
+  // Ensure stop was NOT called
+  assert.equal(events.filter((e) => e.type === "stop").length, 0);
+
+  context.cleanup();
+});
+
+
 

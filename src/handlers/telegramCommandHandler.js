@@ -212,7 +212,20 @@ function createTelegramWhatsAppAdapter({
 }
 
 function isWhatsAppConnectionClosedError(error) {
-  return /connection closed/i.test(String(error?.message || ""));
+  const message = String(error?.message || "");
+  const statusCode =
+    error?.output?.statusCode ||
+    error?.data?.output?.statusCode ||
+    error?.output?.payload?.statusCode;
+
+  return (
+    /connection closed|timed out|request time-out|socket closed|stream errored|network error|econnreset/i.test(
+      message,
+    ) ||
+    statusCode === 408 ||
+    statusCode === 503 ||
+    statusCode === 515
+  );
 }
 
 function wait(ms) {

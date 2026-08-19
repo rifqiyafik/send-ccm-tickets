@@ -100,4 +100,25 @@ export function getMentionNameByJid(jid) {
   return null;
 }
 
+export function replaceJidMentionsWithLabels(text) {
+  if (!text || typeof text !== "string") return text;
+  const config = getAppConfig();
+  const rawMentions = config.raw?.mentions || {};
+
+  let result = text;
+  for (const [name, contact] of Object.entries(rawMentions)) {
+    if (!contact?.jid) continue;
+    const phone = String(contact.jid).split("@")[0].trim();
+    if (!phone) continue;
+
+    const label = String(contact.label || name).trim();
+    const tag = label.startsWith("@") ? label : `@${label}`;
+
+    const regex = new RegExp(`@${phone}\\b`, "g");
+    result = result.replace(regex, tag);
+  }
+
+  return result;
+}
+
 export { normalizeKey };

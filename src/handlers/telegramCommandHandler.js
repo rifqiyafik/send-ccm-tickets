@@ -15,6 +15,7 @@ import {
 import {
   getGroupKeyByJid,
   getMentionNameByJid,
+  replaceJidMentionsWithLabels,
 } from "../config/appConfig.js";
 import {
   cancelActiveDelivery,
@@ -158,26 +159,27 @@ function createTelegramWhatsAppAdapter({
         }
 
         if (payload?.text) {
+          const cleanText = replaceJidMentionsWithLabels(payload.text);
           if (payload.isProgress && editMessageText) {
             if (progressMessageId) {
               await editRichMessage(
                 editMessageText,
                 sourceChatId,
                 progressMessageId,
-                payload.text,
+                cleanText,
               );
               return { message_id: progressMessageId };
             }
             const sent = await sendRichMessage(
               sendMessage,
               sourceChatId,
-              payload.text,
+              cleanText,
             );
             progressMessageId = sent?.message_id || null;
             return sent;
           }
 
-          return await sendRichMessage(sendMessage, sourceChatId, payload.text);
+          return await sendRichMessage(sendMessage, sourceChatId, cleanText);
         }
 
         logger.warn("Telegram source payload skipped: unsupported payload", {
@@ -209,11 +211,14 @@ function createTelegramWhatsAppAdapter({
 
         const sendPayloadToChat = async (chatId, isFallback = false) => {
           if (payload?.document) {
+            const cleanCaption = replaceJidMentionsWithLabels(
+              payload.caption || "",
+            );
             const docCaption = [
               !targetChatId || isFallback
                 ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n`
                 : "",
-              payload.caption || "",
+              cleanCaption,
             ]
               .filter(Boolean)
               .join("\n");
@@ -227,6 +232,7 @@ function createTelegramWhatsAppAdapter({
           }
 
           if (payload?.text) {
+            const cleanText = replaceJidMentionsWithLabels(payload.text);
             const messageText = [
               isFallback
                 ? `⚠️ **[Target Telegram: ${targetLabel} (${destinationChatId}) Gagal Terkirim: Diteruskan ke Sini]**\n`
@@ -234,7 +240,7 @@ function createTelegramWhatsAppAdapter({
               !targetChatId || isFallback
                 ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
                 : "",
-              payload.text,
+              cleanText,
             ]
               .filter(Boolean)
               .join("");

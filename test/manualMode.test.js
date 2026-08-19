@@ -155,3 +155,28 @@ test("manual mode processes document without requiring active WhatsApp session",
   context.cleanup();
 });
 
+test("replaceJidMentionsWithLabels replaces phone numbers with contact names for Telegram", async () => {
+  const { replaceJidMentionsWithLabels } = await import(
+    "../src/config/appConfig.js"
+  );
+
+  const rawText = [
+    "Mohon dibantu bang @6282160478546",
+    "CC-20260818-00000019",
+    "CC bang @62811704400",
+    "",
+    "CC-20260818-00000019",
+  ].join("\n");
+
+  const formatted = replaceJidMentionsWithLabels(rawText);
+  assert.ok(
+    formatted.includes("Mohon dibantu bang @Bg Ferry CCM"),
+    "Phone number 6282160478546 should be replaced with @Bg Ferry CCM",
+  );
+  assert.ok(
+    formatted.includes("CC bang @Bg Herman PIC SQA Telkomsel"),
+    "Phone number 62811704400 should be replaced with @Bg Herman PIC SQA Telkomsel",
+  );
+});
+
+

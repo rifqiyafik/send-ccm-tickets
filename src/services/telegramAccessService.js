@@ -206,6 +206,16 @@ export function formatRegisteredTelegramChatsList({ groups, users }) {
   return lines.join("\n");
 }
 
+export function normalizeTelegramChatId(value) {
+  const str = String(value || "").trim();
+  if (!str) return "";
+  // Jika ID disalin dari Telegram Web (misal: -5279025555), Bot API membutuhkan prefix -100 (-1005279025555)
+  if (/^-[0-9]{9,12}$/.test(str) && !str.startsWith("-100")) {
+    return `-100${str.slice(1)}`;
+  }
+  return str;
+}
+
 export async function getTelegramTargetGroups() {
   const config = await loadConfig();
   return config.target_groups || {};
@@ -217,17 +227,19 @@ export async function resolveTelegramTargetChatId(groupKey) {
   const targetGroups = config.target_groups || {};
   const normalizedKey = String(groupKey).trim().toUpperCase();
 
+  let rawId = null;
   // Exact match
   if (targetGroups[normalizedKey]?.id) {
-    return String(targetGroups[normalizedKey].id).trim();
-  }
-
-  // Case-insensitive match
-  for (const [key, val] of Object.entries(targetGroups)) {
-    if (key.trim().toUpperCase() === normalizedKey && val?.id) {
-      return String(val.id).trim();
+    rawId = targetGroups[normalizedKey].id;
+  } else {
+    // Case-insensitive match
+    for (const [key, val] of Object.entries(targetGroups)) {
+      if (key.trim().toUpperCase() === normalizedKey && val?.id) {
+        rawId = val.id;
+        break;
+      }
     }
   }
 
-  return null;
+  return rawId ? normalizeTelegramChatId(rawId) : null;
 }

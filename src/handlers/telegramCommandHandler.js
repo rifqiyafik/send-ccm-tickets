@@ -207,36 +207,58 @@ function createTelegramWhatsAppAdapter({
           hasConfiguredGroup: Boolean(targetChatId),
         });
 
-        if (payload?.document) {
-          const docCaption = [
-            !targetChatId ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n` : "",
-            payload.caption || "",
-          ]
-            .filter(Boolean)
-            .join("\n");
+        const sendPayloadToChat = async (chatId, isFallback = false) => {
+          if (payload?.document) {
+            const docCaption = [
+              !targetChatId || isFallback
+                ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n`
+                : "",
+              payload.caption || "",
+            ]
+              .filter(Boolean)
+              .join("\n");
 
-          await sendDocument(destinationChatId, payload.document, {
-            mimetype: payload.mimetype,
-            fileName: payload.fileName,
-            caption: docCaption,
-          });
-          return;
+            await sendDocument(chatId, payload.document, {
+              mimetype: payload.mimetype,
+              fileName: payload.fileName,
+              caption: docCaption,
+            });
+            return;
+          }
+
+          if (payload?.text) {
+            const messageText = [
+              isFallback
+                ? `⚠️ **[Target Telegram: ${targetLabel} (${destinationChatId}) Gagal Terkirim: Diteruskan ke Sini]**\n`
+                : "",
+              !targetChatId || isFallback
+                ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
+                : "",
+              payload.text,
+            ]
+              .filter(Boolean)
+              .join("");
+
+            return await sendRichMessage(sendMessage, chatId, messageText);
+          }
+        };
+
+        try {
+          return await sendPayloadToChat(destinationChatId, false);
+        } catch (error) {
+          if (destinationChatId !== sourceChatId) {
+            logger.warn(
+              "Failed to send to Telegram target group, falling back to source chat",
+              {
+                destinationChatId,
+                sourceChatId,
+                error: error.message,
+              },
+            );
+            return await sendPayloadToChat(sourceChatId, true);
+          }
+          throw error;
         }
-
-        if (payload?.text) {
-          const messageText = [
-            !targetChatId
-              ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
-              : "",
-            payload.text,
-          ]
-            .filter(Boolean)
-            .join("");
-
-          return await sendRichMessage(sendMessage, destinationChatId, messageText);
-        }
-
-        return;
       }
 
       const whatsappSock =

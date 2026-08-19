@@ -1616,6 +1616,7 @@ async function sendTicketDetailsToTargetGroups(
           assignmentType: ticket.assignment_type,
           targetJid,
           pic: ticket.pic,
+          manualMode: Boolean(options.manualMode),
         },
       );
     }

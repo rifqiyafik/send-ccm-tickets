@@ -155,12 +155,3 @@ test("manual mode processes document without requiring active WhatsApp session",
   context.cleanup();
 });
 
-test("normalizeTelegramChatId correctly converts web telegram format to bot API supergroup ID", async () => {
-  const context = setupContext("manual-mode-normalize");
-
-  const normalized = await resolveTelegramTargetChatId("SQA");
-  assert.equal(normalized, "-1009999999991");
-
-  context.cleanup();
-});
-

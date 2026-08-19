@@ -206,16 +206,6 @@ export function formatRegisteredTelegramChatsList({ groups, users }) {
   return lines.join("\n");
 }
 
-export function normalizeTelegramChatId(value) {
-  const str = String(value || "").trim();
-  if (!str) return "";
-  // Jika ID disalin dari Telegram Web (misal: -5279025555), Bot API membutuhkan prefix -100 (-1005279025555)
-  if (/^-[0-9]{9,12}$/.test(str) && !str.startsWith("-100")) {
-    return `-100${str.slice(1)}`;
-  }
-  return str;
-}
-
 export async function getTelegramTargetGroups() {
   const config = await loadConfig();
   return config.target_groups || {};
@@ -241,5 +231,5 @@ export async function resolveTelegramTargetChatId(groupKey) {
     }
   }
 
-  return rawId ? normalizeTelegramChatId(rawId) : null;
+  return rawId ? String(rawId).trim() : null;
 }

@@ -5,7 +5,7 @@ const logger = createLogger("messageQueueService");
 const MESSAGE_DELAY_MS = Number(process.env.WA_SEND_DELAY_MS || 5000);
 const BATCH_SIZE = Number(process.env.WA_BATCH_SIZE || 10);
 const BATCH_EXTRA_DELAY_MS = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000);
-const MANUAL_SEND_DELAY_MS = Number(process.env.TELEGRAM_SEND_DELAY_MS || 1500);
+const MANUAL_SEND_DELAY_MS = Number(process.env.TELEGRAM_SEND_DELAY_MS || 5000);
 
 let queue = Promise.resolve();
 const sentCountByAssignment = new Map();

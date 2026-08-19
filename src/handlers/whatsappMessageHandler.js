@@ -1375,7 +1375,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
         sock,
         sourceJid,
         sentTicketPlan.sendable_tickets,
-        { skipPreamble: true },
+        { skipPreamble: true, ...options, manualMode },
       );
     }
 
@@ -1467,7 +1467,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     sock,
     sourceJid,
     sentTicketPlan.sendable_tickets,
-    { skipPreamble: ticketOnlyMode, manualMode },
+    { skipPreamble: ticketOnlyMode, ...options, manualMode },
   );
 }
 

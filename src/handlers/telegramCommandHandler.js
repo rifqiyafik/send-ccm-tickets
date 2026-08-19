@@ -364,6 +364,8 @@ function formatTelegramGroupHelp() {
     "",
     "⚠️ **Cek Koneksi WhatsApp Bot:** Pastikan sesi WhatsApp aktif (`/status` / `/login`) jika tidak menggunakan mode manual.",
     "",
+    "--------------------------------------------------",
+    "",
     "📤 **Upload File Excel (`.xlsx`) dengan Caption:**",
     "• `.import` : Flow normal ke WhatsApp (tiket, Excel balasan, & summary).",
     "• `.update` : Kirim detail tiket eskalasi saja ke WhatsApp.",

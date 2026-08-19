@@ -610,9 +610,11 @@ export function createWhatsAppSessionService({
     const sessions = await listWhatsAppSessions();
 
     if (!value) {
+      const isRunning = isSessionRunning() && connectionState === "connected";
       return formatWhatsAppSessionsList({
         sessions,
         activeSessionId: registry.active_session_id,
+        isRunning,
         title: "📱 Session WhatsApp tersedia",
       });
     }
@@ -787,9 +789,11 @@ export function createWhatsAppSessionService({
 
   async function listSessions() {
     const registry = await getWhatsAppSessionRegistry();
+    const isRunning = isSessionRunning() && connectionState === "connected";
     return formatWhatsAppSessionsList({
       sessions: await listWhatsAppSessions(),
       activeSessionId: registry.active_session_id,
+      isRunning,
     });
   }
 
@@ -801,9 +805,11 @@ export function createWhatsAppSessionService({
       sessions[0];
 
     if (!session) {
+      const isRunning = isSessionRunning() && connectionState === "connected";
       return formatWhatsAppSessionsList({
         sessions,
         activeSessionId: registry.active_session_id,
+        isRunning,
       });
     }
 
@@ -816,10 +822,12 @@ export function createWhatsAppSessionService({
     const value = String(selector || "").trim();
 
     if (!value) {
+      const isRunning = isSessionRunning() && connectionState === "connected";
       return [
         formatWhatsAppSessionsList({
           sessions,
           activeSessionId: registry.active_session_id,
+          isRunning,
           title: "🛑 Stop WhatsApp Session",
         }),
         "",

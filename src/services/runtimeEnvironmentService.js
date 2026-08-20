@@ -247,7 +247,7 @@ export function formatEnvironmentStatus() {
   let configReadable = false;
   let readError = "";
 
-  const sendDelayMs = Number(process.env.WA_SEND_DELAY_MS || 5000);
+  const sendDelayMs = Number(process.env.WA_SEND_DELAY_MS || 10000);
   const batchSize = Number(process.env.WA_BATCH_SIZE || 10);
   const batchExtraDelayMs = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000);
   const targetDelayMs = Number(process.env.TARGET_GROUP_COMPLETION_DELAY_MS || 10000);

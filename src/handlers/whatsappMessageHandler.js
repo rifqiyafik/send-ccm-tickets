@@ -692,6 +692,8 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
     text: formatTargetGroupOpeningMessage(),
   });
 
+  await sleepWithCancellation(1500);
+
   const workbookBuffer = await createFilteredTicketsExcel({
     valid_tickets: tickets,
   });
@@ -869,6 +871,20 @@ export function cancelActiveDelivery(reason = "Cancelled by user") {
 
 export function isDeliveryCancelled() {
   return activeDeliveryCancelled || isQueueCancelled();
+}
+
+function sleepWithCancellation(ms) {
+  if (ms <= 0 || isDeliveryCancelled()) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    activeDeliverySleepResolve = resolve;
+    activeDeliverySleepTimer = setTimeout(() => {
+      activeDeliverySleepTimer = null;
+      activeDeliverySleepResolve = null;
+      resolve();
+    }, ms);
+  });
 }
 
 async function sendTicketProgressMessage(sock, sourceJid, text, meta = {}) {
@@ -1058,7 +1074,12 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
     tickets: reminderTickets.length,
   });
 
-  for (const [targetJid, tickets] of remindersByTarget.entries()) {
+  const reminderEntries = [...remindersByTarget.entries()];
+  const delayMs = Number(process.env.WA_SEND_DELAY_MS || 10000);
+
+  for (let i = 0; i < reminderEntries.length; i++) {
+    if (isDeliveryCancelled()) break;
+    const [targetJid, tickets] = reminderEntries[i];
     try {
       await sock.sendMessage(
         targetJid,
@@ -1075,6 +1096,10 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
         tickets,
         error,
       });
+    }
+
+    if (i < reminderEntries.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+      await sleepWithCancellation(delayMs);
     }
   }
 }
@@ -1100,11 +1125,16 @@ export async function sendReminderCommandResult(
     (ticket) => ticket.assignment_type === "NOP",
   );
 
+  const delayMs = Boolean(options.manualMode)
+    ? Number(process.env.TELEGRAM_SEND_DELAY_MS || 5000)
+    : Number(process.env.WA_SEND_DELAY_MS || 10000);
+
   logger.info("Processing .reminder command result", {
     sourceJid,
     totalValid: validTickets.length,
     sqaCount: sqaTickets.length,
     nopCount: nopTickets.length,
+    delayMs,
   });
 
   // 1. Process NOP tickets: send reminder to NOP target groups
@@ -1115,7 +1145,10 @@ export async function sendReminderCommandResult(
       nopTickets,
     );
 
-    for (const [targetJid, tickets] of nopRemindersByTarget.entries()) {
+    const nopEntries = [...nopRemindersByTarget.entries()];
+    for (let i = 0; i < nopEntries.length; i++) {
+      if (isDeliveryCancelled()) break;
+      const [targetJid, tickets] = nopEntries[i];
       try {
         const payload = formatInProgressReminderMessagePayload(tickets, {
           isReminderCmd: true,
@@ -1137,11 +1170,19 @@ export async function sendReminderCommandResult(
           error,
         });
       }
+
+      if (i < nopEntries.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+        await sleepWithCancellation(delayMs);
+      }
     }
   }
 
   // 2. Process SQA tickets: group by ccm_handling, send JAPRI (Direct Message)
-  if (sqaTickets.length > 0) {
+  if (sqaTickets.length > 0 && !isDeliveryCancelled()) {
+    if (nopTickets.length > 0 && delayMs > 0) {
+      await sleepWithCancellation(delayMs);
+    }
+
     const sqaGroupedByCcm = new Map();
     for (const ticket of sqaTickets) {
       const ccmName = ticket.ccm_handling || ticket.pic_sqa || "UNKNOWN";
@@ -1151,7 +1192,10 @@ export async function sendReminderCommandResult(
       sqaGroupedByCcm.set(key, group);
     }
 
-    for (const { name, tickets } of sqaGroupedByCcm.values()) {
+    const sqaValues = [...sqaGroupedByCcm.values()];
+    for (let i = 0; i < sqaValues.length; i++) {
+      if (isDeliveryCancelled()) break;
+      const { name, tickets } = sqaValues[i];
       const contact = getMentionContact(name);
       const payload = formatInProgressReminderMessagePayload(tickets, {
         isReminderCmd: true,
@@ -1193,6 +1237,10 @@ export async function sendReminderCommandResult(
           text: `⚠️ **[FALLBACK SQA REMINDER]**\nNomor WA untuk PIC CCM **${name}** belum terdaftar di config mentions.\nBerikut reminder tiketnya:\n\n${payload.text}`,
         });
       }
+
+      if (i < sqaValues.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+        await sleepWithCancellation(delayMs);
+      }
     }
 
     // Send SQA reminder summary to MAIN SQA group with pic_sqa tags
@@ -1201,7 +1249,10 @@ export async function sendReminderCommandResult(
       cluster_area: "MAIN SQA",
     });
 
-    if (mainSqaJid) {
+    if (mainSqaJid && !isDeliveryCancelled()) {
+      if (delayMs > 0) {
+        await sleepWithCancellation(delayMs);
+      }
       try {
         const mainSqaPayload = formatInProgressReminderMessagePayload(
           sqaTickets,
@@ -1561,7 +1612,7 @@ async function sendTicketDetailsToTargetGroups(
             const currentOrder = ticket.order_id || "-";
             const nextTicket = tickets[sentCount];
             const delaySec = Math.round(
-              Number(process.env.WA_SEND_DELAY_MS || 20000) / 1000,
+              Number(process.env.WA_SEND_DELAY_MS || 10000) / 1000,
             );
 
             const progressLines = [

@@ -27,6 +27,7 @@ import { acquireProcessLock } from "../utils/processLock.js";
 import {
   cancelQueue,
   enqueueTicketMessage,
+  getQueueConfig,
   isQueueCancelled,
 } from "../services/messageQueueService.js";
 import { getWhatsAppAccessDecision } from "../services/accessControlService.js";

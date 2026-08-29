@@ -43,6 +43,10 @@
     "NOP PADANG SIDEMPUAN": {
       "jid": "120363029098307479@g.us",
       "label": "Network Operations and Productivity Padang Sidempuan"
+    },
+    "SITE VISIT": {
+      "jid": "120363000000000099@g.us",
+      "label": "CCM Technical Support Site Visit"
     }
   },
   "mentions": {
@@ -137,6 +141,38 @@
     "Nasrul Amin S": {
       "jid": "62811779182@s.whatsapp.net",
       "label": "Bg Nasrul Amin S NS RAP"
+    },
+    "Willy Panjaitan": {
+      "jid": "6285207769555@s.whatsapp.net",
+      "label": "Willy Site Visit CCM Telkomsel"
+    },
+    "Riski": {
+      "jid": "62811688993@s.whatsapp.net",
+      "label": "Riski Site Visit CCM Telkomsel"
+    },
+    "Pewenri": {
+      "jid": "6285260045597@s.whatsapp.net",
+      "label": "Pewenri Site Visit CCM Telkomsel"
+    },
+    "Dedi": {
+      "jid": "6281214456231@s.whatsapp.net",
+      "label": "Dedi Site Visit CCM Telkomsel"
+    },
+    "Januar": {
+      "jid": "628116103388@s.whatsapp.net",
+      "label": "Januar Site Visit CCM Telkomsel"
+    },
+    "Okis": {
+      "jid": "6281397033246@s.whatsapp.net",
+      "label": "Okis Site Visit CCM Telkomsel"
+    },
+    "Rudi": {
+      "jid": "6282272329397@s.whatsapp.net",
+      "label": "Rudi Site Visit CCM Telkomsel"
+    },
+    "Dedek": {
+      "jid": "6281321111779@s.whatsapp.net",
+      "label": "Dedek Site Visit CCM Telkomsel"
     }
   }
 }

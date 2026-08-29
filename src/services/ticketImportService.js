@@ -584,6 +584,23 @@ function createFallbackResolution(field, source, missingFields = []) {
   };
 }
 
+const CCH_SUGGESTION_COLUMNS = [
+  "CCH Suggestion(L1 Assign_cch_suggestion)",
+  "cch_suggestion_2(L1 Assign)",
+  "cch_suggestion_3(L1 Assign)",
+  "CCH Suggestion 2(L1 Assign)",
+  "CCH Suggestion 3(L1 Assign)",
+];
+
+function hasReadableSiteOrCell(textInput) {
+  const text = String(textInput ?? "");
+  if (!text) return false;
+  if (/#?\s*site\s*(?:cover|id|name)\s*[:=-]/i.test(text)) return true;
+  if (/\b[EN]_[A-Z]{2,5}\d{2,5}\w*\b/i.test(text)) return true;
+  if (/the site name is\s+[A-Z0-9_-]+/i.test(text)) return true;
+  return false;
+}
+
 // mendeteksi CCH Suggestion kosong/null/invalid agar bisa fallback ke Problem Analysis NSH.
 function isInvalidAnalysisText(value) {
   const text = String(value ?? "").trim();
@@ -602,24 +619,38 @@ function isInvalidAnalysisText(value) {
   );
 }
 
-// memilih teks analisis untuk pesan, prioritas CCH Suggestion lalu fallback Problem Analysis NSH.
+// memilih teks analisis untuk pesan, prioritas CCH Suggestion (1/2/3) yang valid & informatif, fallback Problem Analysis NSH.
 function getAnalysisText(row) {
-  const cchSuggestion = row[CCH_SUGGESTION_COLUMN];
-  if (!isInvalidAnalysisText(cchSuggestion)) {
-    logger.debug("Using CCH Suggestion as analysis text", {
-      orderId: row["Order ID"],
-    });
-    return {
-      text: cleanMultilineText(cchSuggestion),
-      fallback: null,
-    };
+  const candidates = [];
+
+  for (const col of CCH_SUGGESTION_COLUMNS) {
+    if (
+      Object.prototype.hasOwnProperty.call(row, col) ||
+      row[col] !== undefined
+    ) {
+      const val = row[col];
+      if (!isInvalidAnalysisText(val)) {
+        candidates.push({
+          source: col,
+          text: cleanMultilineText(val),
+          hasSite: hasReadableSiteOrCell(val),
+        });
+      }
+    }
   }
 
-  const fallbackText = cleanMultilineText(row[PROBLEM_ANALYSIS_NSH_COLUMN]);
-  if (isInvalidAnalysisText(fallbackText)) {
+  const nshText = row[PROBLEM_ANALYSIS_NSH_COLUMN];
+  if (!isInvalidAnalysisText(nshText)) {
+    candidates.push({
+      source: PROBLEM_ANALYSIS_NSH_COLUMN,
+      text: cleanMultilineText(nshText),
+      hasSite: hasReadableSiteOrCell(nshText),
+    });
+  }
+
+  if (candidates.length === 0) {
     logger.warn("Analysis text fallback is unavailable", {
       orderId: row["Order ID"],
-      cchSuggestion: cleanTableValue(cchSuggestion),
     });
     return {
       text: "",
@@ -627,15 +658,27 @@ function getAnalysisText(row) {
     };
   }
 
-  logger.info("Analysis text fallback used from Problem Analysis NSH", {
+  // Utamakan kandidat yang memiliki nama Site/Cell yang terbaca dibanding hanya angka CGI opaque
+  const preferred = candidates.find((c) => c.hasSite) || candidates[0];
+
+  const isPrimary = preferred.source === CCH_SUGGESTION_COLUMN;
+  if (isPrimary) {
+    logger.debug("Using CCH Suggestion as analysis text", {
+      orderId: row["Order ID"],
+    });
+    return {
+      text: preferred.text,
+      fallback: null,
+    };
+  }
+
+  logger.info("Analysis text fallback used", {
     orderId: row["Order ID"],
+    source: preferred.source,
   });
   return {
-    text: fallbackText,
-    fallback: createFallbackResolution(
-      "analysis_text",
-      PROBLEM_ANALYSIS_NSH_COLUMN,
-    ),
+    text: preferred.text,
+    fallback: createFallbackResolution("analysis_text", preferred.source),
   };
 }
 

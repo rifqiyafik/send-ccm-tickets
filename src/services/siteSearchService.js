@@ -62,6 +62,10 @@ export function extractSiteCoverFromRow(row, siteIndex = null) {
   const candidateColumns = [
     PROBLEM_ANALYSIS_NSH_COLUMN,
     "CCH Suggestion(L1 Assign_cch_suggestion)",
+    "cch_suggestion_2(L1 Assign)",
+    "cch_suggestion_3(L1 Assign)",
+    "CCH Suggestion 2(L1 Assign)",
+    "CCH Suggestion 3(L1 Assign)",
     "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)",
     "Description",
     "Problem Analysis",
@@ -194,7 +198,27 @@ export function createSiteResolver(options = {}) {
   return function resolveSiteFromTicketRow(row) {
     logger.info("Resolving site from ticket row", { orderId: row?.["Order ID"] });
     const directSiteId = normalizeText(row?.[SITE_ID1_COLUMN]);
-    const siteId = directSiteId || extractSiteCover(row?.[PROBLEM_ANALYSIS_NSH_COLUMN]);
+    const isDirectSiteOpaque =
+      /^\d{6,}$/i.test(directSiteId) || /^[0-9A-F]{10,}$/i.test(directSiteId);
+
+    let siteId =
+      (!isDirectSiteOpaque && directSiteId) ||
+      extractSiteCover(row?.[PROBLEM_ANALYSIS_NSH_COLUMN]);
+    let source =
+      directSiteId && !isDirectSiteOpaque
+        ? "site_id1_column"
+        : "problem_analysis_nsh";
+
+    if (!siteId || (siteIndex && !siteIndex.has(siteId))) {
+      const coverFromRow = extractSiteCoverFromRow(row, siteIndex);
+      if (coverFromRow) {
+        siteId = coverFromRow;
+        source = "extracted_from_row";
+      } else if (!siteId && directSiteId) {
+        siteId = directSiteId;
+        source = "site_id1_column";
+      }
+    }
 
     if (!siteId) {
       logger.warn("Site resolution failed: no site_id1 and no site cover", {
@@ -228,7 +252,7 @@ export function createSiteResolver(options = {}) {
       vendor: siteRecord.vendor || "",
       cluster_area: siteRecord.departement_ns || "",
       departement_ns: siteRecord.departement_ns || "",
-      source: directSiteId ? "site_id1_column" : "problem_analysis_nsh",
+      source,
     };
     logger.info("Site resolved", result);
     return result;

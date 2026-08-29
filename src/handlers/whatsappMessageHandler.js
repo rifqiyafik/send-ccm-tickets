@@ -35,12 +35,14 @@ import {
   createSentTicketPlan,
   formatSentTicketPlanReport,
   formatSqaAreaFollowUpMessage,
+  getSentTicketRecord,
   markTicketAsSent,
 } from "../services/sentTicketService.js";
 import {
   createFilteredTicketsExcel,
   formatEscalationMessagePayload,
   formatRepetitiveEscalationPayload,
+  formatSiteVisitCombinedReminderPayload,
   formatInProgressReminderMessagePayload,
   formatImportSummary,
   formatProcessingReport,
@@ -1083,11 +1085,20 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
   for (let i = 0; i < reminderEntries.length; i++) {
     if (isDeliveryCancelled()) break;
     const [targetJid, tickets] = reminderEntries[i];
+    const isSiteVisitGroup = tickets.some(
+      (t) =>
+        t.is_repetitive ||
+        t.targetGroupKey === "SITE VISIT" ||
+        t.assignment_type === "SITE_VISIT",
+    );
+    const payload = isSiteVisitGroup
+      ? formatSiteVisitCombinedReminderPayload(tickets)
+      : formatInProgressReminderMessagePayload(tickets);
+
     try {
-      await sock.sendMessage(
-        targetJid,
-        formatInProgressReminderMessagePayload(tickets),
-      );
+      if (payload.text) {
+        await sock.sendMessage(targetJid, payload);
+      }
 
       for (const ticket of tickets) {
         await markTicketAsSent(ticket, { sourceJid, targetJid });
@@ -1312,19 +1323,47 @@ export async function sendReminderCommandResult(
       if (isDeliveryCancelled()) break;
       const [targetJid, tickets] = siteVisitEntries[i];
       try {
-        for (let j = 0; j < tickets.length; j++) {
+        const newTickets = [];
+        const reminderTickets = [];
+
+        for (const ticket of tickets) {
+          const sentRecord = await getSentTicketRecord(ticket.order_id);
+          if (!sentRecord || !sentRecord.sent_at) {
+            newTickets.push(ticket);
+          } else {
+            reminderTickets.push(ticket);
+          }
+        }
+
+        // 1. Kirim detail lengkap untuk tiket yang belum pernah dikirim ke Site Visit
+        for (let j = 0; j < newTickets.length; j++) {
           if (isDeliveryCancelled()) break;
-          const ticket = tickets[j];
+          const ticket = newTickets[j];
           const payload = formatRepetitiveEscalationPayload(ticket);
           await sock.sendMessage(targetJid, payload);
-          logger.info("Sent Site Visit repetitive reminder to target group", {
+          logger.info("Sent Site Visit first-time detail escalation to target group", {
             targetJid,
             orderId: ticket.order_id,
           });
           await markTicketAsSent(ticket, { sourceJid, targetJid });
 
-          if (j < tickets.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+          if ((j < newTickets.length - 1 || reminderTickets.length > 0) && delayMs > 0 && !isDeliveryCancelled()) {
             await sleepWithCancellation(delayMs);
+          }
+        }
+
+        // 2. Kirim template reminder gabungan untuk tiket yang sudah pernah dikirim sebelumnya
+        if (reminderTickets.length > 0 && !isDeliveryCancelled()) {
+          const combinedPayload = formatSiteVisitCombinedReminderPayload(reminderTickets, options);
+          if (combinedPayload.text) {
+            await sock.sendMessage(targetJid, combinedPayload);
+            logger.info("Sent Site Visit combined reminder to target group", {
+              targetJid,
+              ticketsCount: reminderTickets.length,
+            });
+            for (const ticket of reminderTickets) {
+              await markTicketAsSent(ticket, { sourceJid, targetJid });
+            }
           }
         }
       } catch (error) {

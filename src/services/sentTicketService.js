@@ -635,6 +635,13 @@ export async function markTicketAsSent(ticket, metadata = {}) {
   await writeStore(store);
 }
 
+export async function getSentTicketRecord(orderId) {
+  const normalized = normalizeOrderId(orderId);
+  if (!normalized) return null;
+  const store = await readStore();
+  return store.tickets?.[normalized] || null;
+}
+
 export function formatSentTicketPlanReport(plan) {
   const invalidMessageTickets = plan.invalid_message_tickets || [];
   const fallbackResolvedTickets = plan.fallback_resolved_tickets || [];

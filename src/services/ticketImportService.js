@@ -1735,6 +1735,7 @@ export {
   formatEscalationMessagePayload,
   formatEscalationMessage,
   formatRepetitiveEscalationPayload,
+  formatSiteVisitCombinedReminderPayload,
   extractCustomerDetailsSummary,
   extractRepetitiveNote,
   getReopenCount,

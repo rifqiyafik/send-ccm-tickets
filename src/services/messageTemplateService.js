@@ -5,6 +5,7 @@ import { getMentionContact } from "../config/appConfig.js";
 import { extractSiteCover } from "./siteSearchService.js";
 import {
   resolveTsSiteVisit,
+  resolveTsSiteVisitEntry,
   formatTsMentionHeader,
 } from "./siteVisitService.js";
 
@@ -769,6 +770,117 @@ export function formatRepetitiveEscalationPayload(ticket) {
   return {
     text: lines.join("\n").trim(),
     mentions,
+  };
+}
+
+export function formatSiteVisitCombinedReminderPayload(tickets, options = {}) {
+  if (!tickets || tickets.length === 0) {
+    return { text: "", mentions: [] };
+  }
+
+  const summary = summarizeSla(tickets);
+  const allMentions = [];
+
+  // Group tickets by TS Area
+  const areaGroups = new Map();
+  for (const ticket of tickets) {
+    const { area, tsList } = resolveTsSiteVisitEntry(ticket);
+    const groupKey = area.toUpperCase();
+    const group = areaGroups.get(groupKey) || {
+      area,
+      tsList,
+      tickets: [],
+    };
+    group.tickets.push(ticket);
+    areaGroups.set(groupKey, group);
+  }
+
+  const lines = [
+    "🔔 *REMINDER TIKET REPETITIF / SITE VISIT*",
+    "",
+    "Selamat pagi/siang abang-abang, izin mengingatkan kembali progres tiket complain repetitif yang masih berstatus *In Progress* di Sumbagut.",
+    "",
+    "📊 *Summary:*",
+    "*Total | In SLA | Out SLA*",
+    `*${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
+  ];
+
+  for (const group of areaGroups.values()) {
+    const tsHeader = formatTsMentionHeader(group.tsList);
+    lines.push(
+      "",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `👤 *TS ${group.area}*: ${tsHeader}`,
+      "",
+    );
+
+    group.tsList.forEach((ts) => {
+      if (ts.jid) allMentions.push(ts.jid);
+    });
+
+    group.tickets.forEach((ticket, idx) => {
+      const rawDesc = String(ticket.raw_description || ticket.notes || "");
+      const locMatch = rawDesc.match(/Lokasi Pelanggan(?: \(alamat\))?\s*:\s*([^\r\n]+)/i);
+      const lokasi = locMatch ? locMatch[1].trim() : (ticket.city || ticket.nsa || "-");
+
+      const compMatch = rawDesc.match(/(?:Detail Complain|Detail Complaint|kendala)\s*:\s*([^\r\n]+)/i);
+      const kendala = compMatch ? compMatch[1].trim() : (ticket.incident_domain || ticket.symptom || "-");
+
+      const siteId = cleanTableValue(ticket.site_id) || cleanTableValue(ticket.site_name) || "-";
+      const slaStatus = ticket.sla_status || "IN SLA";
+      const due = ticket.resolve_target_22h_text || "-";
+
+      lines.push(
+        `${idx + 1}. *${ticket.order_id}* | ${slaStatus} | ${siteId}`,
+        `   📍 ${lokasi}`,
+        `   ⚠️ Kendala: ${kendala}`,
+        `   ⏱️ Due: ${due}`,
+      );
+      if (idx < group.tickets.length - 1) {
+        lines.push("");
+      }
+    });
+  }
+
+  // CC SQA & Bg Bagus
+  const sqaPics = new Set();
+  tickets.forEach((t) => {
+    if (t.pic_sqa) sqaPics.add(t.pic_sqa);
+  });
+
+  const sqaTags = [];
+  sqaPics.forEach((pic) => {
+    const tag = resolveMentionTag(pic, "PIC SQA Telkomsel");
+    if (tag.jid && !sqaTags.some((st) => st.jid === tag.jid)) {
+      sqaTags.push(tag);
+      allMentions.push(tag.jid);
+    }
+  });
+
+  const bagusTag = resolveMentionTag("Bagus", "PIC SQA Telkomsel");
+  if (bagusTag.jid && !sqaTags.some((st) => st.jid === bagusTag.jid)) {
+    sqaTags.push(bagusTag);
+    allMentions.push(bagusTag.jid);
+  }
+
+  const sqaCcText = sqaTags.length > 0
+    ? sqaTags.map((t) => `bang ${t.text}`).join(" & ")
+    : "bang -";
+
+  lines.push(
+    "",
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    "👥 *CC Pengawalan & Koordinasi:*",
+    sqaCcText,
+    "",
+    "Mohon kesediaan dan kerjasamanya untuk dapat segera diagendakan kunjungan/pengecekan ke site terkait agar keluhan pelanggan tidak berulang kembali dan SLA tetap aman ya bang 🙏🏻",
+    "",
+    "Semangat dan terima kasih atas bantuannya! 💪🏻",
+  );
+
+  return {
+    text: lines.join("\n").trim(),
+    mentions: [...new Set(allMentions.filter(Boolean))],
   };
 }
 

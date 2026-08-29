@@ -245,3 +245,45 @@ test("resolveTargetJid in manualMode returns synthetic key when WA JID is empty"
   );
   assert.ok(result === "manual:SITE VISIT" || result.includes("g.us"));
 });
+
+test("formatSiteVisitCombinedReminderPayload produces multi-area grouped reminder with SQA and Bg Bagus CC", async () => {
+  const { formatSiteVisitCombinedReminderPayload } = await import(
+    "../src/services/messageTemplateService.js"
+  );
+
+  const tickets = [
+    {
+      order_id: "CC-20260830-00000640",
+      city: "KOTA MEDAN",
+      site_id: "MDN442",
+      sla_status: "IN SLA",
+      resolve_target_22h_text: "Senin / 31 Agu 2026, 04:10 PM",
+      pic_sqa: "Fernando Pasaribu",
+      raw_description: "Lokasi Pelanggan (alamat) : Sei Putih Barat, Kota Medan\nDetail Complain : Jaringan lambat & sinyal drop",
+    },
+    {
+      order_id: "CC-20260830-00000642",
+      city: "SIMALUNGUN",
+      site_id: "STR005",
+      sla_status: "OUT SLA",
+      resolve_target_22h_text: "Minggu / 30 Agu 2026, 10:00 AM",
+      pic_sqa: "Ahsan",
+      raw_description: "Lokasi Pelanggan (alamat) : Simalungun\nDetail Complain : Sinyal hilang timbul",
+    },
+  ];
+
+  const payload = formatSiteVisitCombinedReminderPayload(tickets);
+  assert.ok(payload.text.includes("REMINDER TIKET REPETITIF / SITE VISIT"));
+  assert.ok(payload.text.includes("Summary:"));
+  assert.ok(payload.text.includes("TS MEDAN"));
+  assert.ok(payload.text.includes("TS SIANTAR"));
+  assert.ok(payload.text.includes("CC-20260830-00000640"));
+  assert.ok(payload.text.includes("CC-20260830-00000642"));
+  assert.ok(payload.text.includes("CC Pengawalan & Koordinasi:"));
+  assert.ok(payload.text.includes("Mohon kesediaan dan kerjasamanya"));
+
+  // Mentions should contain TS and SQA tags
+  assert.ok(payload.mentions.includes("6285207769555@s.whatsapp.net")); // Willy
+  assert.ok(payload.mentions.includes("6282272329397@s.whatsapp.net")); // Rudi
+  assert.ok(payload.mentions.includes("628118035472@s.whatsapp.net")); // Bagus
+});

@@ -41,7 +41,7 @@ export function loadTsSiteVisitData(filePath = resolveTsDataPath()) {
 
 const defaultTsRows = loadTsSiteVisitData();
 
-export function resolveTsSiteVisit(ticket, rows = defaultTsRows) {
+export function resolveTsSiteVisitEntry(ticket, rows = defaultTsRows) {
   const normalizedCity = normalizeText(ticket?.city);
   const clusterArea = normalizeText(ticket?.cluster_area || ticket?.nsa || ticket?.assignment_group);
 
@@ -57,7 +57,10 @@ export function resolveTsSiteVisit(ticket, rows = defaultTsRows) {
           area: entry.area,
           tsCount: entry.ts?.length,
         });
-        return formatTsList(entry.ts);
+        return {
+          area: entry.area,
+          tsList: formatTsList(entry.ts),
+        };
       }
     }
   }
@@ -77,7 +80,10 @@ export function resolveTsSiteVisit(ticket, rows = defaultTsRows) {
           area: entry.area,
           tsCount: entry.ts?.length,
         });
-        return formatTsList(entry.ts);
+        return {
+          area: entry.area,
+          tsList: formatTsList(entry.ts),
+        };
       }
     }
   }
@@ -88,7 +94,15 @@ export function resolveTsSiteVisit(ticket, rows = defaultTsRows) {
     orderId: ticket?.order_id,
     fallbackArea: defaultEntry?.area,
   });
-  return formatTsList(defaultEntry?.ts || []);
+  return {
+    area: defaultEntry?.area || "MEDAN",
+    tsList: formatTsList(defaultEntry?.ts || []),
+  };
+}
+
+export function resolveTsSiteVisit(ticket, rows = defaultTsRows) {
+  const entry = resolveTsSiteVisitEntry(ticket, rows);
+  return entry.tsList;
 }
 
 function formatTsList(tsRawList = []) {

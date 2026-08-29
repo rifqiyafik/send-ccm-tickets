@@ -315,6 +315,13 @@ function cleanupExpiredRecords(store, now = new Date()) {
 
 function resolveEffectiveTarget(ticket) {
   if (!ticket) return "";
+  if (
+    ticket.is_repetitive ||
+    ticket.targetGroupKey === "SITE VISIT" ||
+    ticket.assignment_type === "SITE_VISIT"
+  ) {
+    return "SITE VISIT";
+  }
   if (ticket.assignment_type === "SQA") {
     return "SQA";
   }
@@ -609,6 +616,7 @@ export async function markTicketAsSent(ticket, metadata = {}) {
     business_status: ticket.business_status,
     sla_status: ticket.sla_status,
     reopen_count: reopenCount,
+    is_repetitive: Boolean(ticket.is_repetitive),
     escalated_from: ticket.escalated_from || "",
     target_jid: metadata.targetJid || "",
     source_jid: metadata.sourceJid || "",

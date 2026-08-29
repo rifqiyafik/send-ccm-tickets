@@ -27,6 +27,7 @@ import { acquireProcessLock } from "../utils/processLock.js";
 import {
   cancelQueue,
   enqueueTicketMessage,
+  getPostSendDelay,
   getQueueConfig,
   isQueueCancelled,
 } from "../services/messageQueueService.js";
@@ -797,6 +798,11 @@ async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
         assignmentType: groupTickets[0]?.assignment_type,
       });
       await sock.sendMessage(reminderTargetJid, payload);
+
+      const delayMs = getPostSendDelay(groupTickets[0]?.assignment_type || "SUMMARY");
+      if (delayMs > 0 && !isDeliveryCancelled()) {
+        await sleepWithCancellation(delayMs);
+      }
     }
   }
 }
@@ -1145,9 +1151,7 @@ export async function sendReminderCommandResult(
       ticket.assignment_type === "SITE_VISIT",
   );
 
-  const delayMs = Boolean(options.manualMode)
-    ? Number(process.env.TELEGRAM_SEND_DELAY_MS || 5000)
-    : Number(process.env.WA_SEND_DELAY_MS || 10000);
+  const getDelay = (assignmentType) => getPostSendDelay(assignmentType, options);
 
   logger.info("Processing .reminder command result", {
     sourceJid,
@@ -1155,7 +1159,7 @@ export async function sendReminderCommandResult(
     sqaCount: sqaTickets.length,
     nopCount: nopTickets.length,
     siteVisitCount: siteVisitTickets.length,
-    delayMs,
+    manualMode: Boolean(options.manualMode),
   });
 
   // 1. Process NOP tickets: send reminder to NOP target groups
@@ -1193,6 +1197,7 @@ export async function sendReminderCommandResult(
         });
       }
 
+      const delayMs = getDelay("NOP");
       if (i < nopEntries.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
         await sleepWithCancellation(delayMs);
       }
@@ -1201,8 +1206,11 @@ export async function sendReminderCommandResult(
 
   // 2. Process SQA tickets: group by ccm_handling, send JAPRI (Direct Message)
   if (sqaTickets.length > 0 && !isDeliveryCancelled()) {
-    if (nopTickets.length > 0 && delayMs > 0) {
-      await sleepWithCancellation(delayMs);
+    if (nopTickets.length > 0) {
+      const interDelayMs = getDelay("SQA");
+      if (interDelayMs > 0) {
+        await sleepWithCancellation(interDelayMs);
+      }
     }
 
     const sqaGroupedByCcm = new Map();
@@ -1260,6 +1268,7 @@ export async function sendReminderCommandResult(
         });
       }
 
+      const delayMs = getDelay("SQA");
       if (i < sqaValues.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
         await sleepWithCancellation(delayMs);
       }
@@ -1272,8 +1281,9 @@ export async function sendReminderCommandResult(
     });
 
     if (mainSqaJid && !isDeliveryCancelled()) {
-      if (delayMs > 0) {
-        await sleepWithCancellation(delayMs);
+      const interDelayMs = getDelay("SQA");
+      if (interDelayMs > 0) {
+        await sleepWithCancellation(interDelayMs);
       }
       try {
         const mainSqaPayload = formatInProgressReminderMessagePayload(
@@ -1307,8 +1317,11 @@ export async function sendReminderCommandResult(
 
   // 3. Process Site Visit repetitive tickets: send friendly reminder to SITE VISIT target group
   if (siteVisitTickets.length > 0 && !isDeliveryCancelled()) {
-    if ((nopTickets.length > 0 || sqaTickets.length > 0) && delayMs > 0) {
-      await sleepWithCancellation(delayMs);
+    if (nopTickets.length > 0 || sqaTickets.length > 0) {
+      const interDelayMs = getDelay("SITE_VISIT");
+      if (interDelayMs > 0) {
+        await sleepWithCancellation(interDelayMs);
+      }
     }
 
     const siteVisitGroups = await groupTicketsByTarget(
@@ -1354,6 +1367,7 @@ export async function sendReminderCommandResult(
           });
           await markTicketAsSent(ticket, { sourceJid, targetJid });
 
+          const delayMs = getDelay("SITE_VISIT");
           if ((j < newTickets.length - 1 || reminderTickets.length > 0) && delayMs > 0 && !isDeliveryCancelled()) {
             await sleepWithCancellation(delayMs);
           }

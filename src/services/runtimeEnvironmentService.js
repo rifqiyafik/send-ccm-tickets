@@ -247,10 +247,26 @@ export function formatEnvironmentStatus() {
   let configReadable = false;
   let readError = "";
 
-  const sendDelayMs = Number(process.env.WA_SEND_DELAY_MS || 10000);
+  const hasMin = process.env.WA_SEND_DELAY_MIN_MS !== undefined && process.env.WA_SEND_DELAY_MIN_MS !== "";
+  const hasMax = process.env.WA_SEND_DELAY_MAX_MS !== undefined && process.env.WA_SEND_DELAY_MAX_MS !== "";
+  const hasFixed = process.env.WA_SEND_DELAY_MS !== undefined && process.env.WA_SEND_DELAY_MS !== "";
+
+  const minDelayMs = hasMin
+    ? Number(process.env.WA_SEND_DELAY_MIN_MS)
+    : hasFixed
+      ? Number(process.env.WA_SEND_DELAY_MS)
+      : 8000;
+  const maxDelayMs = hasMax
+    ? Number(process.env.WA_SEND_DELAY_MAX_MS)
+    : hasFixed
+      ? Number(process.env.WA_SEND_DELAY_MS)
+      : 13000;
+
   const batchSize = Number(process.env.WA_BATCH_SIZE || 10);
   const batchExtraDelayMs = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000);
   const targetDelayMs = Number(process.env.TARGET_GROUP_COMPLETION_DELAY_MS || 10000);
+  const maxRetries = Number(process.env.WA_RETRY_MAX_ATTEMPTS || 3);
+  const retryBackoffMs = Number(process.env.WA_RETRY_BACKOFF_MS || 3000);
 
   try {
     const config = readJsonObject(configPath, "WhatsApp config");
@@ -264,6 +280,11 @@ export function formatEnvironmentStatus() {
   } catch (error) {
     readError = error.message;
   }
+
+  const delayDisplay =
+    minDelayMs === maxDelayMs
+      ? `**${minDelayMs / 1000}s** (\`${minDelayMs}ms\`)`
+      : `**${minDelayMs / 1000}s - ${maxDelayMs / 1000}s** (\`${minDelayMs}ms - ${maxDelayMs}ms\`) [Adaptive Jitter]`;
 
   return [
     "🌐 **Environment Aktif**",
@@ -283,12 +304,12 @@ export function formatEnvironmentStatus() {
         ].join("\n")
       : ["⚠️ **Config tidak bisa dibaca**", `Error: \`${readError}\``].join("\n"),
     "",
-    "⏱️ **Anti-Spam Pacing (Delay):**",
-    `- Delay per Tiket: **${sendDelayMs / 1000}s** (\`${sendDelayMs}ms\`)`,
+    "⏱️ **Anti-Spam Pacing (Delay) & Resilience:**",
+    `- Delay per Tiket: ${delayDisplay}`,
     `- Batch Size: **${batchSize} tiket**`,
     `- Extra Delay Batch: **${batchExtraDelayMs / 1000}s** (\`${batchExtraDelayMs}ms\`)`,
-    `- Total Jeda Kelipatan ${batchSize}: **${(sendDelayMs + batchExtraDelayMs) / 1000}s**`,
     `- Jeda Antar Target Group: **${targetDelayMs / 1000}s** (\`${targetDelayMs}ms\`)`,
+    `- Auto-Retry Max: **${maxRetries}x** (Backoff: \`${retryBackoffMs}ms\`)`,
   ].join("\n");
 }
 

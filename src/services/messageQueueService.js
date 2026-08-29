@@ -2,19 +2,51 @@ import { createLogger } from "../utils/logger.js";
 
 const logger = createLogger("messageQueueService");
 
-const MESSAGE_DELAY_MS = Number(process.env.WA_SEND_DELAY_MS || 10000);
-const BATCH_SIZE = Number(process.env.WA_BATCH_SIZE || 10);
-const BATCH_EXTRA_DELAY_MS = Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000);
-const MANUAL_SEND_DELAY_MS = Number(process.env.TELEGRAM_SEND_DELAY_MS || 5000);
-
 let queue = Promise.resolve();
 const sentCountByAssignment = new Map();
 let isCancelled = false;
 let currentSleepTimer = null;
 let currentSleepResolve = null;
 
+// membaca konfigurasi delay dan pacing secara dinamis agar mendukung override .env dan runtime testing.
+export function getQueueConfig() {
+  const defaultMin = 8000;
+  const defaultMax = 13000;
+
+  const hasMin = process.env.WA_SEND_DELAY_MIN_MS !== undefined && process.env.WA_SEND_DELAY_MIN_MS !== "";
+  const hasMax = process.env.WA_SEND_DELAY_MAX_MS !== undefined && process.env.WA_SEND_DELAY_MAX_MS !== "";
+  const hasFixed = process.env.WA_SEND_DELAY_MS !== undefined && process.env.WA_SEND_DELAY_MS !== "";
+
+  let minMs = defaultMin;
+  let maxMs = defaultMax;
+
+  if (hasMin || hasMax) {
+    minMs = hasMin ? Number(process.env.WA_SEND_DELAY_MIN_MS) : defaultMin;
+    maxMs = hasMax ? Number(process.env.WA_SEND_DELAY_MAX_MS) : Math.max(minMs, defaultMax);
+  } else if (hasFixed) {
+    const fixed = Number(process.env.WA_SEND_DELAY_MS);
+    minMs = fixed;
+    maxMs = fixed;
+  }
+
+  // memastikan min tidak lebih besar dari max
+  const effectiveMin = Math.max(0, Math.min(minMs, maxMs));
+  const effectiveMax = Math.max(0, Math.max(minMs, maxMs));
+
+  return {
+    minDelayMs: effectiveMin,
+    maxDelayMs: effectiveMax,
+    batchSize: Number(process.env.WA_BATCH_SIZE || 10),
+    batchExtraDelayMs: Number(process.env.WA_BATCH_EXTRA_DELAY_MS || 5000),
+    manualSendDelayMs: Number(process.env.TELEGRAM_SEND_DELAY_MS || 10000),
+    maxRetries: Math.max(1, Number(process.env.WA_RETRY_MAX_ATTEMPTS || 3)),
+    retryBackoffMs: Math.max(500, Number(process.env.WA_RETRY_BACKOFF_MS || 3000)),
+  };
+}
+
 // jeda async dengan kemampuan interrupt seketika saat cancel.
 function interruptibleSleep(ms) {
+  if (ms <= 0) return Promise.resolve();
   return new Promise((resolve) => {
     currentSleepResolve = resolve;
     currentSleepTimer = setTimeout(() => {
@@ -54,28 +86,88 @@ export function isQueueCancelled() {
   return isCancelled;
 }
 
-// menghitung jeda setelah pesan terkirim, termasuk extra delay setiap 10 tiket per assignment.
-function getPostSendDelay(assignmentType, options = {}) {
+// menghitung jeda acak human-typing (adaptive jitter) dan extra delay kelipatan batch.
+export function getPostSendDelay(assignmentType, options = {}) {
+  const config = getQueueConfig();
+
   if (options.manualMode) {
-    return MANUAL_SEND_DELAY_MS;
+    return config.manualSendDelayMs;
   }
 
   const key = String(assignmentType || "UNKNOWN").toUpperCase();
   const sentCount = (sentCountByAssignment.get(key) || 0) + 1;
   sentCountByAssignment.set(key, sentCount);
 
-  const isBatchBoundary = BATCH_SIZE > 0 && sentCount % BATCH_SIZE === 0;
-  const delayMs = MESSAGE_DELAY_MS + (isBatchBoundary ? BATCH_EXTRA_DELAY_MS : 0);
+  // Menghitung jitter acak seragam di rentang [minDelayMs, maxDelayMs]
+  const jitterRange = config.maxDelayMs - config.minDelayMs;
+  const randomOffset = jitterRange > 0 ? Math.floor(Math.random() * (jitterRange + 1)) : 0;
+  const jitterDelayMs = config.minDelayMs + randomOffset;
+
+  const isBatchBoundary = config.batchSize > 0 && sentCount % config.batchSize === 0;
+  const batchExtraMs = isBatchBoundary ? config.batchExtraDelayMs : 0;
+  const totalDelayMs = jitterDelayMs + batchExtraMs;
 
   logger.info("Message queue delay calculated", {
     assignmentType: key,
     sentCount,
-    batchSize: BATCH_SIZE,
-    delayMs,
+    batchSize: config.batchSize,
+    minDelayMs: config.minDelayMs,
+    maxDelayMs: config.maxDelayMs,
+    jitterDelayMs,
+    batchExtraDelayMs: batchExtraMs,
+    delayMs: totalDelayMs,
     isBatchBoundary,
   });
 
-  return delayMs;
+  return totalDelayMs;
+}
+
+// mengeksekusi fungsi pengiriman dengan auto-retry saat terjadi error/koneksi terputus.
+export async function executeWithRetry(sendFn, meta = {}) {
+  const config = getQueueConfig();
+  const maxAttempts = config.maxRetries;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (isCancelled) {
+      logger.warn("executeWithRetry cancelled before attempt", { attempt, meta });
+      return { ok: false, cancelled: true };
+    }
+
+    try {
+      logger.info("Sending queued ticket message", { attempt, maxAttempts, ...meta });
+      await sendFn();
+      return { ok: true, attempts: attempt };
+    } catch (error) {
+      if (isCancelled) {
+        logger.warn("executeWithRetry cancelled during error handling", { attempt, meta });
+        return { ok: false, cancelled: true };
+      }
+
+      if (attempt < maxAttempts) {
+        const retryDelayMs = config.retryBackoffMs * attempt;
+        logger.warn("Sending queued ticket message failed, retrying", {
+          attempt,
+          maxAttempts,
+          retryDelayMs,
+          error: error.message,
+          orderId: meta.orderId,
+          assignmentType: meta.assignmentType,
+        });
+        await interruptibleSleep(retryDelayMs);
+      } else {
+        logger.error("Sending queued ticket message permanently failed after all attempts", {
+          attempt,
+          maxAttempts,
+          error: error.message,
+          orderId: meta.orderId,
+          assignmentType: meta.assignmentType,
+        });
+        return { ok: false, error, attempts: attempt };
+      }
+    }
+  }
+
+  return { ok: false, attempts: maxAttempts };
 }
 
 // memasukkan pengiriman tiket ke antrian global agar upload bersamaan tetap terkirim berurutan.
@@ -95,10 +187,11 @@ export function enqueueTicketMessage(sendFn, meta = {}) {
         return;
       }
 
-      logger.info("Sending queued ticket message", meta);
-      await sendFn();
-
-      if (isCancelled) return;
+      const result = await executeWithRetry(sendFn, meta);
+      if (isCancelled || !result.ok) {
+        // Jika retry gagal total atau di-cancel, tetap catat dan lanjutkan ke tiket berikutnya tanpa crash
+        return;
+      }
 
       const delayMs = getPostSendDelay(meta.assignmentType, {
         manualMode: Boolean(meta.manualMode),

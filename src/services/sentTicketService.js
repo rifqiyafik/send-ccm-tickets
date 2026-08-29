@@ -461,7 +461,7 @@ function resolveTicketSendDecision(ticket, existingRecord, today, options = {}) 
   }
 
   if (existingSentDate !== today) {
-    if (isInProgress(ticket.business_status)) {
+    if (isInProgress(ticket.business_status) || isReopen(ticket.business_status)) {
       return {
         send: false,
         remind: true,

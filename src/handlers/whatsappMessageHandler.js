@@ -1328,7 +1328,14 @@ export async function sendReminderCommandResult(
 
         for (const ticket of tickets) {
           const sentRecord = await getSentTicketRecord(ticket.order_id);
-          if (!sentRecord || !sentRecord.sent_at) {
+          const wasSentToSiteVisit = Boolean(
+            sentRecord && (
+              sentRecord.sent_to_site_visit ||
+              sentRecord.site_visit_sent_at ||
+              sentRecord.effective_target === "SITE VISIT"
+            ),
+          );
+          if (!wasSentToSiteVisit) {
             newTickets.push(ticket);
           } else {
             reminderTickets.push(ticket);

@@ -367,6 +367,11 @@ function isCrossAssignmentEscalation(previousTarget, currentTarget) {
   if (previousTarget === currentTarget) return false;
   if (previousTarget === "-" || currentTarget === "-") return false;
 
+  // SITE VISIT adalah channel eskalasi repetitif, bukan perpindahan assignment grup
+  if (previousTarget === "SITE VISIT" || currentTarget === "SITE VISIT") {
+    return false;
+  }
+
   // Jika salah satu adalah generic "NOP" (karena legacy record) dan target sekarang adalah cabang NOP (misal "NOP ACEH"),
   // maka keduanya adalah sama-sama assignment NOP, sehingga jangan dianggap pindah assignment.
   if (
@@ -488,11 +493,11 @@ export async function createSentTicketPlan(tickets, now = new Date(), options = 
   const sendableTickets = [];
   const duplicateTickets = [];
   const outSlaTickets = [];
+  const inProgressReminderTickets = [];
+  const inSlaReminderTickets = [];
   const reopenedTickets = [];
   const escalatedTickets = [];
   const invalidMessageTickets = [];
-  const inProgressReminderTickets = [];
-  const inSlaReminderTickets = [];
 
   for (const ticket of tickets) {
     const orderId = normalizeOrderId(ticket.order_id);
@@ -605,23 +610,28 @@ export async function markTicketAsSent(ticket, metadata = {}) {
       ? reopenCountValue
       : 0;
 
+  const existing = store.tickets[orderId] || {};
   const effectiveTarget = resolveEffectiveTarget(ticket);
+  const isSiteVisit = effectiveTarget === "SITE VISIT" || Boolean(ticket.is_repetitive);
 
   store.tickets[orderId] = {
     order_id: ticket.order_id,
-    assignment_type: ticket.assignment_type,
-    assignment_group: ticket.assignment_group || "",
-    cluster_area: ticket.cluster_area || "",
-    effective_target: effectiveTarget,
+    assignment_type: ticket.assignment_type || existing.assignment_type,
+    assignment_group: ticket.assignment_group || existing.assignment_group || "",
+    cluster_area: ticket.cluster_area || existing.cluster_area || "",
+    effective_target: isSiteVisit ? (existing.effective_target || "SITE VISIT") : effectiveTarget,
     business_status: ticket.business_status,
     sla_status: ticket.sla_status,
-    reopen_count: reopenCount,
-    is_repetitive: Boolean(ticket.is_repetitive),
-    escalated_from: ticket.escalated_from || "",
-    target_jid: metadata.targetJid || "",
-    source_jid: metadata.sourceJid || "",
-    sent_at: now.toISOString(),
-    sent_date: formatLocalDate(now),
+    reopen_count: Math.max(reopenCount, existing.reopen_count || 0),
+    is_repetitive: Boolean(ticket.is_repetitive || existing.is_repetitive),
+    sent_to_site_visit: Boolean(isSiteVisit || existing.sent_to_site_visit),
+    site_visit_sent_at: isSiteVisit ? now.toISOString() : (existing.site_visit_sent_at || ""),
+    site_visit_target_jid: isSiteVisit ? (metadata.targetJid || "") : (existing.site_visit_target_jid || ""),
+    escalated_from: ticket.escalated_from || existing.escalated_from || "",
+    target_jid: !isSiteVisit ? (metadata.targetJid || existing.target_jid || "") : (existing.target_jid || metadata.targetJid || ""),
+    source_jid: metadata.sourceJid || existing.source_jid || "",
+    sent_at: existing.sent_at || now.toISOString(),
+    sent_date: existing.sent_date || formatLocalDate(now),
   };
 
   logger.info("Marking ticket as sent", {
@@ -629,6 +639,7 @@ export async function markTicketAsSent(ticket, metadata = {}) {
     businessStatus: ticket.business_status,
     slaStatus: ticket.sla_status,
     effectiveTarget,
+    sentToSiteVisit: store.tickets[orderId].sent_to_site_visit,
     targetJid: metadata.targetJid,
   });
 

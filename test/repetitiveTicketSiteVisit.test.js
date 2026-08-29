@@ -363,3 +363,34 @@ test("cleanAddressToCity trims address up to city and removes province, country,
     "Dusun II Desa Telagah Kec. Sei Bingai, Kab. Langkat",
   );
 });
+
+test("does not treat Site Visit as cross-assignment escalation", async () => {
+  const customStorePath = path.join("tmp", `site-visit-no-esc-${Date.now()}.json`);
+  process.env.SENT_TICKET_STORE_PATH = customStorePath;
+
+  const { markTicketAsSent, createSentTicketPlan } = await import(
+    "../src/services/sentTicketService.js"
+  );
+
+  const ticket = {
+    order_id: "CC-20260830-00000650",
+    assignment_type: "SQA",
+    assignment_group: "SERVICE QUALITY ASSURANCE SUMBAGUT",
+    cluster_area: "NOP BINJAI",
+    business_status: "ReOpen",
+    sla_status: "IN SLA",
+    reopen_number: 3,
+    is_repetitive: true,
+  };
+
+  // Mark ticket as sent to SITE VISIT
+  await markTicketAsSent({ ...ticket, targetGroupKey: "SITE VISIT" }, { targetJid: "manual:SITE VISIT" });
+
+  // Now evaluate primary SQA ticket on .update
+  const plan = await createSentTicketPlan([ticket], new Date());
+  assert.equal(plan.escalated_tickets.length, 0, "Should not be flagged as escalated ticket");
+  assert.ok(!ticket.escalated_from, "ticket.escalated_from should be empty");
+
+  fs.rmSync(customStorePath, { force: true });
+  delete process.env.SENT_TICKET_STORE_PATH;
+});

@@ -11,7 +11,10 @@ import {
   extractCustomerDetailsSummary,
   extractRepetitiveNote,
 } from "../src/services/messageTemplateService.js";
-import { processTicketExcel } from "../src/services/ticketImportService.js";
+import {
+  processTicketExcel,
+  formatProcessingReport,
+} from "../src/services/ticketImportService.js";
 import { getTargetGroupKey } from "../src/config/whatsappRouting.js";
 import writeXlsxFile from "write-excel-file/node";
 
@@ -177,6 +180,12 @@ test("processTicketExcel handles ReOpen = 3 and ReOpen > 3 correctly", async () 
   assert.equal(t2SiteVisit.is_repetitive, true);
   assert.equal(t2SiteVisit.targetGroupKey, "SITE VISIT");
   assert.equal(t2SiteVisit.ts_site_visit.length, 2); // Binjai Pewenri & Dedi
+
+  const report = formatProcessingReport(result);
+  assert.ok(report.includes("Tiket Repetitif (>3 ReOpen / Site Visit)"));
+  assert.ok(report.includes("CC-20260821-00000576"));
+  assert.ok(report.includes("Willy Panjaitan"));
+  assert.ok(report.includes("Pewenri, Dedi"));
 });
 
 test("sendReminderCommandResult sends repetitive reminder to SITE VISIT group", async () => {

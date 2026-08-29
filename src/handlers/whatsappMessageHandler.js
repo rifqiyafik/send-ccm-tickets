@@ -1591,7 +1591,19 @@ async function sendTicketDetailsToTargetGroups(
     sendableTickets,
   );
 
-  const targetEntries = [...ticketsByTarget.entries()];
+  const targetEntries = [...ticketsByTarget.entries()].sort(
+    ([aJid, aTickets], [bJid, bTickets]) => {
+      const aIsSiteVisit = aTickets.some(
+        (t) => t.is_repetitive || t.targetGroupKey === "SITE VISIT",
+      );
+      const bIsSiteVisit = bTickets.some(
+        (t) => t.is_repetitive || t.targetGroupKey === "SITE VISIT",
+      );
+      if (aIsSiteVisit && !bIsSiteVisit) return 1;
+      if (!aIsSiteVisit && bIsSiteVisit) return -1;
+      return 0;
+    },
+  );
   const totalTicketsCount = sendableTickets.length;
   let overallSentCount = 0;
 

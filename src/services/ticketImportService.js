@@ -1365,8 +1365,29 @@ export function formatProcessingReport(result) {
     ),
   ];
 
+  const repetitiveTickets = (result.valid_tickets || []).filter(
+    (t) => t.is_repetitive || t.targetGroupKey === "SITE VISIT",
+  );
+  if (repetitiveTickets.length > 0) {
+    lines.push(
+      "",
+      `🔁 **Tiket Repetitif (>3 ReOpen / Site Visit)**: (${repetitiveTickets.length} tiket)`,
+      "ℹ️ *Tiket ini akan dikirimkan ke grup **SITE VISIT** setelah seluruh tiket utama (SQA & NOP) selesai dikirim.*",
+      ...repetitiveTickets.map((t) => {
+        const tsNames =
+          (t.ts_site_visit || []).map((ts) => ts.name).join(", ") || "-";
+        const reopenText = t.reopen_number ? `${t.reopen_number}X` : "-";
+        return [
+          `📌 \`${t.order_id || "-"}\` (ReOpen: ${reopenText})`,
+          `   ├ 📍 Kota/Area: ${t.city || t.cluster_area || "-"}`,
+          `   └ 👷 PIC TS Site Visit: ${tsNames}`,
+        ].join("\n");
+      }),
+    );
+  }
+
   const validAnomalies = (result.valid_tickets || []).filter(
-    (t) => t.anomaly_info,
+    (t) => t.anomaly_info && !t.is_repetitive && t.targetGroupKey !== "SITE VISIT",
   );
   if (validAnomalies.length > 0) {
     lines.push(

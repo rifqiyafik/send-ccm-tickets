@@ -659,11 +659,11 @@ async function sendMissingTargetGroupAlert(sock, sourceJid, ticket) {
 }
 
 // mengelompokkan tiket valid berdasarkan JID grup tujuan agar pembuka/reminder dikirim sekali per grup.
-async function groupTicketsByTarget(sock, sourceJid, tickets) {
+async function groupTicketsByTarget(sock, sourceJid, tickets, options = {}) {
   const groups = new Map();
 
   for (const ticket of tickets) {
-    const targetJid = resolveTargetJid(ticket);
+    const targetJid = resolveTargetJid(ticket, options);
     if (!targetJid) {
       await sendMissingTargetGroupAlert(sock, sourceJid, ticket);
       continue;
@@ -677,6 +677,7 @@ async function groupTicketsByTarget(sock, sourceJid, tickets) {
   logger.info("Tickets grouped by target JID", {
     targetGroups: groups.size,
     tickets: tickets.length,
+    manualMode: Boolean(options.manualMode),
   });
 
   return groups;
@@ -1152,6 +1153,7 @@ export async function sendReminderCommandResult(
       sock,
       sourceJid,
       nopTickets,
+      options,
     );
 
     const nopEntries = [...nopRemindersByTarget.entries()];
@@ -1302,6 +1304,7 @@ export async function sendReminderCommandResult(
       sock,
       sourceJid,
       siteVisitTickets,
+      options,
     );
 
     const siteVisitEntries = [...siteVisitGroups.entries()];
@@ -1590,6 +1593,7 @@ async function sendTicketDetailsToTargetGroups(
     sock,
     sourceJid,
     sendableTickets,
+    options,
   );
 
   const targetEntries = [...ticketsByTarget.entries()].sort(

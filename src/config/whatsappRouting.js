@@ -57,7 +57,7 @@ export function getTargetGroupKey(ticket) {
 }
 
 // menentukan grup tujuan; prioritas target_groups di config/whatsapp.json, lalu env WHATSAPP_GROUPS.
-export function resolveTargetJid(ticket) {
+export function resolveTargetJid(ticket, options = {}) {
   logger.info("Resolving WhatsApp target JID", {
     orderId: ticket.order_id,
     assignmentType: ticket.assignment_type,
@@ -74,6 +74,13 @@ export function resolveTargetJid(ticket) {
     return configGroup.jid;
   }
 
+  if (options.manualMode && configGroupKey) {
+    logger.info("Resolved target JID from manual mode fallback", {
+      groupKey: configGroupKey,
+    });
+    return `manual:${configGroupKey}`;
+  }
+
   const picKey = String(ticket.pic || "").toUpperCase();
   const nsaKey = String(ticket.nsa || "").toUpperCase();
   const assignmentKey = String(ticket.assignment_type || "").toUpperCase();
@@ -87,6 +94,9 @@ export function resolveTargetJid(ticket) {
     null;
 
   if (!targetJid) {
+    if (options.manualMode) {
+      return `manual:${configGroupKey || "UNKNOWN"}`;
+    }
     logger.warn("Target JID not found", {
       orderId: ticket.order_id,
       groupKey: configGroupKey,

@@ -78,6 +78,9 @@ export function getGroupConfig(groupKey) {
 
 export function getGroupKeyByJid(jid) {
   if (!jid) return null;
+  if (String(jid).startsWith("manual:")) {
+    return String(jid).replace(/^manual:/i, "");
+  }
   const config = getAppConfig();
   const rawTargetGroups = config.raw.target_groups || {};
   for (const [key, val] of Object.entries(rawTargetGroups)) {

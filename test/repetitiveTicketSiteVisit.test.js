@@ -227,3 +227,18 @@ test("sendReminderCommandResult sends repetitive reminder to SITE VISIT group", 
   assert.ok(siteVisitMsg.payload.text.includes("Ticket Complain Repetitif"));
   assert.ok(siteVisitMsg.payload.text.includes("CC-20260821-00000576"));
 });
+
+test("resolveTargetJid in manualMode returns synthetic key when WA JID is empty", async () => {
+  const { resolveTargetJid } = await import(
+    "../src/config/whatsappRouting.js"
+  );
+  const result = resolveTargetJid(
+    {
+      order_id: "CC-20260821-00000576",
+      is_repetitive: true,
+      targetGroupKey: "SITE VISIT",
+    },
+    { manualMode: true },
+  );
+  assert.ok(result === "manual:SITE VISIT" || result.includes("g.us"));
+});

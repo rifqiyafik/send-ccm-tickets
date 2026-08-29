@@ -178,3 +178,43 @@ test("processTicketExcel handles ReOpen = 3 and ReOpen > 3 correctly", async () 
   assert.equal(t2SiteVisit.targetGroupKey, "SITE VISIT");
   assert.equal(t2SiteVisit.ts_site_visit.length, 2); // Binjai Pewenri & Dedi
 });
+
+test("sendReminderCommandResult sends repetitive reminder to SITE VISIT group", async () => {
+  const sentMessages = [];
+  const mockSock = {
+    sendMessage: async (jid, payload) => {
+      sentMessages.push({ jid, payload });
+      return { key: { id: "mock-id" } };
+    },
+  };
+
+  const validTickets = [
+    {
+      order_id: "CC-20260821-00000576",
+      assignment_type: "SQA",
+      city: "LANGKAT",
+      pic_sqa: "Herman",
+      is_repetitive: true,
+      targetGroupKey: "SITE VISIT",
+      resolve_target_22h_text: "Sabtu / 22 Agu 2026",
+      notes: "Nama Customer: Budi",
+      ccm_analysis: "PRB Capacity",
+      repetitive_note: "Mohon tindak lanjut",
+    },
+  ];
+
+  const { sendReminderCommandResult } = await import(
+    "../src/handlers/whatsappMessageHandler.js"
+  );
+
+  await sendReminderCommandResult(mockSock, "telegram:123", validTickets, {
+    manualMode: true,
+  });
+
+  const siteVisitMsg = sentMessages.find(
+    (m) => m.jid === "120363000000000099@g.us" || m.jid.includes("g.us"),
+  );
+  assert.ok(siteVisitMsg, "Site Visit message was sent");
+  assert.ok(siteVisitMsg.payload.text.includes("Ticket Complain Repetitif"));
+  assert.ok(siteVisitMsg.payload.text.includes("CC-20260821-00000576"));
+});

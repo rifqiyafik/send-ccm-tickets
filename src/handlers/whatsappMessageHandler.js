@@ -39,6 +39,7 @@ import {
 import {
   createFilteredTicketsExcel,
   formatEscalationMessagePayload,
+  formatRepetitiveEscalationPayload,
   formatInProgressReminderMessagePayload,
   formatImportSummary,
   formatProcessingReport,
@@ -1119,10 +1120,16 @@ export async function sendReminderCommandResult(
   }
 
   const sqaTickets = validTickets.filter(
-    (ticket) => ticket.assignment_type === "SQA",
+    (ticket) => ticket.assignment_type === "SQA" && !ticket.is_repetitive,
   );
   const nopTickets = validTickets.filter(
     (ticket) => ticket.assignment_type === "NOP",
+  );
+  const siteVisitTickets = validTickets.filter(
+    (ticket) =>
+      ticket.is_repetitive ||
+      ticket.targetGroupKey === "SITE VISIT" ||
+      ticket.assignment_type === "SITE_VISIT",
   );
 
   const delayMs = Boolean(options.manualMode)
@@ -1134,6 +1141,7 @@ export async function sendReminderCommandResult(
     totalValid: validTickets.length,
     sqaCount: sqaTickets.length,
     nopCount: nopTickets.length,
+    siteVisitCount: siteVisitTickets.length,
     delayMs,
   });
 
@@ -1279,6 +1287,53 @@ export async function sendReminderCommandResult(
             error,
           },
         );
+      }
+    }
+  }
+
+  // 3. Process Site Visit repetitive tickets: send friendly reminder to SITE VISIT target group
+  if (siteVisitTickets.length > 0 && !isDeliveryCancelled()) {
+    if ((nopTickets.length > 0 || sqaTickets.length > 0) && delayMs > 0) {
+      await sleepWithCancellation(delayMs);
+    }
+
+    const siteVisitGroups = await groupTicketsByTarget(
+      sock,
+      sourceJid,
+      siteVisitTickets,
+    );
+
+    const siteVisitEntries = [...siteVisitGroups.entries()];
+    for (let i = 0; i < siteVisitEntries.length; i++) {
+      if (isDeliveryCancelled()) break;
+      const [targetJid, tickets] = siteVisitEntries[i];
+      try {
+        for (let j = 0; j < tickets.length; j++) {
+          if (isDeliveryCancelled()) break;
+          const ticket = tickets[j];
+          const payload = formatRepetitiveEscalationPayload(ticket);
+          await sock.sendMessage(targetJid, payload);
+          logger.info("Sent Site Visit repetitive reminder to target group", {
+            targetJid,
+            orderId: ticket.order_id,
+          });
+          await markTicketAsSent(ticket, { sourceJid, targetJid });
+
+          if (j < tickets.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+            await sleepWithCancellation(delayMs);
+          }
+        }
+      } catch (error) {
+        await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+          targetJid,
+          stage: "reminder command Site Visit",
+          tickets,
+          error,
+        });
+      }
+
+      if (i < siteVisitEntries.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+        await sleepWithCancellation(delayMs);
       }
     }
   }
@@ -1461,6 +1516,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       "📋 **Status Pengiriman Reminder**:",
       "• SQA: Reminder JAPRI terkirim ke PIC CCM & ringkasan terkirim ke MAIN SQA.",
       "• NOP: Reminder terkirim ke grup NOP target.",
+      "• Site Visit: Reminder tiket repetitif terkirim ke grup SITE VISIT.",
     ];
 
     await sock.sendMessage(sourceJid, {

@@ -773,6 +773,24 @@ export function formatRepetitiveEscalationPayload(ticket) {
   };
 }
 
+export function cleanAddressToCity(addressText) {
+  if (!addressText) return "-";
+  let text = String(addressText).trim();
+
+  // Pola nama provinsi & negara / kode pos yang sering ada di ujung alamat
+  const provincePattern = /,\s*(?:PROVINSI\s+|PROV\.?\s*)?(?:SUMATERA\s+UTARA|SUMUT|NANGGROE\s+ACEH\s+DARUSSALAM|ACEH|SUMATERA\s+BARAT|SUMBAR|RIAU|KEPULAUAN\s+RIAU|KEPRI|SUMATERA\s+SELATAN|SUMSEL|JAMBI|BENGKULU|LAMPUNG|BANGKA\s+BELITUNG|BABEL|DKI\s+JAKARTA|JAWA\s+BARAT|JABAR|JAWA\s+TENGAH|JATENG|JAWA\s+TIMUR|JATIM|BANTEN|YOGYAKARTA|BALI)(?:\s*,|\s+Indonesia|\s+\d{5}|$|\s).*$/i;
+  text = text.replace(provincePattern, "");
+
+  // Hapus sisa ", Indonesia" atau kode pos di ujung jika ada
+  text = text.replace(/,\s*Indonesia(?:\s+\d{5})?$/i, "");
+  text = text.replace(/\s*\b\d{5}\b$/, "");
+
+  // Trim sisa tanda koma atau spasi di ujung
+  text = text.replace(/[\s,.-]+$/, "").trim();
+
+  return text || "-";
+}
+
 export function formatSiteVisitCombinedReminderPayload(tickets, options = {}) {
   if (!tickets || tickets.length === 0) {
     return { text: "", mentions: [] };
@@ -798,7 +816,7 @@ export function formatSiteVisitCombinedReminderPayload(tickets, options = {}) {
   const lines = [
     "🔔 *REMINDER TIKET REPETITIF / SITE VISIT*",
     "",
-    "Selamat pagi/siang abang-abang, izin mengingatkan kembali progres tiket complain repetitif yang masih berstatus *In Progress* di Sumbagut.",
+    "Semangat Pagi abang-abang, izin mengingatkan kembali progres tiket complain repetitif yang masih berstatus *In Progress* di Sumbagut.",
     "",
     "📊 *Summary:*",
     "*Total | In SLA | Out SLA*",
@@ -821,7 +839,8 @@ export function formatSiteVisitCombinedReminderPayload(tickets, options = {}) {
     group.tickets.forEach((ticket, idx) => {
       const rawDesc = String(ticket.raw_description || ticket.notes || "");
       const locMatch = rawDesc.match(/Lokasi Pelanggan(?: \(alamat\))?\s*:\s*([^\r\n]+)/i);
-      const lokasi = locMatch ? locMatch[1].trim() : (ticket.city || ticket.nsa || "-");
+      const rawLokasi = locMatch ? locMatch[1].trim() : (ticket.city || ticket.nsa || "-");
+      const lokasi = cleanAddressToCity(rawLokasi);
 
       const compMatch = rawDesc.match(/(?:Detail Complain|Detail Complaint|kendala)\s*:\s*([^\r\n]+)/i);
       const kendala = compMatch ? compMatch[1].trim() : (ticket.incident_domain || ticket.symptom || "-");

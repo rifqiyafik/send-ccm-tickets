@@ -336,3 +336,30 @@ test("sendReminderCommandResult sends combined reminder in manualMode for previo
   assert.ok(combinedMsg.payload.text.includes("CC-20260821-00000999"));
   assert.ok(combinedMsg.payload.text.includes("TS MEDAN"));
 });
+
+test("cleanAddressToCity trims address up to city and removes province, country, and postal code", async () => {
+  const { cleanAddressToCity } = await import(
+    "../src/services/messageTemplateService.js"
+  );
+
+  assert.equal(
+    cleanAddressToCity(
+      "JL MENJANGAN NO 6A/14A KEL PANDAU HULU I KEC MEDAN KOTA, MEDAN, SUMATERA UTARA, Indonesia 28772",
+    ),
+    "JL MENJANGAN NO 6A/14A KEL PANDAU HULU I KEC MEDAN KOTA, MEDAN",
+  );
+
+  assert.equal(
+    cleanAddressToCity(
+      "Jl. Panglima Polem No. 12, Banda Aceh, Aceh, Indonesia 23122",
+    ),
+    "Jl. Panglima Polem No. 12, Banda Aceh",
+  );
+
+  assert.equal(
+    cleanAddressToCity(
+      "Dusun II Desa Telagah Kec. Sei Bingai, Kab. Langkat, SUMUT",
+    ),
+    "Dusun II Desa Telagah Kec. Sei Bingai, Kab. Langkat",
+  );
+});

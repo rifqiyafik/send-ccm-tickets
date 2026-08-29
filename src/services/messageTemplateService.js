@@ -3,6 +3,10 @@ import { formatNameTag } from "../utils/text.js";
 import { normalizeJid } from "../utils/jid.js";
 import { getMentionContact } from "../config/appConfig.js";
 import { extractSiteCover } from "./siteSearchService.js";
+import {
+  resolveTsSiteVisit,
+  formatTsMentionHeader,
+} from "./siteVisitService.js";
 
 const logger = createLogger("messageTemplateService");
 
@@ -612,12 +616,148 @@ export function formatInProgressReminderMessagePayload(tickets, options = {}) {
   };
 }
 
+export function extractCustomerDetailsSummary(textInput, row = {}) {
+  const text = String(textInput ?? "");
+  const lines = [];
+
+  const extractField = (patterns) => {
+    for (const pat of patterns) {
+      const m = text.match(pat);
+      if (m && m[1] !== undefined) {
+        return m[1].trim();
+      }
+    }
+    return "";
+  };
+
+  const namaCustomer =
+    extractField([/Nama Customer\s*:\s*([^\r\n]+)/i]) ||
+    cleanTableValue(row["Customer Name"] || row["Nama Customer"]);
+  const msisdnA =
+    extractField([/MSISDN-A(?: Yang Menghubungi)?\s*:\s*([^\r\n]+)/i]) ||
+    cleanTableValue(
+      row["Customer MSISDN(Create Ticket_customer_msisdn)"] ||
+        row["Customer MSISDN"],
+    );
+  const msisdnB =
+    extractField([/MSISDN-B(?: Yang Bermasalah)?\s*:\s*([^\r\n]+)/i]) || msisdnA;
+  const tglKejadian =
+    extractField([/Tanggal(?:\/Jam)? Kejadian\s*:\s*([^\r\n]+)/i]) ||
+    cleanTableValue(row["Create Time"]);
+  const lokasi =
+    extractField([/Lokasi Pelanggan(?:\s*\(alamat\))?\s*:\s*([^\r\n]+)/i]) ||
+    cleanTableValue(row["Kabupaten/Kota(Create Ticket)"] || row["City"]);
+  const koordinat = extractField([
+    /Koordinat customer\s*:\s*([^\r\n]*)/i,
+    /Koordinat\s*:\s*([^\r\n]*)/i,
+  ]);
+  const simCapability = extractField([/SIM Capability\s*:\s*([^\r\n]+)/i]);
+  const tier = extractField([/Customer Tier(?: Pelanggan)?\s*:\s*([^\r\n]+)/i]);
+  const caseOwner = extractField([/Case Owner\s*:\s*([^\r\n]+)/i]);
+  const detailComplain = extractField([
+    /Detail Complain\s*:\s*([^\r\n]+)/i,
+    /Detail Complaint\s*:\s*([^\r\n]+)/i,
+    /kendala\s*:\s*([^\r\n]+)/i,
+  ]);
+  const captureCca = extractField([
+    /Capture CCA\s*:\s*([^\r\n]+)/i,
+    /Capture Bukti Pelanggan\s*:\s*([^\r\n]+)/i,
+  ]);
+
+  if (namaCustomer && namaCustomer !== "-") lines.push(`Nama Customer : ${namaCustomer}`);
+  if (msisdnA && msisdnA !== "-") lines.push(`MSISDN-A Yang Menghubungi : ${msisdnA}`);
+  if (msisdnB && msisdnB !== "-") lines.push(`MSISDN-B Yang Bermasalah : ${msisdnB}`);
+  if (tglKejadian && tglKejadian !== "-") lines.push(`Tanggal/Jam Kejadian : ${tglKejadian}`);
+  if (lokasi && lokasi !== "-") lines.push(`Lokasi Pelanggan (alamat) : ${lokasi}`);
+  lines.push(`Koordinat customer : ${koordinat || ""}`);
+  if (simCapability && simCapability !== "-") lines.push(`SIM Capability : ${simCapability}`);
+  if (tier && tier !== "-") lines.push(`Customer Tier Pelanggan : ${tier}`);
+  if (caseOwner && caseOwner !== "-") lines.push(`Case Owner : ${caseOwner}`);
+  if (detailComplain && detailComplain !== "-") lines.push(`Detail Complain : ${detailComplain}`);
+  if (captureCca && captureCca !== "-") lines.push(`Capture CCA : ${captureCca}`);
+
+  return lines.join("\n");
+}
+
+export function extractRepetitiveNote(textInput, row = {}) {
+  const text = String(textInput ?? "");
+  const m = text.match(/Note\s*:\s*([^\r\n]+(?:[\r\n]+(?!(?:SLA|Capture|Remarks|Suggestion|Mohon dibantu))[^\r\n]+)*)/i);
+  if (m && m[1]) {
+    return m[1].trim();
+  }
+  return cleanTableValue(row["Note"] || row["Notes"]) || "-";
+}
+
+export function formatRepetitiveEscalationPayload(ticket) {
+  logger.info("Formatting repetitive escalation message", {
+    orderId: ticket.order_id,
+  });
+
+  const tsList = ticket.ts_site_visit || resolveTsSiteVisit(ticket);
+  const tsTags = formatTsMentionHeader(tsList);
+  const sqaTag = resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel");
+
+  const customerSummary =
+    ticket.customer_summary_text ||
+    extractCustomerDetailsSummary(ticket.raw_description || ticket.notes, ticket.row_raw || {});
+
+  const ccmAnalysis = ticket.ccm_analysis || ticket.resolution_l2 || "-";
+  const note =
+    ticket.repetitive_note ||
+    extractRepetitiveNote(ticket.raw_description || ticket.notes, ticket.row_raw || {});
+
+  const lines = [
+    `Mohon dibantu bang ${tsTags}`,
+    ticket.order_id || "-",
+    `CC bang ${sqaTag.text || "-"}`,
+    "",
+    ticket.order_id || "-",
+    "",
+    "Ticket Complain Repetitif",
+    "",
+    customerSummary || "-",
+    "",
+    `CCM Analysis : ${ccmAnalysis}`,
+    "",
+    `Note : ${note}`,
+    "",
+    `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
+    "",
+    "Mohon dibantu ya bang🙏🏻🙏🏻",
+  ];
+
+  const mentions = uniqueMentionJids([
+    ...tsList,
+    sqaTag,
+  ]);
+
+  logger.info("Repetitive escalation message mention payload created", {
+    orderId: ticket.order_id,
+    mentions,
+  });
+
+  return {
+    text: lines.join("\n").trim(),
+    mentions,
+  };
+}
+
 // membuat teks pesan eskalasi dan daftar JID mention yang dikirim ke Baileys.
 export function formatEscalationMessagePayload(ticket) {
   logger.info("Formatting escalation message", {
     orderId: ticket.order_id,
     assignmentType: ticket.assignment_type,
+    isRepetitive: ticket.is_repetitive,
   });
+
+  if (
+    ticket.is_repetitive ||
+    ticket.targetGroupKey === "SITE VISIT" ||
+    ticket.assignment_type === "SITE_VISIT"
+  ) {
+    return formatRepetitiveEscalationPayload(ticket);
+  }
+
   const ccmTag = resolveMentionTag(ticket.ccm_handling, "CCM");
   const sqaTag = resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel");
   const nopTag = resolveMentionTag(ticket.pic_nop);

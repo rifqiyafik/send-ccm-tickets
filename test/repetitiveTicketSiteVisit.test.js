@@ -1,0 +1,180 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  resolveTsSiteVisit,
+  formatTsMentionHeader,
+} from "../src/services/siteVisitService.js";
+import {
+  formatRepetitiveEscalationPayload,
+  formatEscalationMessagePayload,
+  extractCustomerDetailsSummary,
+  extractRepetitiveNote,
+} from "../src/services/messageTemplateService.js";
+import { processTicketExcel } from "../src/services/ticketImportService.js";
+import { getTargetGroupKey } from "../src/config/whatsappRouting.js";
+import writeXlsxFile from "write-excel-file/node";
+
+test("resolves TS Site Visit per area correctly with dual tags for Binjai, Sidempuan, Siantar", () => {
+  // Medan
+  const tsMedan = resolveTsSiteVisit({ city: "KOTA MEDAN" });
+  assert.equal(tsMedan.length, 1);
+  assert.equal(tsMedan[0].name, "Willy Panjaitan");
+  assert.equal(tsMedan[0].phone, "6285207769555");
+  assert.equal(formatTsMentionHeader(tsMedan), "@6285207769555");
+
+  // Aceh
+  const tsAceh = resolveTsSiteVisit({ city: "ACEH BESAR" });
+  assert.equal(tsAceh.length, 1);
+  assert.equal(tsAceh[0].name, "Riski");
+  assert.equal(tsAceh[0].phone, "62811688993");
+
+  // Binjai (2 TS)
+  const tsBinjai = resolveTsSiteVisit({ city: "LANGKAT" });
+  assert.equal(tsBinjai.length, 2);
+  assert.equal(tsBinjai[0].name, "Pewenri");
+  assert.equal(tsBinjai[1].name, "Dedi");
+  assert.equal(formatTsMentionHeader(tsBinjai), "@6285260045597 @6281214456231");
+
+  // Sidempuan (2 TS)
+  const tsPsp = resolveTsSiteVisit({ city: "KOTA PADANG SIDEMPUAN" });
+  assert.equal(tsPsp.length, 2);
+  assert.equal(tsPsp[0].name, "Januar");
+  assert.equal(tsPsp[1].name, "Okis");
+  assert.equal(formatTsMentionHeader(tsPsp), "@628116103388 @6281397033246");
+
+  // Siantar (2 TS)
+  const tsPms = resolveTsSiteVisit({ city: "SIMALUNGUN" });
+  assert.equal(tsPms.length, 2);
+  assert.equal(tsPms[0].name, "Rudi");
+  assert.equal(tsPms[1].name, "Dedek");
+  assert.equal(formatTsMentionHeader(tsPms), "@6282272329397 @6281321111779");
+});
+
+test("getTargetGroupKey returns SITE VISIT for repetitive ticket", () => {
+  const ticket = {
+    assignment_type: "SQA",
+    assignment_group: "Service Quality Assurance Sumbagut",
+    is_repetitive: true,
+  };
+  assert.equal(getTargetGroupKey(ticket), "SITE VISIT");
+});
+
+test("formatRepetitiveEscalationPayload produces expected template and mentions", () => {
+  const ticket = {
+    order_id: "CC-20260821-00000575",
+    assignment_type: "SQA",
+    city: "KOTA MEDAN",
+    pic_sqa: "Ahsan",
+    is_repetitive: true,
+    resolve_target_22h_text: "Sabtu / 22 Agu 2026, 06:44:09 PM",
+    customer_summary_text: [
+      "Nama Customer : SELAMET PURNOMO",
+      "MSISDN-A Yang Menghubungi : 6282272524309",
+      "MSISDN-B Yang Bermasalah : 6282272524309",
+      "Tanggal/Jam Kejadian : 16/08/2026 17:00-20:00",
+      "Lokasi Pelanggan (alamat) : Sei Putih Barat, Medan Petisah, Kota Medan",
+      "Koordinat customer : ",
+      "SIM Capability : USIM",
+      "Customer Tier Pelanggan : Gold",
+      "Case Owner : E-Care Bandung",
+      "Detail Complain : kendala jaringan lambat",
+      "Capture CCA : https://imgur.com/undefined",
+    ].join("\n"),
+    ccm_analysis: "Performance KPI beberapa hari terakhir disaat kejadian terlihat Normal dan tidak ada yang Anomali, avail, UL interference, Capacity dan Transport masih aman. Perkiraan site cover pelanggan lebih dominan di cover  MDX330 Sek-1.",
+    repetitive_note: "Sudah diinfokan hasil laporan tiket sebelumnya, namun pelanggan menginfokan jaringannya masih lambat/nihil. Moban penanganan dan pengawalannya.",
+  };
+
+  const payload = formatRepetitiveEscalationPayload(ticket);
+  assert.ok(payload.text.includes("Mohon dibantu bang @6285207769555"));
+  assert.ok(payload.text.includes("CC-20260821-00000575"));
+  assert.ok(payload.text.includes("CC bang @628111990334")); // Ahsan SQA
+  assert.ok(payload.text.includes("Ticket Complain Repetitif"));
+  assert.ok(payload.text.includes("Nama Customer : SELAMET PURNOMO"));
+  assert.ok(payload.text.includes("CCM Analysis : Performance KPI beberapa hari"));
+  assert.ok(payload.text.includes("Note : Sudah diinfokan hasil laporan tiket sebelumnya"));
+  assert.ok(payload.text.includes("SLA DUE DATE 24H : *Sabtu / 22 Agu 2026, 06:44:09 PM*"));
+  assert.ok(payload.text.includes("Mohon dibantu ya bang🙏🏻🙏🏻"));
+
+  // Mention JIDs include TS and SQA
+  assert.ok(payload.mentions.includes("6285207769555@s.whatsapp.net"));
+  assert.ok(payload.mentions.includes("628111990334@s.whatsapp.net"));
+});
+
+test("processTicketExcel handles ReOpen = 3 and ReOpen > 3 correctly", async () => {
+  const schema = [
+    { column: "Order ID", type: String, value: (d) => d.orderId },
+    { column: "Ticket Id", type: String, value: (d) => d.ticketId },
+    { column: "Create Time", type: String, value: (d) => d.createTime },
+    { column: "Business Status", type: String, value: (d) => d.status },
+    { column: "Assignment Group", type: String, value: (d) => d.group },
+    { column: "Assign to L2(L2 Assign)", type: String, value: (d) => d.assignL2 },
+    { column: "Kabupaten/Kota(Create Ticket)", type: String, value: (d) => d.city },
+    { column: "site_id1(L1 Assign)", type: String, value: (d) => d.siteId1 },
+    { column: "Problem Analysis NSH", type: String, value: (d) => d.nsh },
+    { column: "CCH Suggestion(L1 Assign_cch_suggestion)", type: String, value: (d) => d.cch1 },
+    { column: "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)", type: String, value: (d) => d.desc },
+    { column: "Customer MSISDN(Create Ticket_customer_msisdn)", type: String, value: (d) => d.msisdn },
+    { column: "Reopen Number(Confirm Close)", type: String, value: (d) => d.reopenNumber },
+    { column: "Resolution(L2 Assign)", type: String, value: (d) => d.resolution },
+  ];
+
+  const data = [
+    // Case 1: ReOpen = 3 -> Should generate 2 valid ticket entries (1 for SQA, 1 for Site Visit)
+    {
+      orderId: "CC-20260821-00000575",
+      ticketId: "1-SLLK2DG",
+      createTime: "2026-08-21 23:44:50",
+      status: "ReOpen",
+      group: "Service Quality Assurance Sumbagut",
+      assignL2: "group:Service Quality Assurance Sumbagut",
+      city: "KOTA MEDAN",
+      siteId1: "MDN629",
+      nsh: "#Site cover  : MDN629",
+      cch1: "cause: Radio_Cell_Congestion",
+      desc: "Nama Customer : SELAMET PURNOMO\nMSISDN-A Yang Menghubungi : 6282272524309\nNote: Mohon pengawalan",
+      msisdn: "6282272524309",
+      reopenNumber: "3",
+      resolution: "Performance KPI Normal",
+    },
+    // Case 2: ReOpen = 4 (> 3) -> Should generate 1 valid ticket entry ONLY for Site Visit (not SQA)
+    {
+      orderId: "CC-20260821-00000576",
+      ticketId: "1-SLLK2DH",
+      createTime: "2026-08-21 23:44:50",
+      status: "ReOpen",
+      group: "Service Quality Assurance Sumbagut",
+      assignL2: "group:Service Quality Assurance Sumbagut",
+      city: "LANGKAT",
+      siteId1: "BJI182",
+      nsh: "#Site cover  : BJI182",
+      cch1: "cause: Radio_Cell_Congestion",
+      desc: "Nama Customer : Budi\nMSISDN-A Yang Menghubungi : 628123456789\nNote: Urgent",
+      msisdn: "628123456789",
+      reopenNumber: "4",
+      resolution: "Capacity issue solved",
+    },
+  ];
+
+  const buffer = await writeXlsxFile(data, { schema, buffer: true });
+  const result = await processTicketExcel(buffer);
+
+  assert.equal(result.ok, true);
+  // Total valid tickets = 2 for Case 1 (SQA + Site Visit) + 1 for Case 2 (Site Visit only) = 3
+  assert.equal(result.valid_tickets.length, 3);
+
+  const t1Sqa = result.valid_tickets.find((t) => t.order_id === "CC-20260821-00000575" && !t.is_repetitive);
+  assert.ok(t1Sqa, "Case 1 SQA ticket exists");
+  assert.equal(t1Sqa.assignment_type, "SQA");
+
+  const t1SiteVisit = result.valid_tickets.find((t) => t.order_id === "CC-20260821-00000575" && t.is_repetitive);
+  assert.ok(t1SiteVisit, "Case 1 Site Visit ticket exists");
+  assert.equal(t1SiteVisit.targetGroupKey, "SITE VISIT");
+  assert.equal(t1SiteVisit.ts_site_visit[0].name, "Willy Panjaitan");
+
+  const t2SiteVisit = result.valid_tickets.find((t) => t.order_id === "CC-20260821-00000576");
+  assert.ok(t2SiteVisit, "Case 2 Site Visit ticket exists");
+  assert.equal(t2SiteVisit.is_repetitive, true);
+  assert.equal(t2SiteVisit.targetGroupKey, "SITE VISIT");
+  assert.equal(t2SiteVisit.ts_site_visit.length, 2); // Binjai Pewenri & Dedi
+});

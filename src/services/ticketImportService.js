@@ -8,6 +8,7 @@ import {
   resolveCityFromTicketRow,
   resolveSiteFromTicketRow,
 } from "./siteSearchService.js";
+import { resolveTsSiteVisit } from "./siteVisitService.js";
 import {
   ASSIGNMENT_GROUP_COLUMN,
   CITY_COLUMN,
@@ -81,6 +82,11 @@ const COMPLAINT_DESCRIPTION_COLUMNS = [
 ];
 const PROBLEM_ANALYSIS_COLUMN = "Problem Analysis";
 const PROBLEM_ANALYSIS_NSH_COLUMN = "Problem Analysis NSH";
+const RESOLUTION_L2_ASSIGN_COLUMNS = [
+  "Resolution(L2 Assign)",
+  "Resolution (L2 Assign)",
+  "Resolution",
+];
 const REOPEN_NUMBER_COLUMN = "Reopen Number(Confirm Close)";
 const REOPEN_FILLED_CHECK_COLUMNS = [
   "Assign Personal(L2 Assign)",
@@ -859,6 +865,14 @@ function normalizeTicket(row, picResult, siteResolution) {
     pic_sqa: isSqa ? picResult.pic_sqa : "",
     pic_nop: isNop ? picResult.pic_nop : "",
     msisdn: getFirstRowValue(row, CUSTOMER_MSISDN_COLUMNS),
+    raw_description: row[DESCRIPTION_COLUMN] || row["Description"] || "",
+    row_raw: row,
+    ccm_analysis: cleanMultilineText(
+      getFirstRowValue(row, RESOLUTION_L2_ASSIGN_COLUMNS),
+    ),
+    resolution_l2: cleanMultilineText(
+      getFirstRowValue(row, RESOLUTION_L2_ASSIGN_COLUMNS),
+    ),
     notes: notesResult.text,
     analysis_text: analysisResult.text,
     problem_analysis: cleanMultilineText(row[PROBLEM_ANALYSIS_COLUMN]),
@@ -1038,7 +1052,35 @@ export function processTicketRows(rows) {
     const ticket = normalizeTicket(resolvedRow, picResult, siteResolution);
     ticket.row_number = rowNumber;
 
-    let anomalyInfo = picResult.anomaly_info || null;
+    const businessStatus = String(ticket.business_status || "")
+      .trim()
+      .toLowerCase();
+    const reopenNum = Number(cleanTableValue(ticket.reopen_number));
+    const isReopen =
+      businessStatus === "reopen" ||
+      (Number.isFinite(reopenNum) && reopenNum > 0);
+
+    let siteVisitClone = null;
+    if (isReopen && Number.isFinite(reopenNum)) {
+      if (reopenNum > 3) {
+        // ReOpen > 3: Routed EXCLUSIVELY to Site Visit, NOT sent to SQA
+        ticket.is_repetitive = true;
+        ticket.targetGroupKey = "SITE VISIT";
+        ticket.ts_site_visit = resolveTsSiteVisit(ticket);
+        ticket.anomaly_info = `Tiket ReOpen (${reopenNum}X > 3) Repetitif -> Dialihkan ke Grup Site Visit`;
+      } else if (reopenNum === 3) {
+        // ReOpen == 3: Sent to SQA as usual AND cloned to Site Visit
+        siteVisitClone = {
+          ...ticket,
+          is_repetitive: true,
+          targetGroupKey: "SITE VISIT",
+          ts_site_visit: resolveTsSiteVisit(ticket),
+          anomaly_info: `Tiket ReOpen (3X) Repetitif -> Dikirim ke SQA dan Grup Site Visit`,
+        };
+      }
+    }
+
+    let anomalyInfo = ticket.anomaly_info || picResult.anomaly_info || null;
     if (!anomalyInfo) {
       if (
         !siteResolution.ok &&
@@ -1067,11 +1109,18 @@ export function processTicketRows(rows) {
     }
     ticket.anomaly_info = anomalyInfo;
     validTickets.push(ticket);
+
+    if (siteVisitClone) {
+      validTickets.push(siteVisitClone);
+    }
+
     logger.info("Row marked valid", {
       rowNumber,
       orderId: ticket.order_id,
       assignmentType: ticket.assignment_type,
       pic: ticket.pic,
+      isRepetitive: ticket.is_repetitive,
+      hasClone: Boolean(siteVisitClone),
     });
     processingLog.push({
       status: "VALID",
@@ -1095,7 +1144,34 @@ export function processTicketRows(rows) {
       reopen_filled_columns: ticket.reopen_filled_columns,
       fallback_resolutions: ticket.fallback_resolutions,
       anomaly_info: ticket.anomaly_info,
+      is_repetitive: ticket.is_repetitive,
     });
+    if (siteVisitClone) {
+      processingLog.push({
+        status: "VALID",
+        row_number: rowNumber,
+        order_id: siteVisitClone.order_id,
+        ticket_id: siteVisitClone.ticket_id,
+        city: siteVisitClone.city,
+        assignment_group: siteVisitClone.assignment_group,
+        assignment_type: "SITE_VISIT",
+        sla_status: siteVisitClone.sla_status,
+        pic: siteVisitClone.pic,
+        ccm_handling: siteVisitClone.ccm_handling,
+        nsa: siteVisitClone.nsa,
+        city_source: siteVisitClone.city_source,
+        site_cover: siteVisitClone.site_cover,
+        site_id: siteVisitClone.site_id,
+        vendor: siteVisitClone.vendor,
+        cluster_area: siteVisitClone.cluster_area,
+        use_reopen_message_format: false,
+        reopen_number: siteVisitClone.reopen_number,
+        reopen_filled_columns: siteVisitClone.reopen_filled_columns,
+        fallback_resolutions: siteVisitClone.fallback_resolutions,
+        anomaly_info: siteVisitClone.anomaly_info,
+        is_repetitive: true,
+      });
+    }
   }
 
   const groupedTickets = validTickets.reduce((groups, ticket) => {
@@ -1637,6 +1713,9 @@ export {
   formatInProgressReminderMessagePayload,
   formatEscalationMessagePayload,
   formatEscalationMessage,
+  formatRepetitiveEscalationPayload,
+  extractCustomerDetailsSummary,
+  extractRepetitiveNote,
   getReopenCount,
   getReminderSiteId,
   getpreviousProblemAnalysis,

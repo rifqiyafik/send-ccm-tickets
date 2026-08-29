@@ -1037,7 +1037,35 @@ export function processTicketRows(rows) {
 
     const ticket = normalizeTicket(resolvedRow, picResult, siteResolution);
     ticket.row_number = rowNumber;
-    ticket.anomaly_info = picResult.anomaly_info || null;
+
+    let anomalyInfo = picResult.anomaly_info || null;
+    if (!anomalyInfo) {
+      if (
+        !siteResolution.ok &&
+        siteResolution.reason === "SITE_ID_NOT_FOUND_IN_NOP_DATA"
+      ) {
+        anomalyInfo = `Site ID (${siteResolution.site_id}) tidak ada di DB site -> Diproses ke PIC Kota ${cityResolution.city}`;
+      } else if (
+        !siteResolution.ok &&
+        siteResolution.reason === "SITE_ID_EMPTY_AND_SITE_COVER_NOT_FOUND"
+      ) {
+        anomalyInfo = `Site ID & Site Cover kosong -> Diproses ke PIC Kota ${cityResolution.city}`;
+      } else if (
+        siteResolution.source === "problem_analysis_nsh" ||
+        siteResolution.source === "extracted_from_row"
+      ) {
+        anomalyInfo = `Site ID (${ticket.site_id}) diekstrak dari teks -> Ditemukan via ${shortenNopName(siteResolution.source)}`;
+      } else if (
+        ticket.fallback_resolutions &&
+        ticket.fallback_resolutions.length > 0
+      ) {
+        const fields = ticket.fallback_resolutions
+          .map((f) => f.field)
+          .join(", ");
+        anomalyInfo = `Data (${fields}) tidak lengkap -> Menggunakan fallback teks alternatif/NSH`;
+      }
+    }
+    ticket.anomaly_info = anomalyInfo;
     validTickets.push(ticket);
     logger.info("Row marked valid", {
       rowNumber,

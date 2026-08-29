@@ -65,7 +65,7 @@
   },
   {
     "city": "ACEH TENGGARA",
-    "departement_ns": " NOP ACEH",
+    "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
     "pic_nop": "Ivan Setiawan Situmorang",
@@ -97,7 +97,7 @@
   },
   {
     "city": "BATU BARA",
-    "departement_ns": " NOP RANTAU PRAPAT",
+    "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
     "pic_nop": "Royza Iqbal Zaini",
@@ -436,7 +436,7 @@
     "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Ray P Tarigan",
+    "pic_nop": "Ivan Setiawan Situmorang",
     "vendor": "ERICSSON"
   },
   {
@@ -452,7 +452,7 @@
     "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Ray P Tarigan",
+    "pic_nop": "Royza Iqbal Zaini",
     "vendor": "ERICSSON"
   },
   {
@@ -492,7 +492,7 @@
     "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Ray P Tarigan",
+    "pic_nop": "Ivan Setiawan Situmorang",
     "vendor": "ERICSSON"
   }
 ]

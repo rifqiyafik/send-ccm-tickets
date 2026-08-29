@@ -1681,10 +1681,19 @@ async function sendTicketDetailsToTargetGroups(
             const currentOrder = ticket.order_id || "-";
             const nextTicket = tickets[sentCount];
             const queueConfig = getQueueConfig();
-            const minSec = Math.round(queueConfig.minDelayMs / 1000);
-            const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
-            const delayText =
-              minSec === maxSec ? `~${minSec}s` : `~${minSec}-${maxSec}s`;
+            const isManual = Boolean(options.manualMode);
+            let delayInfoText;
+            if (isManual) {
+              const manualSec = Math.round(queueConfig.manualSendDelayMs / 1000);
+              delayInfoText = `${manualSec} detik (Manual Telegram)`;
+            } else {
+              const minSec = Math.round(queueConfig.minDelayMs / 1000);
+              const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
+              delayInfoText =
+                minSec === maxSec
+                  ? `${minSec} detik`
+                  : `${minSec} - ${maxSec} detik (Random Jitter)`;
+            }
 
             const progressLines = [
               "⏳ **PROGRESS PENGIRIMAN TIKET**",
@@ -1694,11 +1703,12 @@ async function sendTicketDetailsToTargetGroups(
               "",
               `✅ **Terkirim**       : \`${currentOrder}\``,
               `👤 **PIC**            : **${ticket.pic || "-"}**`,
+              `⏱️ **Jeda Waktu**     : **${delayInfoText}**`,
             ];
 
             if (nextTicket) {
               progressLines.push(
-                `⏳ **Tiket Berikut**  : \`${nextTicket.order_id || "-"}\` (jeda ${delayText}...)`,
+                `⏳ **Tiket Berikut**  : \`${nextTicket.order_id || "-"}\` (menunggu jeda ${delayInfoText}...)`,
               );
             } else if (nextEntry) {
               const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
@@ -1706,7 +1716,7 @@ async function sendTicketDetailsToTargetGroups(
                 TARGET_GROUP_COMPLETION_DELAY_MS / 1000,
               );
               progressLines.push(
-                `⏳ **Status**         : Lanjut ke **${nextTargetLabel}** (jeda ${groupDelaySec}s...)`,
+                `⏳ **Status**         : Lanjut ke **${nextTargetLabel}** (jeda antar grup ${groupDelaySec} detik...)`,
               );
             }
 

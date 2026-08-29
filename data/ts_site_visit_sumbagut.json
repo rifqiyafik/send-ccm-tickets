@@ -3,13 +3,7 @@
     "area": "MEDAN",
     "nop": "NOP MEDAN",
     "cities": ["KOTA MEDAN", "DELI SERDANG"],
-    "ts": [
-      {
-        "name": "Willy Panjaitan",
-        "phone": "6285207769555",
-        "label": "Willy Site Visit CCM Telkomsel"
-      }
-    ]
+    "ts": ["Willy Panjaitan"]
   },
   {
     "area": "ACEH",
@@ -33,13 +27,7 @@
       "BENER MERIAH",
       "GAYO LUES"
     ],
-    "ts": [
-      {
-        "name": "Riski",
-        "phone": "62811688993",
-        "label": "Riski Site Visit CCM Telkomsel"
-      }
-    ]
+    "ts": ["Riski"]
   },
   {
     "area": "BINJAI",
@@ -53,18 +41,7 @@
       "ACEH UTARA",
       "KOTA LHOKSEUMAWE"
     ],
-    "ts": [
-      {
-        "name": "Pewenri",
-        "phone": "6285260045597",
-        "label": "Pewenri Site Visit CCM Telkomsel"
-      },
-      {
-        "name": "Dedi",
-        "phone": "6281214456231",
-        "label": "Dedi Site Visit CCM Telkomsel"
-      }
-    ]
+    "ts": ["Pewenri", "Dedi"]
   },
   {
     "area": "SIDEMPUAN",
@@ -85,18 +62,7 @@
       "NIAS UTARA",
       "NIAS BARAT"
     ],
-    "ts": [
-      {
-        "name": "Januar",
-        "phone": "628116103388",
-        "label": "Januar Site Visit CCM Telkomsel"
-      },
-      {
-        "name": "Okis",
-        "phone": "6281397033246",
-        "label": "Okis Site Visit CCM Telkomsel"
-      }
-    ]
+    "ts": ["Januar", "Okis"]
   },
   {
     "area": "SIANTAR",
@@ -109,7 +75,6 @@
       "KOTA TEBING TINGGI",
       "BATU BARA",
       "ASAHAN",
-      "KOTA TANJUNG BALAI",
       "KOTA TANJUNG BALAI",
       "LABUHANBATU",
       "LABUHAN BATU",
@@ -126,17 +91,6 @@
       "HUMBANG HASUNDUTAN",
       "ACEH TENGGARA"
     ],
-    "ts": [
-      {
-        "name": "Rudi",
-        "phone": "6282272329397",
-        "label": "Rudi Site Visit CCM Telkomsel"
-      },
-      {
-        "name": "Dedek",
-        "phone": "6281321111779",
-        "label": "Dedek Site Visit CCM Telkomsel"
-      }
-    ]
+    "ts": ["Rudi", "Dedek"]
   }
 ]

@@ -93,20 +93,24 @@ export function resolveTsSiteVisit(ticket, rows = defaultTsRows) {
 
 function formatTsList(tsRawList = []) {
   return tsRawList.map((ts) => {
-    const rawPhone = String(ts.phone || "").replace(/[^0-9]/g, "");
-    const defaultJid = rawPhone ? `${rawPhone}@s.whatsapp.net` : null;
-    const configuredContact =
-      getMentionContact(ts.name) || getMentionContact(rawPhone);
+    const name = typeof ts === "string" ? ts : ts.name;
+    const configuredContact = getMentionContact(name);
+    const jid =
+      configuredContact?.jid ||
+      (ts.phone ? `${String(ts.phone).replace(/[^0-9]/g, "")}@s.whatsapp.net` : null);
+    const rawPhone = jid ? jid.split("@")[0].replace(/[^0-9]/g, "") : "";
+    const label =
+      configuredContact?.label ||
+      (typeof ts === "object" ? ts.label : null) ||
+      `${name} Site Visit CCM Telkomsel`;
+    const tagText = rawPhone ? `@${rawPhone}` : `@${label}`;
 
     return {
-      name: ts.name,
+      name,
       phone: rawPhone,
-      jid: configuredContact?.jid || defaultJid,
-      label:
-        configuredContact?.label ||
-        ts.label ||
-        `${ts.name} Site Visit CCM Telkomsel`,
-      tagText: `@${rawPhone}`,
+      jid,
+      label,
+      tagText,
     };
   });
 }

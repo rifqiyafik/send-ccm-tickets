@@ -747,63 +747,146 @@ function groupTicketsForSummaryReminder(tickets) {
   return groups;
 }
 
-async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
-  const groupsByTarget = await groupTicketsByTarget(sock, sourceJid, tickets);
+async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets, options = {}) {
+  const groupsByTarget = await groupTicketsByTarget(sock, sourceJid, tickets, options);
   const mainSqaGroup = getGroupConfig("MAIN SQA");
-  logger.info("Sending .summary reminder messages to WhatsApp target groups", {
+  logger.info("Sending .summary reminder messages to target groups", {
     sourceJid,
     targetGroups: groupsByTarget.size,
     tickets: tickets.length,
+    manualMode: Boolean(options.manualMode),
   });
 
+  const summaryTasks = [];
   for (const [targetJid, targetTickets] of groupsByTarget.entries()) {
     const reminderGroups = groupTicketsForSummaryReminder(targetTickets);
-
     for (const [groupKey, groupTickets] of reminderGroups.entries()) {
       const isSqaSummary = groupKey === "SQA";
       const reminderTargetJid = isSqaSummary ? mainSqaGroup?.jid : targetJid;
-
-      if (!reminderTargetJid) {
-        logger.warn(".summary reminder skipped: target JID is not configured", {
-          sourceJid,
-          groupKey,
-          tickets: groupTickets.length,
-          assignmentType: groupTickets[0]?.assignment_type,
-        });
-        await sendTargetDeliveryFailedAlert(sock, sourceJid, {
-          targetJid: isSqaSummary ? "MAIN SQA" : targetJid,
-          stage: ".summary reminder target missing",
-          tickets: groupTickets,
-          error: new Error(
-            isSqaSummary
-              ? "MAIN SQA target group belum dikonfigurasi."
-              : "Target group belum dikonfigurasi.",
-          ),
-        });
-        continue;
-      }
-
-      const payload = formatReminderMessagePayload(groupTickets, {
-        targetGroupKey: isSqaSummary
-          ? "MAIN SQA"
-          : getTargetGroupKey(reminderTargetJid),
-        usePicSqa: isSqaSummary,
-      });
-      logger.info("Sending .summary reminder message to target group", {
-        sourceJid,
+      const targetLabel = isSqaSummary ? "MAIN SQA" : formatTargetProgressLabel(groupTickets);
+      summaryTasks.push({
         targetJid: reminderTargetJid,
-        originalTargetJid: targetJid,
+        groupKey,
+        groupTickets,
+        isSqaSummary,
+        targetLabel,
+      });
+    }
+  }
+
+  const totalSteps = summaryTasks.length;
+  if (totalSteps === 0) return;
+
+  const queueConfig = getQueueConfig();
+  const isManual = Boolean(options.manualMode);
+  const getDelayInfoText = () => {
+    if (isManual) {
+      const manualSec = Math.round(queueConfig.manualSendDelayMs / 1000);
+      return `${manualSec} detik (Manual Telegram)`;
+    }
+    const minSec = Math.round(queueConfig.minDelayMs / 1000);
+    const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
+    return minSec === maxSec
+      ? `${minSec} detik`
+      : `${minSec} - ${maxSec} detik (Random Jitter)`;
+  };
+
+  let overallSentCount = 0;
+
+  for (let i = 0; i < summaryTasks.length; i++) {
+    if (isDeliveryCancelled()) break;
+    const task = summaryTasks[i];
+    const { targetJid: reminderTargetJid, groupKey, groupTickets, isSqaSummary, targetLabel } = task;
+
+    if (!reminderTargetJid) {
+      logger.warn(".summary reminder skipped: target JID is not configured", {
+        sourceJid,
         groupKey,
         tickets: groupTickets.length,
         assignmentType: groupTickets[0]?.assignment_type,
       });
-      await sock.sendMessage(reminderTargetJid, payload);
-
-      const delayMs = getPostSendDelay(groupTickets[0]?.assignment_type || "SUMMARY");
-      if (delayMs > 0 && !isDeliveryCancelled()) {
-        await sleepWithCancellation(delayMs);
-      }
+      await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+        targetJid: isSqaSummary ? "MAIN SQA" : "-",
+        stage: ".summary reminder target missing",
+        tickets: groupTickets,
+        error: new Error(
+          isSqaSummary
+            ? "MAIN SQA target group belum dikonfigurasi."
+            : "Target group belum dikonfigurasi.",
+        ),
+      });
+      continue;
     }
+
+    const payload = formatReminderMessagePayload(groupTickets, {
+      targetGroupKey: isSqaSummary
+        ? "MAIN SQA"
+        : getTargetGroupKey(reminderTargetJid),
+      usePicSqa: isSqaSummary,
+    });
+
+    try {
+      await sock.sendMessage(reminderTargetJid, payload);
+      logger.info("Sent .summary reminder message to target group", {
+        sourceJid,
+        targetJid: reminderTargetJid,
+        groupKey,
+        tickets: groupTickets.length,
+        assignmentType: groupTickets[0]?.assignment_type,
+      });
+    } catch (error) {
+      await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+        targetJid: reminderTargetJid,
+        stage: ".summary reminder delivery",
+        tickets: groupTickets,
+        error,
+      });
+    }
+
+    overallSentCount += 1;
+
+    let nextItemLabel = null;
+    if (i < summaryTasks.length - 1) {
+      nextItemLabel = `Mengirim Rekap Summary ke ${summaryTasks[i + 1].targetLabel}`;
+    }
+
+    const delayMs = getPostSendDelay(groupTickets[0]?.assignment_type || "SUMMARY", options);
+    const progressLines = [
+      "⏳ **PROGRESS PENGIRIMAN SUMMARY**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📊 **Total Progress** : ${formatReminderProgressBar(overallSentCount, totalSteps)}`,
+      `📍 **Tahap Saat Ini** : Mengirim Rekap Summary ke ${targetLabel} (${i + 1}/${totalSteps})`,
+      "",
+      `✅ **Terkirim**       : Summary ${targetLabel} (${groupTickets.length} Tiket)`,
+      `⏱️ **Jeda Waktu**     : **${getDelayInfoText()}**`,
+    ];
+
+    if (nextItemLabel) {
+      progressLines.push(`⏳ **Berikutnya**     : ${nextItemLabel}`);
+    }
+
+    await sendTicketProgressMessage(sock, sourceJid, progressLines.join("\n"), {
+      isProgress: true,
+      overallSentCount,
+      totalSteps,
+    });
+
+    if (i < summaryTasks.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+      await sleepWithCancellation(delayMs);
+    }
+  }
+
+  // Final summary complete card
+  if (!isDeliveryCancelled()) {
+    const summaryLines = [
+      "✅ **PENGIRIMAN SUMMARY SELESAI**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📊 **Total Terkirim** : **${overallSentCount}/${totalSteps} Target Summary**`,
+    ];
+    await sendTicketProgressMessage(sock, sourceJid, summaryLines.join("\n"), {
+      isProgress: true,
+      isFinal: true,
+    });
   }
 }
 
@@ -1736,6 +1819,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       sock,
       sourceJid,
       result.valid_tickets,
+      options,
     );
     logger.info("Stopping import flow after summary-only report", {
       sourceJid,

@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 
 import {
@@ -192,6 +194,9 @@ test("processTicketExcel handles ReOpen = 3 and ReOpen > 3 correctly", async () 
 });
 
 test("sendReminderCommandResult sends repetitive reminder to SITE VISIT group", async () => {
+  const customStorePath = path.join("tmp", `site-visit-remind-${Date.now()}.json`);
+  process.env.SENT_TICKET_STORE_PATH = customStorePath;
+
   const sentMessages = [];
   const mockSock = {
     sendMessage: async (jid, payload) => {
@@ -202,7 +207,7 @@ test("sendReminderCommandResult sends repetitive reminder to SITE VISIT group", 
 
   const validTickets = [
     {
-      order_id: "CC-20260821-00000576",
+      order_id: "CC-BRAND-NEW-001",
       assignment_type: "SQA",
       city: "LANGKAT",
       pic_sqa: "Herman",
@@ -224,11 +229,14 @@ test("sendReminderCommandResult sends repetitive reminder to SITE VISIT group", 
   });
 
   const siteVisitMsg = sentMessages.find(
-    (m) => m.jid === "120363000000000099@g.us" || m.jid.includes("g.us"),
+    (m) => m.jid === "120363000000000099@g.us" || m.jid.includes("g.us") || m.jid.startsWith("manual:"),
   );
   assert.ok(siteVisitMsg, "Site Visit message was sent");
   assert.ok(siteVisitMsg.payload.text.includes("Ticket Complain Repetitif"));
-  assert.ok(siteVisitMsg.payload.text.includes("CC-20260821-00000576"));
+  assert.ok(siteVisitMsg.payload.text.includes("CC-BRAND-NEW-001"));
+
+  fs.rmSync(customStorePath, { force: true });
+  delete process.env.SENT_TICKET_STORE_PATH;
 });
 
 test("resolveTargetJid in manualMode returns synthetic key when WA JID is empty", async () => {
@@ -286,4 +294,45 @@ test("formatSiteVisitCombinedReminderPayload produces multi-area grouped reminde
   assert.ok(payload.mentions.includes("6285207769555@s.whatsapp.net")); // Willy
   assert.ok(payload.mentions.includes("6282272329397@s.whatsapp.net")); // Rudi
   assert.ok(payload.mentions.includes("628118035472@s.whatsapp.net")); // Bagus
+});
+
+test("sendReminderCommandResult sends combined reminder in manualMode for previously sent tickets", async () => {
+  const sentMessages = [];
+  const mockSock = {
+    sendMessage: async (jid, payload) => {
+      sentMessages.push({ jid, payload });
+      return { key: { id: "mock-id" } };
+    },
+  };
+
+  const { markTicketAsSent } = await import("../src/services/sentTicketService.js");
+  const ticket = {
+    order_id: "CC-20260821-00000999",
+    assignment_type: "SQA",
+    city: "KOTA MEDAN",
+    pic_sqa: "Fernando Pasaribu",
+    is_repetitive: true,
+    targetGroupKey: "SITE VISIT",
+    resolve_target_22h_text: "Sabtu / 22 Agu 2026",
+    notes: "Nama Customer: Budi",
+    ccm_analysis: "PRB Capacity",
+  };
+
+  // Pre-mark ticket as sent
+  await markTicketAsSent(ticket, { sourceJid: "telegram:123", targetJid: "manual:SITE VISIT" });
+
+  const { sendReminderCommandResult } = await import(
+    "../src/handlers/whatsappMessageHandler.js"
+  );
+
+  await sendReminderCommandResult(mockSock, "telegram:123", [ticket], {
+    manualMode: true,
+  });
+
+  const combinedMsg = sentMessages.find(
+    (m) => m.payload.text && m.payload.text.includes("REMINDER TIKET REPETITIF / SITE VISIT"),
+  );
+  assert.ok(combinedMsg, "Site Visit combined reminder message was sent");
+  assert.ok(combinedMsg.payload.text.includes("CC-20260821-00000999"));
+  assert.ok(combinedMsg.payload.text.includes("TS MEDAN"));
 });

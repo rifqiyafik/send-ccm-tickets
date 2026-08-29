@@ -1679,9 +1679,11 @@ async function sendTicketDetailsToTargetGroups(
 
             const currentOrder = ticket.order_id || "-";
             const nextTicket = tickets[sentCount];
-            const delaySec = Math.round(
-              Number(process.env.WA_SEND_DELAY_MS || 10000) / 1000,
-            );
+            const queueConfig = getQueueConfig();
+            const minSec = Math.round(queueConfig.minDelayMs / 1000);
+            const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
+            const delayText =
+              minSec === maxSec ? `~${minSec}s` : `~${minSec}-${maxSec}s`;
 
             const progressLines = [
               "⏳ **PROGRESS PENGIRIMAN TIKET**",
@@ -1695,7 +1697,7 @@ async function sendTicketDetailsToTargetGroups(
 
             if (nextTicket) {
               progressLines.push(
-                `⏳ **Tiket Berikut**  : \`${nextTicket.order_id || "-"}\` (jeda ${delaySec}s...)`,
+                `⏳ **Tiket Berikut**  : \`${nextTicket.order_id || "-"}\` (jeda ${delayText}...)`,
               );
             } else if (nextEntry) {
               const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);

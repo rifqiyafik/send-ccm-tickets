@@ -116,6 +116,6 @@ function formatTsList(tsRawList = []) {
 }
 
 export function formatTsMentionHeader(tsList = []) {
-  if (!tsList || tsList.length === 0) return "-";
-  return tsList.map((t) => t.tagText).join(" ");
+  if (!tsList || tsList.length === 0) return "bang -";
+  return tsList.map((t) => `bang ${t.tagText}`).join(" & ");
 }

@@ -24,34 +24,35 @@ test("resolves TS Site Visit per area correctly with dual tags for Binjai, Sidem
   assert.equal(tsMedan.length, 1);
   assert.equal(tsMedan[0].name, "Willy Panjaitan");
   assert.equal(tsMedan[0].phone, "6285207769555");
-  assert.equal(formatTsMentionHeader(tsMedan), "@6285207769555");
+  assert.equal(formatTsMentionHeader(tsMedan), "bang @6285207769555");
 
   // Aceh
   const tsAceh = resolveTsSiteVisit({ city: "ACEH BESAR" });
   assert.equal(tsAceh.length, 1);
   assert.equal(tsAceh[0].name, "Riski");
   assert.equal(tsAceh[0].phone, "62811688993");
+  assert.equal(formatTsMentionHeader(tsAceh), "bang @62811688993");
 
   // Binjai (2 TS)
   const tsBinjai = resolveTsSiteVisit({ city: "LANGKAT" });
   assert.equal(tsBinjai.length, 2);
   assert.equal(tsBinjai[0].name, "Pewenri");
   assert.equal(tsBinjai[1].name, "Dedi");
-  assert.equal(formatTsMentionHeader(tsBinjai), "@6285260045597 @6281214456231");
+  assert.equal(formatTsMentionHeader(tsBinjai), "bang @6285260045597 & bang @6281214456231");
 
   // Sidempuan (2 TS)
   const tsPsp = resolveTsSiteVisit({ city: "KOTA PADANG SIDEMPUAN" });
   assert.equal(tsPsp.length, 2);
   assert.equal(tsPsp[0].name, "Januar");
   assert.equal(tsPsp[1].name, "Okis");
-  assert.equal(formatTsMentionHeader(tsPsp), "@628116103388 @6281397033246");
+  assert.equal(formatTsMentionHeader(tsPsp), "bang @628116103388 & bang @6281397033246");
 
   // Siantar (2 TS)
   const tsPms = resolveTsSiteVisit({ city: "SIMALUNGUN" });
   assert.equal(tsPms.length, 2);
   assert.equal(tsPms[0].name, "Rudi");
   assert.equal(tsPms[1].name, "Dedek");
-  assert.equal(formatTsMentionHeader(tsPms), "@6282272329397 @6281321111779");
+  assert.equal(formatTsMentionHeader(tsPms), "bang @6282272329397 & bang @6281321111779");
 });
 
 test("getTargetGroupKey returns SITE VISIT for repetitive ticket", () => {
@@ -68,7 +69,7 @@ test("formatRepetitiveEscalationPayload produces expected template and mentions"
     order_id: "CC-20260821-00000575",
     assignment_type: "SQA",
     city: "KOTA MEDAN",
-    pic_sqa: "Ahsan",
+    pic_sqa: "Fernando Pasaribu",
     is_repetitive: true,
     resolve_target_22h_text: "Sabtu / 22 Agu 2026, 06:44:09 PM",
     customer_summary_text: [
@@ -84,24 +85,26 @@ test("formatRepetitiveEscalationPayload produces expected template and mentions"
       "Detail Complain : kendala jaringan lambat",
       "Capture CCA : https://imgur.com/undefined",
     ].join("\n"),
-    ccm_analysis: "Performance KPI beberapa hari terakhir disaat kejadian terlihat Normal dan tidak ada yang Anomali, avail, UL interference, Capacity dan Transport masih aman. Perkiraan site cover pelanggan lebih dominan di cover  MDX330 Sek-1.",
-    repetitive_note: "Sudah diinfokan hasil laporan tiket sebelumnya, namun pelanggan menginfokan jaringannya masih lambat/nihil. Moban penanganan dan pengawalannya.",
+    ccm_analysis: "Performance KPI beberapa hari terakhir disaat kejadian terlihat Normal dan tidak ada yang Anomali, avail, UL interference, Capacity dan Transport masih aman. Perkiraan site cover pelanggan lebih dominan di cover  MDN442 Sek-3. \nPotensial Problem : Closed",
+    repetitive_note: "-",
   };
 
   const payload = formatRepetitiveEscalationPayload(ticket);
   assert.ok(payload.text.includes("Mohon dibantu bang @6285207769555"));
   assert.ok(payload.text.includes("CC-20260821-00000575"));
-  assert.ok(payload.text.includes("CC bang @628111990334")); // Ahsan SQA
+  assert.ok(payload.text.includes("CC bang @628126099949 & bang @628118035472")); // Fernando SQA & Bagus SQA
   assert.ok(payload.text.includes("Ticket Complain Repetitif"));
   assert.ok(payload.text.includes("Nama Customer : SELAMET PURNOMO"));
-  assert.ok(payload.text.includes("CCM Analysis : Performance KPI beberapa hari"));
-  assert.ok(payload.text.includes("Note : Sudah diinfokan hasil laporan tiket sebelumnya"));
+  assert.ok(payload.text.includes("CCM Analysis : Performance KPI beberapa hari terakhir disaat kejadian terlihat Normal dan tidak ada yang Anomali, avail, UL interference, Capacity dan Transport masih aman. Perkiraan site cover pelanggan lebih dominan di cover  MDN442 Sek-3."));
+  assert.ok(!payload.text.includes("Potensial Problem"));
+  assert.ok(!payload.text.includes("Note :"));
   assert.ok(payload.text.includes("SLA DUE DATE 24H : *Sabtu / 22 Agu 2026, 06:44:09 PM*"));
   assert.ok(payload.text.includes("Mohon dibantu ya bang🙏🏻🙏🏻"));
 
-  // Mention JIDs include TS and SQA
+  // Mention JIDs include TS, SQA, and Bagus
   assert.ok(payload.mentions.includes("6285207769555@s.whatsapp.net"));
-  assert.ok(payload.mentions.includes("628111990334@s.whatsapp.net"));
+  assert.ok(payload.mentions.includes("628126099949@s.whatsapp.net"));
+  assert.ok(payload.mentions.includes("628118035472@s.whatsapp.net"));
 });
 
 test("processTicketExcel handles ReOpen = 3 and ReOpen > 3 correctly", async () => {

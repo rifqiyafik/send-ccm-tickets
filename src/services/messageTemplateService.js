@@ -688,6 +688,13 @@ export function extractRepetitiveNote(textInput, row = {}) {
   return cleanTableValue(row["Note"] || row["Notes"]) || "-";
 }
 
+export function cleanCcmAnalysis(text) {
+  if (!text) return "-";
+  let cleaned = String(text).trim();
+  cleaned = cleaned.replace(/\s*(?:Potensial|Potential)\s+Problem\s*:\s*.*$/is, "").trim();
+  return cleaned || "-";
+}
+
 export function formatRepetitiveEscalationPayload(ticket) {
   logger.info("Formatting repetitive escalation message", {
     orderId: ticket.order_id,
@@ -696,20 +703,37 @@ export function formatRepetitiveEscalationPayload(ticket) {
   const tsList = ticket.ts_site_visit || resolveTsSiteVisit(ticket);
   const tsTags = formatTsMentionHeader(tsList);
   const sqaTag = resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel");
+  const bagusTag = resolveMentionTag("Bagus", "PIC SQA Telkomsel");
+
+  let ccLine;
+  if (sqaTag.jid && bagusTag.jid && sqaTag.jid !== bagusTag.jid) {
+    ccLine = `CC bang ${sqaTag.text} & bang ${bagusTag.text}`;
+  } else {
+    const singleTag = sqaTag.text || bagusTag.text || "-";
+    ccLine = `CC bang ${singleTag}`;
+  }
 
   const customerSummary =
     ticket.customer_summary_text ||
     extractCustomerDetailsSummary(ticket.raw_description || ticket.notes, ticket.row_raw || {});
 
-  const ccmAnalysis = ticket.ccm_analysis || ticket.resolution_l2 || "-";
-  const note =
+  const rawCcmAnalysis = ticket.ccm_analysis || ticket.resolution_l2 || "-";
+  const ccmAnalysis = cleanCcmAnalysis(rawCcmAnalysis);
+
+  const rawNote =
     ticket.repetitive_note ||
     extractRepetitiveNote(ticket.raw_description || ticket.notes, ticket.row_raw || {});
+  const cleanNote = String(rawNote || "").trim();
+  const hasNote =
+    cleanNote &&
+    cleanNote !== "-" &&
+    !/^tidak ada$/i.test(cleanNote) &&
+    !/^none$/i.test(cleanNote);
 
   const lines = [
-    `Mohon dibantu bang ${tsTags}`,
+    `Mohon dibantu ${tsTags}`,
     ticket.order_id || "-",
-    `CC bang ${sqaTag.text || "-"}`,
+    ccLine,
     "",
     ticket.order_id || "-",
     "",
@@ -719,16 +743,22 @@ export function formatRepetitiveEscalationPayload(ticket) {
     "",
     `CCM Analysis : ${ccmAnalysis}`,
     "",
-    `Note : ${note}`,
-    "",
+  ];
+
+  if (hasNote) {
+    lines.push(`Note : ${cleanNote}`, "");
+  }
+
+  lines.push(
     `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
     "",
     "Mohon dibantu ya bang🙏🏻🙏🏻",
-  ];
+  );
 
   const mentions = uniqueMentionJids([
     ...tsList,
     sqaTag,
+    bagusTag,
   ]);
 
   logger.info("Repetitive escalation message mention payload created", {

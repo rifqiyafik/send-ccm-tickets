@@ -1892,25 +1892,24 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
-  if (isDeliveryCancelled()) {
-    return;
-  }
-
-  await sendDailyInProgressReminders(
-    sock,
-    sourceJid,
-    sentTicketPlan.in_progress_reminder_tickets || [],
-  );
-
-  if (isDeliveryCancelled()) {
-    return;
-  }
-
   if (ticketOnlyMode) {
-    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
-      sourceJid,
-    });
+    logger.info(
+      "Skipping daily in-progress reminders and MAIN SQA summary in .update ticket-only mode",
+      {
+        sourceJid,
+      },
+    );
   } else {
+    await sendDailyInProgressReminders(
+      sock,
+      sourceJid,
+      sentTicketPlan.in_progress_reminder_tickets || [],
+    );
+
+    if (isDeliveryCancelled()) {
+      return;
+    }
+
     await sendMainSqaSummaryOnly(
       sock,
       sourceJid,

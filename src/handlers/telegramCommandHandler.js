@@ -189,8 +189,8 @@ function createTelegramWhatsAppAdapter({
         return;
       }
 
-      // Jika dalam manualMode, jangan kirim ke WhatsApp, melainkan kirim ke Telegram!
-      if (manualMode) {
+      // Jika dalam manualMode atau JID belum dikonfigurasi di WhatsApp, kirim ke Telegram!
+      if (manualMode || String(jid).startsWith("manual:")) {
         const groupKey = getGroupKeyByJid(jid);
         const mentionLabel = !groupKey ? getMentionNameByJid(jid) : null;
         const targetChatId = groupKey

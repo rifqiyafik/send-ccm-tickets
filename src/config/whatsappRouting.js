@@ -93,21 +93,17 @@ export function resolveTargetJid(ticket, options = {}) {
     WHATSAPP_GROUPS[assignmentKey] ||
     null;
 
-  if (!targetJid) {
-    if (options.manualMode) {
-      return `manual:${configGroupKey || "UNKNOWN"}`;
-    }
-    logger.warn("Target JID not found", {
-      orderId: ticket.order_id,
-      groupKey: configGroupKey,
-      assignmentType: ticket.assignment_type,
-      clusterArea: ticket.cluster_area,
-      nsa: ticket.nsa,
-      pic: ticket.pic,
-    });
-    return null;
+  if (targetJid) {
+    logger.info("Resolved target JID from env fallback", { targetJid });
+    return targetJid;
   }
 
-  logger.info("Resolved target JID from env fallback", { targetJid });
-  return targetJid;
+  if (configGroupKey) {
+    logger.info("Target group JID not configured, falling back to manual routing", {
+      groupKey: configGroupKey,
+    });
+    return `manual:${configGroupKey}`;
+  }
+
+  return `manual:UNKNOWN`;
 }

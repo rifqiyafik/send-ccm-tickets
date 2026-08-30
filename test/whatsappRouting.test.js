@@ -33,7 +33,7 @@ function setupRoutingConfig(name, targetGroups = {}) {
   };
 }
 
-test("returns null when target group JID is not configured", () => {
+test("returns manual:SQA when target group JID is not configured", () => {
   const context = setupRoutingConfig("missing-target", {
     SQA: {
       jid: "",
@@ -49,7 +49,7 @@ test("returns null when target group JID is not configured", () => {
       nsa: "MEDAN",
       pic: "Ferry",
     }),
-    null,
+    "manual:SQA",
   );
 
   context.cleanup();

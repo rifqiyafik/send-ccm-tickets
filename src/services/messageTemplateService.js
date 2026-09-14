@@ -736,8 +736,6 @@ export function formatRepetitiveEscalationPayload(ticket) {
     ticket.order_id || "-",
     ccLine,
     "",
-    ticket.order_id || "-",
-    "",
     "Ticket Complain Repetitif",
     "",
     customerSummary || "-",
@@ -940,25 +938,6 @@ export function formatEscalationMessagePayload(ticket) {
     };
   }
 
-  if (isOutSlaInProgressTicket(ticket) && !ticket.escalated_from) {
-    const mentions = uniqueMentionJids(isSqa ? [ccmTag] : [nopTag]);
-    const text = formatOutSlaInProgressEscalationText(ticket, {
-      ccmTag,
-      nopTag,
-    });
-
-    logger.info("OUT SLA In Progress reminder mention payload created", {
-      orderId: ticket.order_id,
-      mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
-      mentions,
-    });
-
-    return {
-      text,
-      mentions,
-    };
-  }
-
   const intro = isSqa
     ? [
         `Mohon dibantu bang ${ccmTag.text || "-"}`,
@@ -966,10 +945,10 @@ export function formatEscalationMessagePayload(ticket) {
         `CC bang ${sqaTag.text || "-"}`,
       ]
     : [`Mohon dibantu bang ${nopTag.text || "-"}`, ticket.order_id || "-"];
-  const repeatedOrderId = isSqa ? [ticket.order_id || "-", ""] : [];
+
   const middleHeader = ticket.escalated_from
     ? [`*Ticket Escalated from ${ticket.escalated_from}*`, ticket.order_id || "-", ""]
-    : repeatedOrderId;
+    : [];
 
   const text = [
     ...intro,

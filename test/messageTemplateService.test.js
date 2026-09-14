@@ -77,4 +77,19 @@ test("messageTemplateService formats ReOpen and Out SLA escalation messages", ()
   const payload = formatEscalationMessagePayload(reopenTicket);
   assert.ok(payload.text.includes("Ticket Re-Open (3X)"));
   assert.ok(payload.text.includes("Splicing needed"));
+
+  const outSlaTicket = {
+    order_id: "CC-OUTSLA-1",
+    assignment_type: "NOP",
+    business_status: "In Progress",
+    sla_status: "OUT SLA",
+    analysis_text: "Root cause found",
+    notes: "Follow up required",
+    resolve_target_22h_text: "28/Agu/2026 18:00",
+    pic_nop: "Ivan Setiawan Situmorang",
+  };
+  const outSlaPayload = formatEscalationMessagePayload(outSlaTicket);
+  assert.ok(outSlaPayload.text.includes("Follow up required"));
+  assert.ok(outSlaPayload.text.includes("Root cause found"));
+  assert.ok(outSlaPayload.text.includes("SLA DUE DATE 24H : *28/Agu/2026 18:00*"));
 });

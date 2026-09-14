@@ -141,7 +141,7 @@ test("formats NOP ReOpen tickets without SQA CC line", () => {
   context.cleanup();
 });
 
-test("formats OUT SLA In Progress tickets with short reminder message", () => {
+test("formats OUT SLA In Progress tickets with full escalation message", () => {
   const context = setupMentionConfig();
 
   const payload = formatEscalationMessagePayload({
@@ -151,8 +151,8 @@ test("formats OUT SLA In Progress tickets with short reminder message", () => {
     sla_status: "OUT SLA",
     ccm_handling: "Ferry",
     pic_sqa: "Herman",
-    notes: "Long notes should not be included",
-    analysis_text: "Long analysis should not be included",
+    notes: "Notes detail here",
+    analysis_text: "Analysis detail here",
     resolve_target_22h_text: "Rabu / 22 Jul 2026, 11:50:38 PM",
   });
 
@@ -162,10 +162,13 @@ test("formats OUT SLA In Progress tickets with short reminder message", () => {
     payload.text,
     /SLA DUE DATE 24H : \*Rabu \/ 22 Jul 2026, 11:50:38 PM\*/,
   );
-  assert.doesNotMatch(payload.text, /Long notes/);
-  assert.doesNotMatch(payload.text, /Long analysis/);
-  assert.doesNotMatch(payload.text, /CC bang/);
-  assert.deepEqual(payload.mentions, ["35515252351004@lid"]);
+  assert.match(payload.text, /Notes detail here/);
+  assert.match(payload.text, /Analysis detail here/);
+  assert.match(payload.text, /CC bang/);
+  assert.deepEqual(payload.mentions, [
+    "35515252351004@lid",
+    "628136378970@s.whatsapp.net",
+  ]);
 
   context.cleanup();
 });

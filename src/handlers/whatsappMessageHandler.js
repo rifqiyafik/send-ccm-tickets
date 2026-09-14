@@ -22,13 +22,21 @@ import {
   isPrivateJid,
   normalizeJid,
 } from "../utils/jid.js";
-import { cleanInlineText } from "../utils/text.js";
+import {
+  cleanInlineText,
+  hasMeaningfulLetters,
+  isMeaningfulPayload,
+} from "../utils/text.js";
 import { acquireProcessLock } from "../utils/processLock.js";
 import {
   cancelQueue,
   enqueueTicketMessage,
   getPostSendDelay,
   getQueueConfig,
+  getReminderPostSendDelay,
+  getReminderQueueConfig,
+  getSummaryPostSendDelay,
+  getSummaryQueueConfig,
   isQueueCancelled,
 } from "../services/messageQueueService.js";
 import { getWhatsAppAccessDecision } from "../services/accessControlService.js";
@@ -50,6 +58,7 @@ import {
   formatReminderMessagePayload,
   formatTargetGroupOpeningMessage,
   formatUpdateTicketFileName,
+  getReopenReminderTickets,
   processTicketExcel,
 } from "../services/ticketImportService.js";
 
@@ -72,6 +81,7 @@ let releaseSessionLock = null;
 let activeSock = null;
 let activeController = null;
 let activeConnectionGeneration = 0;
+let activeConnectionOpenTime = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -270,9 +280,9 @@ function formatJidList({ label, items, keyword }) {
 // memecah pesan panjang agar output command tetap terkirim jika hasil JID cukup banyak.
 async function sendLongText(sock, jid, text) {
   for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-    await sock.sendMessage(jid, {
+    await sendHumanizedMessage(sock, jid, {
       text: text.slice(index, index + MAX_MESSAGE_LENGTH),
-    });
+    }, { stage: "command long text" });
   }
 }
 
@@ -694,22 +704,32 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
     assignmentType: tickets[0]?.assignment_type,
   });
 
-  await sock.sendMessage(targetJid, {
-    text: formatTargetGroupOpeningMessage(),
-  });
+  await sendHumanizedMessage(
+    sock,
+    targetJid,
+    {
+      text: formatTargetGroupOpeningMessage(),
+    },
+    { stage: "target group opening" },
+  );
 
   await sleepWithCancellation(1500);
 
   const workbookBuffer = await createFilteredTicketsExcel({
     valid_tickets: tickets,
   });
-  await sock.sendMessage(targetJid, {
-    document: workbookBuffer,
-    mimetype:
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    fileName: formatUpdateTicketFileName(),
-    // caption: "File Excel berisi tiket yang dikirim ke grup ini.",
-  });
+  await sendHumanizedMessage(
+    sock,
+    targetJid,
+    {
+      document: workbookBuffer,
+      mimetype:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      fileName: formatUpdateTicketFileName(),
+      caption: `File Update Tiket (${tickets.length} Tiket)`,
+    },
+    { stage: "target group excel document", skipPresence: true },
+  );
 }
 
 async function sendTargetGroupReminder(sock, targetJid, tickets, options = {}) {
@@ -719,76 +739,80 @@ async function sendTargetGroupReminder(sock, targetJid, tickets, options = {}) {
     assignmentType: tickets[0]?.assignment_type,
     options,
   });
-  await sock.sendMessage(
-    targetJid,
-    formatReminderMessagePayload(tickets, options),
-  );
-}
-
-function getSummaryReminderGroupKey(ticket) {
-  const assignmentType = String(ticket.assignment_type || "")
-    .trim()
-    .toUpperCase();
-  if (assignmentType === "SQA") {
-    return "SQA";
+  const payload = formatReminderMessagePayload(tickets, options);
+  if (!payload?.text?.trim()) {
+    logger.info("Target group reminder skipped: empty payload text", {
+      targetJid,
+    });
+    return;
   }
-
-  return formatTargetProgressLabel([ticket]);
+  await sendHumanizedMessage(sock, targetJid, payload, {
+    stage: "target group reminder",
+  });
 }
 
-function groupTicketsForSummaryReminder(tickets) {
-  const groups = new Map();
-  for (const ticket of tickets) {
-    const key = getSummaryReminderGroupKey(ticket);
-    const group = groups.get(key) || [];
-    group.push(ticket);
-    groups.set(key, group);
-  }
-  return groups;
-}
+
 
 async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets, options = {}) {
-  const groupsByTarget = await groupTicketsByTarget(sock, sourceJid, tickets, options);
   const mainSqaGroup = getGroupConfig("MAIN SQA");
   logger.info("Sending .summary reminder messages to target groups", {
     sourceJid,
-    targetGroups: groupsByTarget.size,
     tickets: tickets.length,
     manualMode: Boolean(options.manualMode),
   });
 
   const summaryTasks = [];
-  for (const [targetJid, targetTickets] of groupsByTarget.entries()) {
-    const reminderGroups = groupTicketsForSummaryReminder(targetTickets);
-    for (const [groupKey, groupTickets] of reminderGroups.entries()) {
-      const isSqaSummary = groupKey === "SQA";
-      const reminderTargetJid = isSqaSummary ? mainSqaGroup?.jid : targetJid;
-      const targetLabel = isSqaSummary ? "MAIN SQA" : formatTargetProgressLabel(groupTickets);
+
+  // 1. Tiket SQA: Satukan SELURUH tiket SQA (baik tiket reguler maupun tiket repetitif)
+  // menjadi TEPAT SATU tugas summary yang dikirimkan ke grup MAIN SQA.
+  const sqaTickets = tickets.filter(
+    (ticket) => String(ticket.assignment_type || "").trim().toUpperCase() === "SQA",
+  );
+  if (sqaTickets.length > 0) {
+    summaryTasks.push({
+      targetJid: mainSqaGroup?.jid,
+      groupKey: "MAIN SQA",
+      groupTickets: sqaTickets,
+      isSqaSummary: true,
+      targetLabel: "MAIN SQA",
+    });
+  }
+
+  // 2. Tiket NOP: Kelompokkan tiket NOP per masing-masing grup target NOP
+  const nopTickets = tickets.filter(
+    (ticket) => String(ticket.assignment_type || "").trim().toUpperCase() === "NOP",
+  );
+  if (nopTickets.length > 0) {
+    const nopGroupsByTarget = await groupTicketsByTarget(sock, sourceJid, nopTickets, options);
+    for (const [targetJid, targetTickets] of nopGroupsByTarget.entries()) {
       summaryTasks.push({
-        targetJid: reminderTargetJid,
-        groupKey,
-        groupTickets,
-        isSqaSummary,
-        targetLabel,
+        targetJid,
+        groupKey: getTargetGroupKey(targetJid),
+        groupTickets: targetTickets,
+        isSqaSummary: false,
+        targetLabel: formatTargetProgressLabel(targetTickets),
       });
     }
   }
 
+  // Catatan: Grup SITE VISIT sengaja DIKECUALIKAN dari summary;
+  // Ke Site Visit hanya dikirimkan detail tiket repetitif (ReOpen >= 3) dan reminder saja.
+
   const totalSteps = summaryTasks.length;
   if (totalSteps === 0) return;
 
-  const queueConfig = getQueueConfig();
+  const summaryConfig = getSummaryQueueConfig();
   const isManual = Boolean(options.manualMode);
   const getDelayInfoText = () => {
     if (isManual) {
-      const manualSec = Math.round(queueConfig.manualSendDelayMs / 1000);
+      const manualSec = Math.round(getSummaryPostSendDelay(options) / 1000);
       return `${manualSec} detik (Manual Telegram)`;
     }
-    const minSec = Math.round(queueConfig.minDelayMs / 1000);
-    const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
+    const minSec = Math.round(summaryConfig.minDelayMs / 1000);
+    const maxSec = Math.round(summaryConfig.maxDelayMs / 1000);
     return minSec === maxSec
       ? `${minSec} detik`
-      : `${minSec} - ${maxSec} detik (Random Jitter)`;
+      : `${minSec} - ${maxSec} detik (Anti-Ban Jitter)`;
   };
 
   let overallSentCount = 0;
@@ -825,8 +849,18 @@ async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets, options
       usePicSqa: isSqaSummary,
     });
 
+    if (!payload?.text?.trim()) {
+      logger.info(".summary reminder skipped: empty payload text", {
+        reminderTargetJid,
+        groupKey,
+      });
+      continue;
+    }
+
     try {
-      await sock.sendMessage(reminderTargetJid, payload);
+      await sendHumanizedMessage(sock, reminderTargetJid, payload, {
+        stage: ".summary reminder delivery",
+      });
       logger.info("Sent .summary reminder message to target group", {
         sourceJid,
         targetJid: reminderTargetJid,
@@ -850,7 +884,7 @@ async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets, options
       nextItemLabel = `Mengirim Rekap Summary ke ${summaryTasks[i + 1].targetLabel}`;
     }
 
-    const delayMs = getPostSendDelay(groupTickets[0]?.assignment_type || "SUMMARY", options);
+    const delayMs = getSummaryPostSendDelay(options);
     const progressLines = [
       "⏳ **PROGRESS PENGIRIMAN SUMMARY**",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -963,6 +997,10 @@ export function cancelActiveDelivery(reason = "Cancelled by user") {
   return true;
 }
 
+export function resetDeliveryCancellation() {
+  activeDeliveryCancelled = false;
+}
+
 export function isDeliveryCancelled() {
   return activeDeliveryCancelled || isQueueCancelled();
 }
@@ -981,8 +1019,89 @@ function sleepWithCancellation(ms) {
   });
 }
 
+// mengirim pesan dengan proteksi anti-pesan kosong dan simulasi mengetik manusiawi (anti-ban)
+async function sendHumanizedMessage(sock, jid, payload, options = {}) {
+  if (!sock?.sendMessage || !payload || !jid) {
+    logger.warn("sendHumanizedMessage skipped: invalid arguments", {
+      jid,
+      hasSock: Boolean(sock?.sendMessage),
+    });
+    return null;
+  }
+
+  // 1. Guard ketat: Jangan kirim pesan jika payload kosong, tidak memiliki huruf bermakna, dan bukan attachment valid
+  if (!isMeaningfulPayload(payload)) {
+    logger.warn("Prevented sending empty or letterless message to target", {
+      jid,
+      payloadType: typeof payload,
+      payloadKeys: Object.keys(payload || {}),
+      stage: options.stage || "unknown",
+      textContent: typeof payload === "string" ? payload : payload?.text,
+    });
+    return null;
+  }
+
+  if (isDeliveryCancelled()) {
+    logger.warn("sendHumanizedMessage aborted: delivery cancelled", { jid });
+    return null;
+  }
+
+  // 2. Humanized Typing Presence (hanya untuk socket Baileys aktif dan JID WhatsApp riil)
+  const isRealWaJid =
+    typeof jid === "string" &&
+    (jid.endsWith("@g.us") ||
+      jid.endsWith("@s.whatsapp.net") ||
+      jid.endsWith("@lid"));
+  const shouldSimulatePresence =
+    Boolean(sock.sendPresenceUpdate) && isRealWaJid && !options.skipPresence;
+
+  if (shouldSimulatePresence) {
+    try {
+      await sock.sendPresenceUpdate("composing", jid);
+      // Durasi mengetik natural berdasarkan panjang teks (antara 2000ms s/d 4500ms)
+      const textLen = textContent ? textContent.length : 30;
+      const typingMs = Math.min(
+        4500,
+        Math.max(2000, Math.floor(textLen * 18)),
+      );
+      await sleepWithCancellation(typingMs);
+    } catch (err) {
+      logger.debug("Presence update composing failed, continuing send", {
+        error: err.message,
+      });
+    }
+  }
+
+  if (isDeliveryCancelled()) {
+    logger.warn("sendHumanizedMessage aborted after typing: delivery cancelled", {
+      jid,
+    });
+    return null;
+  }
+
+  // 3. Kirim pesan
+  const result = await sock.sendMessage(jid, payload);
+
+  // 4. Kembalikan presence ke paused
+  if (shouldSimulatePresence) {
+    try {
+      await sock.sendPresenceUpdate("paused", jid);
+    } catch (_) {}
+  }
+
+  return result;
+}
+
 async function sendTicketProgressMessage(sock, sourceJid, text, meta = {}) {
   try {
+    if (!hasMeaningfulLetters(text)) {
+      logger.warn("sendTicketProgressMessage skipped: text has no meaningful letters", {
+        sourceJid,
+        text,
+      });
+      return null;
+    }
+
     logger.info("Sending ticket progress message", {
       sourceJid,
       ...meta,
@@ -1182,11 +1301,13 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
     );
     const payload = isSiteVisitGroup
       ? formatSiteVisitCombinedReminderPayload(tickets)
-      : formatInProgressReminderMessagePayload(tickets);
+      : formatInProgressReminderMessagePayload(tickets, { includeSummary: true });
 
     try {
       if (payload.text) {
-        await sock.sendMessage(targetJid, payload);
+        await sendHumanizedMessage(sock, targetJid, payload, {
+          stage: "daily in progress reminder",
+        });
       }
 
       for (const ticket of tickets) {
@@ -1243,20 +1364,22 @@ export async function sendReminderCommandResult(
       ticket.assignment_type === "SITE_VISIT",
   );
 
-  const getDelay = (assignmentType) => getPostSendDelay(assignmentType, options);
-  const queueConfig = getQueueConfig();
+  const reminderConfig = getReminderQueueConfig();
   const isManual = Boolean(options.manualMode);
+  const getDelay = () => getReminderPostSendDelay(options);
 
   const getDelayInfoText = () => {
     if (isManual) {
-      const manualSec = Math.round(queueConfig.manualSendDelayMs / 1000);
+      const manualSec = Math.round(getDelay() / 1000);
       return `${manualSec} detik (Manual Telegram)`;
     }
-    const minSec = Math.round(queueConfig.minDelayMs / 1000);
-    const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
+    const minSec = Math.round(reminderConfig.minDelayMs / 1000);
+    const maxSec = Math.round(reminderConfig.maxDelayMs / 1000);
+    const minMin = Math.round(minSec / 60);
+    const maxMin = Math.round(maxSec / 60);
     return minSec === maxSec
-      ? `${minSec} detik`
-      : `${minSec} - ${maxSec} detik (Random Jitter)`;
+      ? `${minSec} detik (${minMin} menit, Anti-Ban WA Active)`
+      : `${minSec} - ${maxSec} detik (${minMin} - ${maxMin} menit, Anti-Ban WA Active)`;
   };
 
   // 1. Group NOP tickets
@@ -1391,7 +1514,9 @@ export async function sendReminderCommandResult(
         });
 
         if (payload.text) {
-          await sock.sendMessage(targetJid, payload);
+          await sendHumanizedMessage(sock, targetJid, payload, {
+            stage: "reminder command NOP",
+          });
           logger.info("Sent NOP .reminder payload to target group", {
             targetJid,
             tickets: tickets.length,
@@ -1410,7 +1535,7 @@ export async function sendReminderCommandResult(
 
       let nextItemLabel = null;
       if (i < nopEntries.length - 1) {
-        nextItemLabel = `Mengirim Reminder ke Grup NOP ${formatTargetProgressLabel(nopEntries[i + 1][1])}`;
+        nextItemLabel = `Mengirim Reminder ke Grup ${formatTargetProgressLabel(nopEntries[i + 1][1])}`;
       } else if (sqaValues.length > 0) {
         nextItemLabel = `Mengirim Reminder SQA JAPRI ke ${sqaValues[0].name}`;
       } else if (mainSqaJid) {
@@ -1420,8 +1545,8 @@ export async function sendReminderCommandResult(
       }
 
       await reportReminderProgress({
-        currentStage: `Mengirim Reminder ke Grup NOP ${targetLabel} (${i + 1}/${nopEntries.length})`,
-        sentItem: `Reminder NOP ${targetLabel} (${tickets.length} Tiket)`,
+        currentStage: `Mengirim Reminder ke Grup ${targetLabel} (${i + 1}/${nopEntries.length})`,
+        sentItem: `Reminder ${targetLabel} (${tickets.length} Tiket)`,
         nextItem: nextItemLabel,
       });
 
@@ -1453,7 +1578,9 @@ export async function sendReminderCommandResult(
       if (payload.text) {
         if (contact && contact.jid) {
           try {
-            await sock.sendMessage(contact.jid, payload);
+            await sendHumanizedMessage(sock, contact.jid, payload, {
+              stage: "reminder command SQA JAPRI",
+            });
             logger.info("Sent SQA .reminder JAPRI to PIC CCM", {
               ccmName: name,
               contactJid: contact.jid,
@@ -1468,9 +1595,9 @@ export async function sendReminderCommandResult(
                 error,
               },
             );
-            await sock.sendMessage(sourceJid, {
+            await sendHumanizedMessage(sock, sourceJid, {
               text: `⚠️ **Gagal JAPRI WA ke ${name} (${contact.jid})**\n\n${payload.text}`,
-            });
+            }, { skipPresence: true });
           }
         } else {
           logger.warn(
@@ -1480,9 +1607,9 @@ export async function sendReminderCommandResult(
               sourceJid,
             },
           );
-          await sock.sendMessage(sourceJid, {
+          await sendHumanizedMessage(sock, sourceJid, {
             text: `⚠️ **[FALLBACK SQA REMINDER]**\nNomor WA untuk PIC CCM **${name}** belum terdaftar di config mentions.\nBerikut reminder tiketnya:\n\n${payload.text}`,
-          });
+          }, { skipPresence: true });
         }
       }
 
@@ -1528,7 +1655,9 @@ export async function sendReminderCommandResult(
       );
 
       if (mainSqaPayload.text) {
-        await sock.sendMessage(mainSqaJid, mainSqaPayload);
+        await sendHumanizedMessage(sock, mainSqaJid, mainSqaPayload, {
+          stage: "reminder command MAIN SQA",
+        });
         logger.info("Sent SQA /reminder payload to MAIN SQA group", {
           mainSqaJid,
           tickets: sqaTickets.length,
@@ -1573,7 +1702,9 @@ export async function sendReminderCommandResult(
         const ticket = newTickets[j];
         try {
           const payload = formatRepetitiveEscalationPayload(ticket);
-          await sock.sendMessage(targetJid, payload);
+          await sendHumanizedMessage(sock, targetJid, payload, {
+            stage: "reminder command Site Visit",
+          });
           logger.info(
             "Sent Site Visit first-time detail escalation to target group",
             {
@@ -1624,7 +1755,9 @@ export async function sendReminderCommandResult(
             options,
           );
           if (combinedPayload.text) {
-            await sock.sendMessage(targetJid, combinedPayload);
+            await sendHumanizedMessage(sock, targetJid, combinedPayload, {
+              stage: "reminder command Site Visit combined reminder",
+            });
             logger.info("Sent Site Visit combined reminder to target group", {
               targetJid,
               ticketsCount: reminderTickets.length,
@@ -1798,20 +1931,22 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
-  const sqaAreaFollowUpMessage = formatSqaAreaFollowUpMessage(
-    result.valid_tickets,
-  );
-  if (sqaAreaFollowUpMessage) {
-    logger.info("Sending SQA area follow-up message", {
-      sourceJid,
-      sqaTickets: result.valid_tickets.filter(
-        (ticket) => ticket.assignment_type === "SQA",
-      ).length,
-      source: "valid_tickets",
-    });
-    await sock.sendMessage(sourceJid, {
-      text: sqaAreaFollowUpMessage,
-    });
+  if (!ticketOnlyMode) {
+    const sqaAreaFollowUpMessage = formatSqaAreaFollowUpMessage(
+      result.valid_tickets,
+    );
+    if (sqaAreaFollowUpMessage) {
+      logger.info("Sending SQA area follow-up message", {
+        sourceJid,
+        sqaTickets: result.valid_tickets.filter(
+          (ticket) => ticket.assignment_type === "SQA",
+        ).length,
+        source: "valid_tickets",
+      });
+      await sock.sendMessage(sourceJid, {
+        text: sqaAreaFollowUpMessage,
+      });
+    }
   }
 
   if (summaryOnlyMode) {
@@ -1938,12 +2073,15 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
   );
 }
 
-async function sendTicketDetailsToTargetGroups(
+export async function sendTicketDetailsToTargetGroups(
   sock,
   sourceJid,
   sendableTickets,
   options = {},
 ) {
+  if (!options.preserveCancellation) {
+    activeDeliveryCancelled = false;
+  }
   const skipPreamble = Boolean(options.skipPreamble);
   const ticketsByTarget = await groupTicketsByTarget(
     sock,
@@ -1990,9 +2128,22 @@ async function sendTicketDetailsToTargetGroups(
       try {
         await sendTargetGroupPreamble(sock, targetJid, tickets);
         if (tickets[0]?.assignment_type !== "SQA") {
-          await sendTargetGroupReminder(sock, targetJid, tickets, {
-            targetGroupKey: getTargetGroupKey(targetJid),
+          const detailTickets = getReopenReminderTickets(tickets, {
+            requirePicNop: true,
           });
+          if (detailTickets.length > 0) {
+            await sendTargetGroupReminder(sock, targetJid, tickets, {
+              targetGroupKey: getTargetGroupKey(targetJid),
+            });
+          } else {
+            logger.info(
+              "Skipping target group reminder: no reopen detail tickets to remind",
+              {
+                targetJid,
+                tickets: tickets.length,
+              },
+            );
+          }
         }
       } catch (error) {
         await sendTargetDeliveryFailedAlert(sock, sourceJid, {
@@ -2030,9 +2181,11 @@ async function sendTicketDetailsToTargetGroups(
           }
 
           try {
-            await sock.sendMessage(
+            await sendHumanizedMessage(
+              sock,
               targetJid,
               formatEscalationMessagePayload(ticket),
+              { stage: "ticket detail send" },
             );
             await markTicketAsSent(ticket, { sourceJid, targetJid });
             sentCount += 1;
@@ -2165,7 +2318,11 @@ async function sendTicketDetailsToTargetGroups(
 
   if (isDeliveryCancelled()) {
     logger.info("sendTicketDetailsToTargetGroups finished early due to cancellation");
-    return;
+    return {
+      total: totalTicketsCount,
+      sentCount: overallSentCount,
+      cancelled: true,
+    };
   }
 
   await sendTicketProgressMessage(
@@ -2191,10 +2348,63 @@ async function sendTicketDetailsToTargetGroups(
       isFinal: true,
     },
   );
+
+  return {
+    total: totalTicketsCount,
+    sentCount: overallSentCount,
+    cancelled: false,
+  };
+}
+
+// menandai pesan masuk sebagai telah dibaca (centang dua biru) dengan jeda membaca alami (anti-ban)
+export async function markMessageAsRead(sock, message, options = {}) {
+  if (!sock?.readMessages || !message?.key) return false;
+  if (message.key.fromMe) return false;
+
+  const isAutoReadEnabled = process.env.WA_AUTO_READ !== "false";
+  if (!isAutoReadEnabled && !options.force) return false;
+
+  const minDelay = Number(process.env.WA_AUTO_READ_DELAY_MIN_MS || 1500);
+  const maxDelay = Number(process.env.WA_AUTO_READ_DELAY_MAX_MS || 4000);
+  const jitter =
+    maxDelay > minDelay
+      ? Math.floor(Math.random() * (maxDelay - minDelay + 1))
+      : 0;
+  const delayMs =
+    options.delayMs !== undefined ? options.delayMs : minDelay + jitter;
+
+  if (delayMs > 0) {
+    await sleepWithCancellation(delayMs);
+  }
+
+  if (isDeliveryCancelled()) return false;
+
+  try {
+    await sock.readMessages([message.key]);
+    logger.info("Marked WhatsApp message as read (centang 2 biru)", {
+      remoteJid: message.key.remoteJid,
+      id: message.key.id,
+      delayMs,
+    });
+    return true;
+  } catch (error) {
+    logger.debug("Failed to mark WhatsApp message as read", {
+      error: error.message,
+    });
+    return false;
+  }
 }
 
 // handler utama pesan masuk; hanya memproses dokumen Excel dari grup/private yang diizinkan.
-async function handleIncomingMessage(sock, messageEvent) {
+export async function handleIncomingMessage(sock, messageEvent) {
+  // 1. Abaikan event selain notify (misalnya sync history/append saat baru login)
+  if (messageEvent?.type && messageEvent.type !== "notify") {
+    logger.debug("Ignoring non-notify message event (history sync)", {
+      type: messageEvent.type,
+    });
+    return;
+  }
+
   const message = messageEvent.messages?.[0];
   if (!message?.message) {
     logger.debug("Ignoring empty message");
@@ -2204,6 +2414,44 @@ async function handleIncomingMessage(sock, messageEvent) {
   const sourceJid = message.key.remoteJid;
   if (message.key.fromMe) {
     logger.debug("Ignoring fromMe message");
+    return;
+  }
+
+  // 2. Proteksi Anti-Replay: Abaikan pesan offline/lama yang dikirim sebelum bot online
+  const rawTimestamp = message.messageTimestamp;
+  const messageTimestampMs =
+    typeof rawTimestamp === "number"
+      ? rawTimestamp * 1000
+      : typeof rawTimestamp?.low === "number"
+        ? rawTimestamp.low * 1000
+        : Number(rawTimestamp || 0) * 1000;
+
+  const isStaleMessage =
+    messageTimestampMs > 0 &&
+    (Date.now() - messageTimestampMs > 120000 ||
+      (activeConnectionOpenTime > 0 &&
+        messageTimestampMs < activeConnectionOpenTime - 10000));
+
+  if (isStaleMessage) {
+    logger.info("Ignoring stale/offline WhatsApp message received during sync", {
+      sourceJid,
+      messageAgeSec: Math.round((Date.now() - messageTimestampMs) / 1000),
+    });
+    return;
+  }
+
+  // 3. Cek apakah akses pesan/perintah masuk dari WhatsApp dinonaktifkan (Telegram-only mode)
+  const isIncomingDisabled =
+    process.env.WA_DISABLE_INCOMING === "true" ||
+    process.env.WA_ENABLE_INCOMING === "false";
+
+  if (isIncomingDisabled) {
+    logger.debug(
+      "Incoming WhatsApp message ignored: WA incoming access is disabled via .env (Telegram-only mode)",
+      {
+        sourceJid,
+      },
+    );
     return;
   }
 
@@ -2221,6 +2469,14 @@ async function handleIncomingMessage(sock, messageEvent) {
 
   const text = getMessageText(message.message);
   const documentMessage = getDocumentMessage(message.message);
+
+  // Tandai pesan sebagai telah dibaca (centang 2 biru) dengan jeda alami sebelum merespons
+  if (text.startsWith(".") || documentMessage) {
+    await markMessageAsRead(sock, message);
+  } else {
+    markMessageAsRead(sock, message).catch(() => {});
+  }
+
   if (text.startsWith(".") && !documentMessage) {
     await handleBotCommand(sock, { sourceJid, senderJid, text });
     return;
@@ -2388,6 +2644,14 @@ export async function startBot(options = {}) {
   activeConnectionGeneration = generation;
   let stopRequested = false;
   logger.info("Starting WhatsApp bot auth state", { authDir });
+  if (
+    process.env.WA_DISABLE_INCOMING === "true" ||
+    process.env.WA_ENABLE_INCOMING === "false"
+  ) {
+    logger.info(
+      "WhatsApp incoming commands & uploads are DISABLED (Telegram-only mode active)",
+    );
+  }
   const localReleaseSessionLock = acquireProcessLock(authDir, "whatsapp-bot");
   releaseSessionLock = localReleaseSessionLock;
   bindSessionLockCleanup();
@@ -2424,7 +2688,7 @@ export async function startBot(options = {}) {
 
   const sock = makeWASocket({
     auth: state,
-    browser: Browsers.ubuntu("Chrome"),
+    browser: Browsers.windows("Desktop"),
     version,
     logger: pino({ level: BAILEYS_LOG_LEVEL }),
     syncFullHistory: false,
@@ -2435,8 +2699,37 @@ export async function startBot(options = {}) {
     retryRequestDelayMs: 500,
     maxMsgRetryCount: 5,
     generateHighQualityLinkPreview: false,
-    getMessage: async () => ({ conversation: "" }),
+    getMessage: async () => undefined,
   });
+
+  // Guard level terendah: Cegah socket WhatsApp mengirim pesan kosong / tanpa huruf apapun
+  const rawSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (jid, payload, ...rest) => {
+    const isWaTarget =
+      typeof jid === "string" &&
+      (jid.endsWith("@g.us") ||
+        jid.endsWith("@s.whatsapp.net") ||
+        jid.endsWith("@lid") ||
+        !jid.includes(":"));
+
+    if (isWaTarget && !isMeaningfulPayload(payload)) {
+      logger.warn("BLOCKED empty or letterless message to WhatsApp socket", {
+        jid,
+        payloadType: typeof payload,
+        payloadKeys: Object.keys(payload || {}),
+        textPreview:
+          typeof payload === "string"
+            ? payload.slice(0, 50)
+            : typeof payload?.text === "string"
+            ? payload.text.slice(0, 50)
+            : null,
+      });
+      return null;
+    }
+
+    return await rawSendMessage(jid, payload, ...rest);
+  };
+
   activeSock = sock;
 
   function isCurrentSocket() {
@@ -2523,6 +2816,7 @@ export async function startBot(options = {}) {
 
     if (connection === "open") {
       logger.info("WhatsApp bot connected", { authDir, generation });
+      activeConnectionOpenTime = Date.now();
     }
 
     if (connection === "close") {

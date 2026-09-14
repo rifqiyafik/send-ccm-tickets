@@ -9,9 +9,11 @@
     "test": "node --test --test-concurrency=1 test/*.test.js"
   },
   "dependencies": {
+    "@clickhouse/client": "^1.23.1",
     "@whiskeysockets/baileys": "^6.7.18",
     "dotenv": "^16.4.7",
     "jszip": "^3.10.1",
+    "pg": "^8.23.0",
     "pino": "^9.6.0",
     "qrcode": "^1.5.4",
     "qrcode-terminal": "^0.12.0",

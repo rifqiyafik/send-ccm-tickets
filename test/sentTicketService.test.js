@@ -447,3 +447,182 @@ test("formats SQA area follow-up message like the requested template", () => {
     ].join("\n"),
   );
 });
+
+test("ticketOnlyMode treats in-progress tickets from previous days as duplicate without reminding", async () => {
+  const context = setupStore("ticket-only-mode", {
+    version: 1,
+    tickets: {
+      "CC-1": {
+        order_id: "CC-1",
+        assignment_type: "SQA",
+        business_status: "InProgress",
+        sla_status: "OUT SLA",
+        sent_at: "2026-08-30T08:00:00.000Z",
+        sent_date: "2026-08-30",
+      },
+    },
+  });
+
+  const plan = await createSentTicketPlan(
+    [
+      ticket({
+        order_id: "CC-1",
+        business_status: "InProgress",
+        sla_status: "OUT SLA",
+      }),
+    ],
+    new Date("2026-08-31T08:00:00.000Z"),
+    { ticketOnlyMode: true },
+  );
+
+  assert.equal(plan.sendable_tickets.length, 0);
+  assert.equal(plan.duplicate_tickets.length, 1);
+  assert.equal(plan.out_sla_tickets.length, 0);
+  assert.equal(plan.in_progress_reminder_tickets.length, 0);
+
+  context.cleanup();
+});
+
+test("pollingMode skips already-sent tickets from previous days unless reopen or escalated", async () => {
+  const context = setupStore("polling-mode-dedup", {
+    version: 1,
+    tickets: {
+      "CC-YESTERDAY-1": {
+        order_id: "CC-YESTERDAY-1",
+        assignment_type: "SQA",
+        assignment_group: "SQA",
+        business_status: "L2 Assign",
+        sla_status: "IN SLA",
+        reopen_count: 0,
+        sent_at: "2026-09-12T08:00:00.000Z",
+        sent_date: "2026-09-12",
+      },
+      "CC-YESTERDAY-2": {
+        order_id: "CC-YESTERDAY-2",
+        assignment_type: "NOP",
+        cluster_area: "NOP MEDAN",
+        business_status: "L2 Assign",
+        sla_status: "IN SLA",
+        reopen_count: 0,
+        sent_at: "2026-09-12T08:00:00.000Z",
+        sent_date: "2026-09-12",
+      },
+    },
+  });
+
+  // 1. Same tickets polled today without status change -> 0 sendable, 2 duplicates
+  const planUnchanged = await createSentTicketPlan(
+    [
+      ticket({
+        order_id: "CC-YESTERDAY-1",
+        business_status: "L2 Assign",
+        assignment_type: "SQA",
+        reopen_number: "0",
+      }),
+      ticket({
+        order_id: "CC-YESTERDAY-2",
+        business_status: "L2 Assign",
+        assignment_type: "NOP",
+        cluster_area: "NOP MEDAN",
+        pic_nop: "Nasrul Amin",
+        reopen_number: "0",
+      }),
+    ],
+    new Date("2026-09-13T08:00:00.000Z"),
+    { pollingMode: true, ticketOnlyMode: true },
+  );
+
+  assert.equal(planUnchanged.sendable_tickets.length, 0);
+  assert.equal(planUnchanged.duplicate_tickets.length, 2);
+
+  // 2. Ticket 1 reopened -> 1 sendable, 1 duplicate
+  const planReopened = await createSentTicketPlan(
+    [
+      ticket({
+        order_id: "CC-YESTERDAY-1",
+        business_status: "Reopen",
+        assignment_type: "SQA",
+        reopen_number: "1",
+      }),
+      ticket({
+        order_id: "CC-YESTERDAY-2",
+        business_status: "L2 Assign",
+        assignment_type: "NOP",
+        cluster_area: "NOP MEDAN",
+        pic_nop: "Nasrul Amin",
+        reopen_number: "0",
+      }),
+    ],
+    new Date("2026-09-13T08:00:00.000Z"),
+    { pollingMode: true, ticketOnlyMode: true },
+  );
+
+  assert.equal(planReopened.sendable_tickets.length, 1);
+  assert.equal(planReopened.sendable_tickets[0].order_id, "CC-YESTERDAY-1");
+  assert.equal(planReopened.duplicate_tickets.length, 1);
+
+  // 3. Ticket 2 escalated from NOP to SQA -> 1 sendable
+  const planEscalated = await createSentTicketPlan(
+    [
+      ticket({
+        order_id: "CC-YESTERDAY-2",
+        business_status: "L2 Assign",
+        assignment_type: "SQA",
+        cluster_area: "SQA",
+        reopen_number: "0",
+      }),
+    ],
+    new Date("2026-09-13T08:00:00.000Z"),
+    { pollingMode: true, ticketOnlyMode: true },
+  );
+
+  assert.equal(planEscalated.sendable_tickets.length, 1);
+  assert.equal(planEscalated.sendable_tickets[0].order_id, "CC-YESTERDAY-2");
+  assert.equal(planEscalated.sendable_tickets[0].escalated_from, "NOP MDN");
+
+  context.cleanup();
+});
+
+test("plans unrecorded ticket as sendable so it is sent full first time", async () => {
+  const context = setupStore("unrecorded-first-time");
+
+  const plan = await createSentTicketPlan([
+    ticket({
+      order_id: "CC-FIRST-TIME",
+      business_status: "IN PROGRESS",
+      sla_status: "OUT SLA",
+    }),
+  ]);
+
+  // Unrecorded in DB -> must be sent full (sendable: 1)
+  assert.equal(plan.sendable_tickets.length, 1);
+  assert.equal(plan.in_progress_reminder_tickets.length, 0);
+
+  // Mark ticket as sent (now recorded in DB on 2026-09-13)
+  await markTicketAsSent(
+    ticket({
+      order_id: "CC-FIRST-TIME",
+      business_status: "IN PROGRESS",
+      sla_status: "OUT SLA",
+    }),
+    { sourceJid: "source@g.us", targetJid: "target@g.us" },
+  );
+
+  // Next day run (2026-09-15) -> already in DB -> transitions to reminder!
+  const planNextDay = await createSentTicketPlan(
+    [
+      ticket({
+        order_id: "CC-FIRST-TIME",
+        business_status: "IN PROGRESS",
+        sla_status: "OUT SLA",
+      }),
+    ],
+    new Date("2026-09-15T08:00:00.000Z"),
+  );
+
+  assert.equal(planNextDay.sendable_tickets.length, 0);
+  assert.equal(planNextDay.in_progress_reminder_tickets.length, 1);
+  assert.equal(planNextDay.out_sla_tickets.length, 1);
+
+  context.cleanup();
+});

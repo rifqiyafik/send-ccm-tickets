@@ -4,6 +4,8 @@ import path from "node:path";
 import { createLogger } from "../utils/logger.js";
 import { cleanTableValue } from "../utils/text.js";
 import { shortenNopName } from "./ticketImportService.js";
+import { isDatabaseConfigured } from "./databaseService.js";
+import { loadSentTicketMap, recordSentTickets } from "./inapTicketStore.js";
 
 const logger = createLogger("sentTicketService");
 const DEFAULT_STORE_PATH = path.join(
@@ -22,6 +24,30 @@ function getStorePath() {
 function getRetentionDays() {
   const value = Number(process.env.SENT_TICKET_RETENTION_DAYS);
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_RETENTION_DAYS;
+}
+
+export function shouldUseDatabase(options = {}) {
+  if (options.useDatabaseStore === true) return true;
+  if (options.useDatabaseStore === false) return false;
+  if (!isDatabaseConfigured()) return false;
+  if (
+    process.env.NODE_ENV === "test" ||
+    process.env.npm_lifecycle_event === "test" ||
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.execArgv.includes("--test") ||
+    process.argv.some(
+      (arg) =>
+        typeof arg === "string" &&
+        (arg.includes(".test.js") || arg.includes(".test.mjs")),
+    )
+  ) {
+    return false;
+  }
+  const storePath = process.env.SENT_TICKET_STORE_PATH;
+  if (storePath && path.resolve(storePath) !== path.resolve(DEFAULT_STORE_PATH)) {
+    return false;
+  }
+  return true;
 }
 
 function normalizeOrderId(value) {
@@ -170,7 +196,12 @@ function isTicketValueEmpty(value) {
 
 function getExistingSentDate(record) {
   if (record?.sent_date) {
-    return record.sent_date;
+    const raw = String(record.sent_date).trim();
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (match) {
+      return match[1];
+    }
+    return formatLocalDate(raw);
   }
 
   if (record?.sent_at) {
@@ -460,7 +491,18 @@ function resolveTicketSendDecision(ticket, existingRecord, today, options = {}) 
     };
   }
 
+  const isTicketOnlyOrPolling = Boolean(
+    options.ticketOnlyMode || options.pollingMode,
+  );
+
   if (existingSentDate !== today) {
+    if (isTicketOnlyOrPolling) {
+      return {
+        send: false,
+        reason: "DUPLICATE_PREVIOUS_DAY",
+      };
+    }
+
     if (isInProgress(ticket.business_status) || isReopen(ticket.business_status)) {
       return {
         send: false,
@@ -483,11 +525,28 @@ function resolveTicketSendDecision(ticket, existingRecord, today, options = {}) 
   };
 }
 
-// membersihkan riwayat lama, lalu memisahkan tiket yang boleh dikirim dan tiket yang harus dilewati.
 export async function createSentTicketPlan(tickets, now = new Date(), options = {}) {
-  const rawStore = await readStore();
-  const store = cleanupExpiredRecords(rawStore, now);
-  await writeStore(store);
+  let store = options.store;
+  if (!store) {
+    if (shouldUseDatabase(options)) {
+      try {
+        const orderIds = tickets.map((t) => t.order_id).filter(Boolean);
+        const sentMap = await loadSentTicketMap(orderIds);
+        store = { tickets: Object.fromEntries(sentMap.entries()) };
+      } catch (error) {
+        logger.warn("Database sent ticket map load failed, falling back to local file store", {
+          error: error.message,
+        });
+        const rawStore = await readStore();
+        store = cleanupExpiredRecords(rawStore, now);
+        await writeStore(store);
+      }
+    } else {
+      const rawStore = await readStore();
+      store = cleanupExpiredRecords(rawStore, now);
+      await writeStore(store);
+    }
+  }
   const today = formatLocalDate(now);
 
   const sendableTickets = [];
@@ -590,7 +649,6 @@ export async function createSentTicketPlan(tickets, now = new Date(), options = 
   return plan;
 }
 
-// mencatat tiket hanya setelah pesan detail berhasil dikirim ke grup target.
 export async function markTicketAsSent(ticket, metadata = {}) {
   const orderId = normalizeOrderId(ticket.order_id);
   if (!orderId || orderId === "-") {
@@ -598,6 +656,25 @@ export async function markTicketAsSent(ticket, metadata = {}) {
       orderId: ticket.order_id,
     });
     return;
+  }
+
+  if (shouldUseDatabase(metadata)) {
+    try {
+      await recordSentTickets([ticket], metadata);
+      logger.info("Ticket marked as sent in PostgreSQL history", {
+        orderId: ticket.order_id,
+        businessStatus: ticket.business_status,
+        slaStatus: ticket.sla_status,
+        effectiveTarget: resolveEffectiveTarget(ticket),
+        targetJid: metadata.targetJid,
+      });
+      return;
+    } catch (error) {
+      logger.warn("Database sent ticket record failed, proceeding with local store fallback", {
+        orderId,
+        error: error.message,
+      });
+    }
   }
 
   const rawStore = await readStore();
@@ -649,6 +726,17 @@ export async function markTicketAsSent(ticket, metadata = {}) {
 export async function getSentTicketRecord(orderId) {
   const normalized = normalizeOrderId(orderId);
   if (!normalized) return null;
+  if (shouldUseDatabase()) {
+    try {
+      const map = await loadSentTicketMap([normalized]);
+      return map.get(normalized) || null;
+    } catch (err) {
+      logger.warn("Database getSentTicketRecord failed, falling back to local store", {
+        orderId: normalized,
+        error: err.message,
+      });
+    }
+  }
   const store = await readStore();
   return store.tickets?.[normalized] || null;
 }

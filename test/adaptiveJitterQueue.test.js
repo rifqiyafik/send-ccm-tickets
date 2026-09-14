@@ -4,6 +4,10 @@ import assert from "node:assert/strict";
 import {
   getQueueConfig,
   getPostSendDelay,
+  getReminderQueueConfig,
+  getReminderPostSendDelay,
+  getSummaryQueueConfig,
+  getSummaryPostSendDelay,
   executeWithRetry,
   cancelQueue,
 } from "../src/services/messageQueueService.js";
@@ -118,5 +122,59 @@ test("executeWithRetry exhausts retries and returns ok: false gracefully without
     else delete process.env.WA_RETRY_MAX_ATTEMPTS;
     if (prevBackoff !== undefined) process.env.WA_RETRY_BACKOFF_MS = prevBackoff;
     else delete process.env.WA_RETRY_BACKOFF_MS;
+  }
+});
+
+test("getReminderQueueConfig respects WA_REMINDER_DELAY_MIN_MS and MAX_MS (1-2 minutes)", () => {
+  const prevMin = process.env.WA_REMINDER_DELAY_MIN_MS;
+  const prevMax = process.env.WA_REMINDER_DELAY_MAX_MS;
+
+  try {
+    process.env.WA_REMINDER_DELAY_MIN_MS = "60000";
+    process.env.WA_REMINDER_DELAY_MAX_MS = "120000";
+
+    const config = getReminderQueueConfig();
+    assert.equal(config.minDelayMs, 60000);
+    assert.equal(config.maxDelayMs, 120000);
+
+    for (let i = 0; i < 30; i++) {
+      const delay = getReminderPostSendDelay();
+      assert.ok(delay >= 60000, `Reminder delay ${delay} must be >= 60000`);
+      assert.ok(delay <= 120000, `Reminder delay ${delay} must be <= 120000`);
+    }
+
+    // Test manual mode override
+    const manualDelay = getReminderPostSendDelay({ manualMode: true });
+    assert.equal(typeof manualDelay, "number");
+  } finally {
+    if (prevMin !== undefined) process.env.WA_REMINDER_DELAY_MIN_MS = prevMin;
+    else delete process.env.WA_REMINDER_DELAY_MIN_MS;
+    if (prevMax !== undefined) process.env.WA_REMINDER_DELAY_MAX_MS = prevMax;
+    else delete process.env.WA_REMINDER_DELAY_MAX_MS;
+  }
+});
+
+test("getSummaryQueueConfig respects WA_SUMMARY_DELAY_MIN_MS and MAX_MS (30-60 seconds)", () => {
+  const prevMin = process.env.WA_SUMMARY_DELAY_MIN_MS;
+  const prevMax = process.env.WA_SUMMARY_DELAY_MAX_MS;
+
+  try {
+    process.env.WA_SUMMARY_DELAY_MIN_MS = "30000";
+    process.env.WA_SUMMARY_DELAY_MAX_MS = "60000";
+
+    const config = getSummaryQueueConfig();
+    assert.equal(config.minDelayMs, 30000);
+    assert.equal(config.maxDelayMs, 60000);
+
+    for (let i = 0; i < 30; i++) {
+      const delay = getSummaryPostSendDelay();
+      assert.ok(delay >= 30000, `Summary delay ${delay} must be >= 30000`);
+      assert.ok(delay <= 60000, `Summary delay ${delay} must be <= 60000`);
+    }
+  } finally {
+    if (prevMin !== undefined) process.env.WA_SUMMARY_DELAY_MIN_MS = prevMin;
+    else delete process.env.WA_SUMMARY_DELAY_MIN_MS;
+    if (prevMax !== undefined) process.env.WA_SUMMARY_DELAY_MAX_MS = prevMax;
+    else delete process.env.WA_SUMMARY_DELAY_MAX_MS;
   }
 });

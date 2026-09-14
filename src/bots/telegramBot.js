@@ -8,13 +8,30 @@ function buildTelegramUrl(token, method) {
 
 async function callTelegramApi(token, method, payload = {}, maxRetries = 3) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const response = await fetch(buildTelegramUrl(token, method), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
+    let response;
+    try {
+      response = await fetch(buildTelegramUrl(token, method), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch (networkErr) {
+      if (attempt < maxRetries) {
+        const waitMs = (attempt + 1) * 2000;
+        logger.warn(
+          `Telegram API ${method} network error (${networkErr.message}), retrying after ${waitMs}ms`,
+          {
+            attempt: attempt + 1,
+            chatId: payload.chat_id,
+          },
+        );
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+        continue;
+      }
+      throw networkErr;
+    }
 
     const body = await response.json();
     if (response.ok && body.ok) {
@@ -61,20 +78,66 @@ async function callTelegramFileApi(token, filePath) {
   return Buffer.from(await response.arrayBuffer());
 }
 
+export function splitTextIntoTelegramChunks(text, maxChunkLength = 4000) {
+  if (!text || text.length <= maxChunkLength) return [String(text || "")];
+  const lines = String(text).split("\n");
+  const chunks = [];
+  let current = "";
+
+  for (const line of lines) {
+    const candidate = current ? `${current}\n${line}` : line;
+    if (candidate.length > maxChunkLength) {
+      if (current) {
+        chunks.push(current);
+        current = "";
+      }
+      if (line.length > maxChunkLength) {
+        for (let i = 0; i < line.length; i += maxChunkLength) {
+          chunks.push(line.slice(i, i + maxChunkLength));
+        }
+      } else {
+        current = line;
+      }
+    } else {
+      current = candidate;
+    }
+  }
+
+  if (current) {
+    chunks.push(current);
+  }
+  return chunks.length > 0 ? chunks : [text];
+}
+
 // #penjelasan: bot Telegram raw long-polling tanpa dependency tambahan; semua command masuk ke handler.
 export function createTelegramBot({ config, handleUpdate }) {
   let stopped = false;
   let offset = 0;
 
   async function sendMessage(chatId, text, options = {}) {
+    const rawText = String(text ?? "");
     logger.info("Sending Telegram message", {
       chatId: String(chatId),
-      length: String(text || "").length,
+      length: rawText.length,
     });
+
+    if (rawText.length > 4000) {
+      const chunks = splitTextIntoTelegramChunks(rawText, 4000);
+      let lastResult = null;
+      for (const chunk of chunks) {
+        lastResult = await callTelegramApi(config.bot_token, "sendMessage", {
+          chat_id: chatId,
+          text: chunk,
+          disable_web_page_preview: true,
+          ...options,
+        });
+      }
+      return lastResult;
+    }
 
     return callTelegramApi(config.bot_token, "sendMessage", {
       chat_id: chatId,
-      text,
+      text: rawText,
       disable_web_page_preview: true,
       ...options,
     });
@@ -263,9 +326,11 @@ export function createTelegramBot({ config, handleUpdate }) {
     logger.info("Starting Telegram polling bot");
     stopped = false;
     try {
+      const dropPending = process.env.TELEGRAM_DROP_PENDING_UPDATES !== "false";
       await callTelegramApi(config.bot_token, "deleteWebhook", {
-        drop_pending_updates: false,
+        drop_pending_updates: dropPending,
       });
+      logger.info("Telegram webhook cleared on startup", { dropPending });
     } catch (error) {
       logger.warn("Telegram deleteWebhook failed before polling", {
         message: error.message,

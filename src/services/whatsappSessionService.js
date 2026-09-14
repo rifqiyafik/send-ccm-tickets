@@ -65,10 +65,18 @@ export function createWhatsAppSessionService({
   const pendingSessionSwitches = new Map();
   const pendingExpiredSessionReauth = new Map();
   const readyWaiters = new Set();
+  const lastConnectedNotifyAt = new Map();
 
   async function notifySubscribers(text, options = {}) {
     for (const chatId of qrSubscribers) {
-      await sendTelegramMessage(chatId, text, options);
+      try {
+        await sendTelegramMessage(chatId, text, options);
+      } catch (error) {
+        logger.warn("Failed to send Telegram message to subscriber", {
+          chatId,
+          error: error.message,
+        });
+      }
     }
   }
 
@@ -85,7 +93,14 @@ export function createWhatsAppSessionService({
           });
         }
       }
-      await sendTelegramMessage(chatId, caption, options);
+      try {
+        await sendTelegramMessage(chatId, caption, options);
+      } catch (error) {
+        logger.warn("Failed to send Telegram fallback message to subscriber", {
+          chatId,
+          error: error.message,
+        });
+      }
     }
   }
 
@@ -543,15 +558,21 @@ export function createWhatsAppSessionService({
           connectionState = "connected";
           await markWhatsAppSessionStatus(session.id, "connected");
           resolveSocketReady();
-          await notifySubscribers(
-            [
-              "✅ <b>WhatsApp Bot Connected</b>",
-              "",
-              `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
-              `Phone: <code>${escapeTelegramHtml(session.phone)}</code>`,
-            ].join("\n"),
-            { parse_mode: "HTML" },
-          );
+
+          const now = Date.now();
+          const lastNotify = lastConnectedNotifyAt.get(session.id) || 0;
+          if (now - lastNotify > 60000) {
+            lastConnectedNotifyAt.set(session.id, now);
+            await notifySubscribers(
+              [
+                "✅ <b>WhatsApp Bot Connected</b>",
+                "",
+                `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
+                `Phone: <code>${escapeTelegramHtml(session.phone)}</code>`,
+              ].join("\n"),
+              { parse_mode: "HTML" },
+            );
+          }
         }
         if (connection === "close") {
           const statusCode = getDisconnectStatusCode(lastDisconnect);

@@ -306,6 +306,8 @@ export function formatEnvironmentStatus() {
     "",
     "⏱️ **Anti-Spam Pacing (Delay) & Resilience:**",
     `- Delay per Tiket: ${delayDisplay}`,
+    `- Delay Reminder (.reminder): **${Number(process.env.WA_REMINDER_DELAY_MIN_MS || 60000) / 1000}s - ${Number(process.env.WA_REMINDER_DELAY_MAX_MS || 120000) / 1000}s** (Anti-Ban Active)`,
+    `- Delay Summary (.summary): **${Number(process.env.WA_SUMMARY_DELAY_MIN_MS || 30000) / 1000}s - ${Number(process.env.WA_SUMMARY_DELAY_MAX_MS || 60000) / 1000}s**`,
     `- Batch Size: **${batchSize} tiket**`,
     `- Extra Delay Batch: **${batchExtraDelayMs / 1000}s** (\`${batchExtraDelayMs}ms\`)`,
     `- Jeda Antar Target Group: **${targetDelayMs / 1000}s** (\`${targetDelayMs}ms\`)`,

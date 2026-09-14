@@ -44,6 +44,68 @@ export function getQueueConfig() {
   };
 }
 
+// konfigurasi delay khusus reminder (default 1 - 2 menit) untuk proteksi anti-ban WhatsApp.
+export function getReminderQueueConfig() {
+  const defaultMin = 60000;
+  const defaultMax = 120000;
+
+  const hasMin =
+    process.env.WA_REMINDER_DELAY_MIN_MS !== undefined &&
+    process.env.WA_REMINDER_DELAY_MIN_MS !== "";
+  const hasMax =
+    process.env.WA_REMINDER_DELAY_MAX_MS !== undefined &&
+    process.env.WA_REMINDER_DELAY_MAX_MS !== "";
+
+  const minMs = hasMin ? Number(process.env.WA_REMINDER_DELAY_MIN_MS) : defaultMin;
+  const maxMs = hasMax
+    ? Number(process.env.WA_REMINDER_DELAY_MAX_MS)
+    : Math.max(minMs, defaultMax);
+
+  const effectiveMin = Math.max(0, Math.min(minMs, maxMs));
+  const effectiveMax = Math.max(0, Math.max(minMs, maxMs));
+
+  return {
+    minDelayMs: effectiveMin,
+    maxDelayMs: effectiveMax,
+    manualSendDelayMs: Number(
+      process.env.TELEGRAM_REMINDER_DELAY_MS ||
+        process.env.TELEGRAM_SEND_DELAY_MS ||
+        10000,
+    ),
+  };
+}
+
+// konfigurasi delay khusus mode summary (default 30 - 60 detik)
+export function getSummaryQueueConfig() {
+  const defaultMin = 30000;
+  const defaultMax = 60000;
+
+  const hasMin =
+    process.env.WA_SUMMARY_DELAY_MIN_MS !== undefined &&
+    process.env.WA_SUMMARY_DELAY_MIN_MS !== "";
+  const hasMax =
+    process.env.WA_SUMMARY_DELAY_MAX_MS !== undefined &&
+    process.env.WA_SUMMARY_DELAY_MAX_MS !== "";
+
+  const minMs = hasMin ? Number(process.env.WA_SUMMARY_DELAY_MIN_MS) : defaultMin;
+  const maxMs = hasMax
+    ? Number(process.env.WA_SUMMARY_DELAY_MAX_MS)
+    : Math.max(minMs, defaultMax);
+
+  const effectiveMin = Math.max(0, Math.min(minMs, maxMs));
+  const effectiveMax = Math.max(0, Math.max(minMs, maxMs));
+
+  return {
+    minDelayMs: effectiveMin,
+    maxDelayMs: effectiveMax,
+    manualSendDelayMs: Number(
+      process.env.TELEGRAM_SUMMARY_DELAY_MS ||
+        process.env.TELEGRAM_SEND_DELAY_MS ||
+        10000,
+    ),
+  };
+}
+
 // jeda async dengan kemampuan interrupt seketika saat cancel.
 function interruptibleSleep(ms) {
   if (ms <= 0) return Promise.resolve();
@@ -91,7 +153,11 @@ export function getPostSendDelay(assignmentType, options = {}) {
   const config = getQueueConfig();
 
   if (options.manualMode) {
-    return config.manualSendDelayMs;
+    return Number(
+      process.env.WA_SEND_DELAY_MIN_MS ||
+        config.manualSendDelayMs ||
+        8000,
+    );
   }
 
   const key = String(assignmentType || "UNKNOWN").toUpperCase();
@@ -120,6 +186,58 @@ export function getPostSendDelay(assignmentType, options = {}) {
   });
 
   return totalDelayMs;
+}
+
+// menghitung jeda acak khusus reminder (1 - 2 menit) untuk proteksi anti-ban.
+export function getReminderPostSendDelay(options = {}) {
+  const config = getReminderQueueConfig();
+
+  if (options.manualMode) {
+    return Number(
+      process.env.WA_SEND_DELAY_MIN_MS ||
+        config.manualSendDelayMs ||
+        8000,
+    );
+  }
+
+  const jitterRange = config.maxDelayMs - config.minDelayMs;
+  const randomOffset = jitterRange > 0 ? Math.floor(Math.random() * (jitterRange + 1)) : 0;
+  const delayMs = config.minDelayMs + randomOffset;
+
+  logger.info("Reminder delay calculated", {
+    minDelayMs: config.minDelayMs,
+    maxDelayMs: config.maxDelayMs,
+    delayMs,
+    manualMode: Boolean(options.manualMode),
+  });
+
+  return delayMs;
+}
+
+// menghitung jeda acak khusus mode summary (30 - 60 detik).
+export function getSummaryPostSendDelay(options = {}) {
+  const config = getSummaryQueueConfig();
+
+  if (options.manualMode) {
+    return Number(
+      process.env.WA_SEND_DELAY_MIN_MS ||
+        config.manualSendDelayMs ||
+        8000,
+    );
+  }
+
+  const jitterRange = config.maxDelayMs - config.minDelayMs;
+  const randomOffset = jitterRange > 0 ? Math.floor(Math.random() * (jitterRange + 1)) : 0;
+  const delayMs = config.minDelayMs + randomOffset;
+
+  logger.info("Summary delay calculated", {
+    minDelayMs: config.minDelayMs,
+    maxDelayMs: config.maxDelayMs,
+    delayMs,
+    manualMode: Boolean(options.manualMode),
+  });
+
+  return delayMs;
 }
 
 // mengeksekusi fungsi pengiriman dengan auto-retry saat terjadi error/koneksi terputus.

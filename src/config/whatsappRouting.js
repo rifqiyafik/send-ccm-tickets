@@ -1,5 +1,6 @@
 import { getGroupConfig, normalizeKey } from "./appConfig.js";
 import { createLogger } from "../utils/logger.js";
+import { normalizeJid } from "../utils/jid.js";
 
 const logger = createLogger("whatsappRouting");
 
@@ -13,7 +14,7 @@ function parseGroupMapping(value = "") {
       .filter(Boolean)
       .map((item) => {
         const [key, ...jidParts] = item.split(":");
-        return [key.trim().toUpperCase(), jidParts.join(":").trim()];
+        return [key.trim().toUpperCase(), normalizeJid(jidParts.join(":").trim())];
       })
       .filter(([key, jid]) => key && jid)
   );
@@ -67,11 +68,12 @@ export function resolveTargetJid(ticket, options = {}) {
   const configGroupKey = getTargetGroupKey(ticket);
   const configGroup = getGroupConfig(configGroupKey);
   if (configGroup?.jid) {
+    const cleanJid = normalizeJid(configGroup.jid);
     logger.info("Resolved target JID from target_groups config", {
       groupKey: configGroupKey,
-      jid: configGroup.jid,
+      jid: cleanJid,
     });
-    return configGroup.jid;
+    return cleanJid;
   }
 
   if (options.manualMode && configGroupKey) {
@@ -94,8 +96,9 @@ export function resolveTargetJid(ticket, options = {}) {
     null;
 
   if (targetJid) {
-    logger.info("Resolved target JID from env fallback", { targetJid });
-    return targetJid;
+    const cleanTargetJid = normalizeJid(targetJid);
+    logger.info("Resolved target JID from env fallback", { targetJid: cleanTargetJid });
+    return cleanTargetJid;
   }
 
   if (configGroupKey) {

@@ -26,6 +26,10 @@ function setupConfig() {
             jid: "120363000000000001@g.us",
             label: "SQA Target",
           },
+          "SITE VISIT": {
+            jid: "120363000000000888@g.us",
+            label: "Site Visit Target",
+          },
         },
         mentions: {},
       },
@@ -39,6 +43,7 @@ function setupConfig() {
   return {
     targetJid: "120363000000000001@g.us",
     mainSqaJid: "120363000000000999@g.us",
+    siteVisitJid: "120363000000000888@g.us",
     cleanup() {
       delete process.env.WHATSAPP_CONFIG_PATH;
       delete process.env.SENT_TICKET_STORE_PATH;
@@ -215,3 +220,107 @@ test("normal import sends daily In Progress reminder only to SQA/NOP target, not
     context.cleanup();
   }
 });
+
+test(".summary consolidates regular SQA and repetitive SQA into ONE single summary for MAIN SQA, and sends 0 summary to SITE VISIT", async () => {
+  const context = setupConfig();
+  const sentMessages = [];
+  const sock = {
+    async sendMessage(jid, payload) {
+      sentMessages.push({ jid, payload });
+    },
+  };
+
+  const regularSqaTicket = {
+    assignment_type: "SQA",
+    assignment_group: "SERVICE QUALITY ASSURANCE SUMBAGUT",
+    sla_status: "IN SLA",
+    business_status: "IN PROGRESS",
+    departement_ns: "NOP ACEH",
+    city: "ACEH BESAR",
+    order_id: "CC-20260724-00000001",
+    site_id: "JHO293",
+    reopen_number: "1",
+    problem_analysis: "KPI Normal",
+    resolve_target_22h_text: "Jumat / 24 Jul 2026, 10:00:00 AM",
+    ccm_handling: "Ferry",
+    pic_sqa: "Herman",
+    notes: "Tanggal Kejadian: 20260724 08:00:00:0000",
+    analysis_text: "cause: Coverage",
+    pic: "Herman",
+  };
+
+  const repetitiveSqaTicket = {
+    assignment_type: "SQA",
+    assignment_group: "SERVICE QUALITY ASSURANCE SUMBAGUT",
+    sla_status: "OUT SLA",
+    business_status: "IN PROGRESS",
+    departement_ns: "NOP MEDAN",
+    city: "MEDAN",
+    order_id: "CC-20260820-00000579",
+    site_id: "MDN442",
+    reopen_number: "4",
+    is_repetitive: true,
+    reopen_count: 4,
+    problem_analysis: "KPI Normal tidak ada anomali",
+    resolve_target_22h_text: "Kamis / 20 Aug 2026, 10:00:00 AM",
+    ccm_handling: "Ferry",
+    pic_sqa: "Dedi",
+    notes: "Tanggal Kejadian: 20260820 08:00:00:0000",
+    analysis_text: "cause: Capacity",
+    pic: "Dedi",
+  };
+
+  const testResult = {
+    ok: true,
+    total_rows: 2,
+    valid_count: 2,
+    skipped_count: 0,
+    valid_tickets: [regularSqaTicket, repetitiveSqaTicket],
+    skipped_tickets: [],
+    grouped_tickets: { SQA: [regularSqaTicket, repetitiveSqaTicket] },
+    processing_log: [],
+    skipped_by_reason: {},
+    valid_by_pic: { Herman: 1, Dedi: 1 },
+    valid_by_assignment_type: { SQA: 2 },
+  };
+
+  try {
+    await sendImportResult(sock, "telegram:5085979770", testResult, {
+      summaryOnlyMode: true,
+    });
+
+    const summaryMessages = sentMessages.filter((msg) =>
+      /Remind Ticket CX Open/i.test(msg.payload?.text || ""),
+    );
+
+    // Harus TEPAT SATU summary yang dikirim untuk SQA (bukan 2 kali)
+    const mainSqaSummaries = summaryMessages.filter(
+      (msg) => msg.jid === context.mainSqaJid,
+    );
+    assert.equal(
+      mainSqaSummaries.length,
+      1,
+      "MAIN SQA harus menerima tepat 1 pesan summary SQA, tidak boleh duplikat/terpecah",
+    );
+
+    // Summary tersebut harus menggabungkan seluruh 2 tiket (1 In SLA + 1 Out SLA)
+    assert.match(
+      mainSqaSummaries[0].payload.text,
+      /SQA \| 2 \| 1 \| 1/,
+      "Summary SQA harus mencakup total 2 tiket (gabungan tiket reguler dan repetitif)",
+    );
+
+    // SITE VISIT sama sekali TIDAK boleh menerima pesan summary
+    const siteVisitSummaries = summaryMessages.filter(
+      (msg) => msg.jid === context.siteVisitJid,
+    );
+    assert.equal(
+      siteVisitSummaries.length,
+      0,
+      "Grup SITE VISIT tidak boleh menerima pesan summary",
+    );
+  } finally {
+    context.cleanup();
+  }
+});
+

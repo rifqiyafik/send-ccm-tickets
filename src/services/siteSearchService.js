@@ -72,11 +72,20 @@ export function extractSiteCoverFromRow(row, siteIndex = null) {
     "CCH Smartcare",
   ];
 
+  let firstFound = null;
+
   for (const col of candidateColumns) {
     const text = row?.[col];
     if (text) {
       const siteId = extractSiteCover(text);
-      if (siteId) return siteId;
+      if (siteId) {
+        if (!siteIndex || siteIndex.has(siteId)) {
+          return siteId;
+        }
+        if (!firstFound) {
+          firstFound = siteId;
+        }
+      }
     }
   }
 
@@ -99,7 +108,7 @@ export function extractSiteCoverFromRow(row, siteIndex = null) {
     }
   }
 
-  return null;
+  return firstFound;
 }
 
 // membuat index site_id -> data site agar search ke JSON NOP cepat dan konsisten.

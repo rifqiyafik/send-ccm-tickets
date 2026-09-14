@@ -23,16 +23,243 @@ import {
   formatWhatsAppPrivateCommand,
   sendImportResult,
 } from "./whatsappMessageHandler.js";
-import { processTicketExcel } from "../services/ticketImportService.js";
+import {
+  processTicketExcel,
+  parseWorkbook,
+  processTicketRows,
+  shortenNopName,
+} from "../services/ticketImportService.js";
+import { isDatabaseConfigured } from "../services/databaseService.js";
+import { batchUpsertMasterTickets } from "../services/inapTicketStore.js";
+import { formatAsciiTable, createCodeBlock } from "../utils/asciiTable.js";
 import {
   changeRuntimeEnvironment,
   formatEnvironmentChangeResult,
   formatEnvironmentChangeUsage,
   formatEnvironmentStatus,
 } from "../services/runtimeEnvironmentService.js";
+import { isMeaningfulPayload } from "../utils/text.js";
 
 const logger = createLogger("telegramCommandHandler");
 const TELEGRAM_SOURCE_PREFIX = "telegram:";
+
+const INDONESIAN_MONTHS = {
+  "01": "Januari",
+  "02": "Februari",
+  "03": "Maret",
+  "04": "April",
+  "05": "Mei",
+  "06": "Juni",
+  "07": "Juli",
+  "08": "Agustus",
+  "09": "September",
+  "10": "Oktober",
+  "11": "November",
+  "12": "Desember",
+};
+
+const MONTH_FILTER_LOOKUP = {
+  januari: "01",
+  jan: "01",
+  "01": "01",
+  "1": "01",
+  februari: "02",
+  feb: "02",
+  "02": "02",
+  "2": "02",
+  maret: "03",
+  mar: "03",
+  "03": "03",
+  "3": "03",
+  april: "04",
+  apr: "04",
+  "04": "04",
+  "4": "04",
+  mei: "05",
+  "05": "05",
+  "5": "05",
+  juni: "06",
+  jun: "06",
+  "06": "06",
+  "6": "06",
+  juli: "07",
+  jul: "07",
+  "07": "07",
+  "7": "07",
+  agustus: "08",
+  agu: "08",
+  agt: "08",
+  "08": "08",
+  "8": "08",
+  september: "09",
+  sep: "09",
+  "09": "09",
+  "9": "09",
+  oktober: "10",
+  okt: "10",
+  "10": "10",
+  november: "11",
+  nov: "11",
+  "11": "11",
+  desember: "12",
+  des: "12",
+  "12": "12",
+};
+
+export function extractTicketSummaryRows(rawRows, processedResult = null) {
+  const processedMap = new Map();
+  if (processedResult?.valid_tickets) {
+    for (const t of processedResult.valid_tickets) {
+      if (t.order_id) processedMap.set(t.order_id, t);
+    }
+  }
+
+  const items = [];
+  for (const row of rawRows || []) {
+    const orderId = String(row["Order ID"] || row.order_id || "").trim();
+    if (!orderId || orderId === "-") continue;
+
+    const matched = processedMap.get(orderId);
+
+    const city =
+      matched?.city ||
+      row["City"] ||
+      row["Kabupaten/Kota(Create Ticket)"] ||
+      row["Kabupaten/Kota"] ||
+      row.city ||
+      "-";
+
+    const clusterArea =
+      matched?.cluster_area ||
+      shortenNopName(
+        row["Cluster Area"] ||
+          row["Assign to L2(L2 Assign)"] ||
+          row["Assignment Group"] ||
+          row.cluster_area ||
+          "-",
+      );
+
+    const slaStatus =
+      matched?.sla_status ||
+      row["SLA Status"] ||
+      row.sla_status ||
+      "-";
+
+    const pic =
+      matched?.pic ||
+      row["PIC"] ||
+      row["Assign Personal(L2 Assign)"] ||
+      row.pic ||
+      "-";
+
+    const siteId =
+      matched?.site_id ||
+      row["Site ID 1"] ||
+      row["site_id1(L1 Assign)"] ||
+      row["Site ID"] ||
+      row.site_id ||
+      "-";
+
+    const createTime = String(row["Create Time"] || row.create_time || "").trim();
+
+    let year = "";
+    let month = "";
+    const idMatch = orderId.match(/^CC-(\d{4})(\d{2})/i);
+    if (idMatch) {
+      year = idMatch[1];
+      month = idMatch[2];
+    } else if (createTime) {
+      const dt = new Date(createTime);
+      if (!isNaN(dt.getTime())) {
+        year = String(dt.getFullYear());
+        month = String(dt.getMonth() + 1).padStart(2, "0");
+      }
+    }
+
+    items.push({
+      order_id: orderId,
+      city,
+      cluster_area: clusterArea,
+      sla_status: slaStatus,
+      pic,
+      site_id: siteId,
+      create_time: createTime,
+      year: year || "2026",
+      month: month || "00",
+      monthKey: `${year || "2026"}-${month || "00"}`,
+      monthLabel: `${INDONESIAN_MONTHS[month] || "Bulan Lainnya"} ${year || "2026"}`,
+    });
+  }
+
+  items.sort((a, b) => a.order_id.localeCompare(b.order_id));
+  return items;
+}
+
+export function formatInjectMonthSummaryMessages(summaryRows, options = {}) {
+  const filterKey = options.monthFilter ? String(options.monthFilter).toLowerCase().trim() : "";
+  const monthFilter = filterKey ? MONTH_FILTER_LOOKUP[filterKey] : null;
+
+  let rows = summaryRows;
+  if (monthFilter) {
+    rows = rows.filter((r) => r.month === monthFilter);
+  }
+
+  const monthGroups = new Map();
+  for (const row of rows) {
+    const key = row.monthKey;
+    if (!monthGroups.has(key)) {
+      monthGroups.set(key, {
+        label: row.monthLabel,
+        month: row.month,
+        year: row.year,
+        rows: [],
+      });
+    }
+    monthGroups.get(key).rows.push(row);
+  }
+
+  const sortedKeys = [...monthGroups.keys()].sort();
+
+  const columns = [
+    { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 22 },
+    { key: "city", header: "City", minWidth: 12, maxWidth: 19 },
+    { key: "cluster_area", header: "Cluster Area", minWidth: 14, maxWidth: 22 },
+    { key: "sla_status", header: "SLA Status", minWidth: 10, maxWidth: 10 },
+    { key: "pic", header: "PIC", minWidth: 12, maxWidth: 26 },
+    { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 9 },
+  ];
+
+  const messages = [];
+  const CHUNK_SIZE = 20;
+
+  for (const key of sortedKeys) {
+    const group = monthGroups.get(key);
+    group.rows.sort((a, b) => a.order_id.localeCompare(b.order_id));
+
+    const totalInMonth = group.rows.length;
+    const chunks = [];
+    for (let i = 0; i < totalInMonth; i += CHUNK_SIZE) {
+      chunks.push(group.rows.slice(i, i + CHUNK_SIZE));
+    }
+
+    chunks.forEach((chunkRows, chunkIdx) => {
+      const table = formatAsciiTable(columns, chunkRows);
+      const partTag =
+        chunks.length > 1
+          ? ` (Bagian ${chunkIdx + 1}/${chunks.length} - ${chunkRows.length} Tiket)`
+          : ` (${totalInMonth} Tiket)`;
+
+      messages.push(
+        [
+          `📅 **Bulan: ${group.label}${partTag}**`,
+          createCodeBlock(table),
+        ].join("\n"),
+      );
+    });
+  }
+
+  return messages;
+}
 
 function getMessageText(update) {
   return String(update.message?.text || "").trim();
@@ -102,20 +329,24 @@ function getTelegramDocumentImportOptions(caption) {
   const summaryOnlyMode = [".summary", "/summary"].includes(baseCommand);
   const reminderMode = [".reminder", "/reminder"].includes(baseCommand);
   const specialMode = [".special", "/special"].includes(baseCommand);
+  const injectMode = [".inject", "/inject"].includes(baseCommand);
 
   return {
     command,
+    argument: argument || "",
     supported:
       normalMode ||
       ticketOnlyMode ||
       summaryOnlyMode ||
       reminderMode ||
-      specialMode,
+      specialMode ||
+      injectMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
     specialMode,
+    injectMode,
     manualMode: manualMode || baseCommand === ".manual" || baseCommand === "/manual",
   };
 }
@@ -132,7 +363,7 @@ function isSupportedTelegramExcelFile(document) {
   );
 }
 
-function createTelegramWhatsAppAdapter({
+export function createTelegramWhatsAppAdapter({
   ensureWhatsAppReady,
   getWhatsAppSocket,
   sourceChatId,
@@ -147,6 +378,24 @@ function createTelegramWhatsAppAdapter({
 
   return {
     sourceJid,
+    async sendPresenceUpdate(presence, jid) {
+      if (manualMode || String(jid).startsWith("manual:")) {
+        return;
+      }
+      try {
+        const whatsappSock =
+          (await ensureWhatsAppReady?.()) || getWhatsAppSocket?.();
+        if (whatsappSock?.sendPresenceUpdate) {
+          await whatsappSock.sendPresenceUpdate(presence, jid);
+        }
+      } catch (error) {
+        logger.debug("Failed to delegate presence update to WhatsApp socket", {
+          presence,
+          jid,
+          error: error.message,
+        });
+      }
+    },
     async sendMessage(jid, payload) {
       if (jid === sourceJid) {
         if (payload?.document) {
@@ -273,8 +522,18 @@ function createTelegramWhatsAppAdapter({
         throw new Error("WhatsApp session belum aktif. Jalankan /login dulu.");
       }
 
+      if (!isMeaningfulPayload(payload)) {
+        logger.warn("Adapter prevented sending empty or letterless message to WhatsApp", {
+          targetJid: jid,
+          payloadType: typeof payload,
+          payloadKeys: Object.keys(payload || {}),
+          textContent: typeof payload === "string" ? payload : payload?.text,
+        });
+        return null;
+      }
+
       try {
-        await whatsappSock.sendMessage(jid, payload);
+        return await whatsappSock.sendMessage(jid, payload);
       } catch (error) {
         if (!isWhatsAppConnectionClosedError(error)) {
           throw error;
@@ -296,7 +555,7 @@ function createTelegramWhatsAppAdapter({
           throw error;
         }
 
-        await latestSock.sendMessage(jid, payload);
+        return await latestSock.sendMessage(jid, payload);
       }
     },
   };
@@ -349,9 +608,15 @@ function detectTelegramChatType(chatId) {
 }
 
 function isAdminOnlyCommand(command) {
-  return ["/logout", "/delete_session", "/whitelist", "/change_env"].includes(
-    command,
-  );
+  return [
+    "/logout",
+    "/delete_session",
+    "/whitelist",
+    "/change_env",
+    "/poll",
+    "/autopoll",
+    "/fetch",
+  ].includes(command);
 }
 
 function isAdminOnlyRegisterCommand(command, argument) {
@@ -547,7 +812,11 @@ async function sendTelegramCommandError(sendMessage, chatId, command, error) {
 }
 
 // semua command operasional diarahkan ke Telegram agar WhatsApp fokus menerima Excel dan kirim tiket.
-export function createTelegramCommandHandler({ config, whatsappSession }) {
+export function createTelegramCommandHandler({
+  config,
+  whatsappSession,
+  ticketPolling,
+}) {
   return async function handleTelegramUpdate(
     update,
     { downloadFile, sendDocument, sendMessage, editMessageText },
@@ -601,6 +870,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             "📊 Summary saja: gunakan caption `.summary`.",
             "⏰ Reminder saja: gunakan caption `.reminder`.",
             "⚡ Kirim ulang tiket (bypass duplikat): gunakan caption `.special`.",
+            "💾 Injeksi data master ke DB: gunakan caption `.inject`.",
             "",
             "---",
             "ℹ️ File tanpa caption command akan diabaikan.",
@@ -622,7 +892,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
 
-      if (!importOptions.manualMode) {
+      if (!importOptions.manualMode && !importOptions.injectMode) {
         try {
           await whatsappSession.ensureReady(chatId, { interactive: true });
         } catch (error) {
@@ -673,7 +943,15 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
                 : "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
               `📄 File Name: \`${document.file_name || "-"}\``,
             ].join("\n")
-          : importOptions.summaryOnlyMode
+          : importOptions.injectMode
+            ? [
+                "📂 **File Excel Diterima (Mode .inject Database)**",
+                "",
+                "⏳ Mengunduh dan membaca 208 kolom file Excel...",
+                "💾 Memasukkan data master tiket ke PostgreSQL...",
+                `📄 File Name: \`${document.file_name || "-"}\``,
+              ].join("\n")
+            : importOptions.summaryOnlyMode
             ? [
                 `📂 **File Excel Diterima (Mode .summary${manualTag})**`,
                 "",
@@ -706,7 +984,60 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           bytes: buffer.length,
           ticketOnlyMode: importOptions.ticketOnlyMode,
           summaryOnlyMode: importOptions.summaryOnlyMode,
+          injectMode: importOptions.injectMode,
         });
+
+        if (importOptions.injectMode) {
+          logger.info("Processing Excel in .inject mode to PostgreSQL", {
+            chatId,
+            fileName: document.file_name,
+            bytes: buffer.length,
+            monthFilter: importOptions.argument,
+          });
+          const rows = await parseWorkbook(buffer);
+          const upsertResult = await batchUpsertMasterTickets(rows);
+
+          // Normalisasi baris dan kelompokkan per bulan untuk tabel summary
+          const processedResult = processTicketRows(rows);
+          const summaryRows = extractTicketSummaryRows(rows, processedResult);
+          const tableMessages = formatInjectMonthSummaryMessages(summaryRows, {
+            monthFilter: importOptions.argument,
+          });
+
+          // Kirim tabel summary per bulan (diurutkan berdasarkan order id)
+          for (const tableMsg of tableMessages) {
+            await sendRichMessage(sendMessage, chatId, tableMsg);
+          }
+
+          const report = [
+            "✅ **Injeksi Data Master Tiket Berhasil**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            `📄 **File Excel**     : \`${document.file_name || "-"}\``,
+            `📊 **Total Baris**    : **${upsertResult.total} baris**`,
+            `💾 **Tersimpan ke DB**: **${upsertResult.processed} tiket**`,
+            `📁 **Tabel Target**   : \`SQA_SUMBAGUT.inap_ticketing_customer_complain\``,
+            "",
+            "ℹ️ Data telah tersimpan di PostgreSQL dan siap digunakan untuk verifikasi deduplikasi harian (.update).",
+          ].join("\n");
+
+          if (statusMsgId && editMessageText) {
+            await editRichMessage(editMessageText, chatId, statusMsgId, report);
+          } else {
+            await sendRichMessage(sendMessage, chatId, report);
+          }
+          return;
+        }
+
+        if (isDatabaseConfigured()) {
+          parseWorkbook(buffer)
+            .then((rows) => batchUpsertMasterTickets(rows))
+            .catch((err) =>
+              logger.warn("Background upsert to PostgreSQL failed during import", {
+                error: err.message,
+              }),
+            );
+        }
+
         const result = await processTicketExcel(buffer);
         logger.info("Telegram ticket Excel process completed", {
           chatId,
@@ -1010,6 +1341,130 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         chatId,
         formatStatus(whatsappSession.getStatus()),
       );
+      return;
+    }
+
+    if (command === "/poll" || command === "/autopoll" || command === "/fetch") {
+      if (!ticketPolling) {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "ℹ️ **Fitur Auto-Polling Database Belum Diaktifkan**",
+            "",
+            "Untuk mengaktifkan fitur pengecekan otomatis database ClickHouse:",
+            "1. Atur `DB_POLL_ENABLED=true` di file `.env`.",
+            "2. Lengkapi konfigurasi `DB_HOST`, `DB_USER`, `DB_PASSWORD`.",
+            "3. Restart aplikasi bot.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const subCommand = String(argument || "").trim().toLowerCase();
+
+      if (command === "/fetch" || subCommand === "now") {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          "⏳ **Menjalankan Pengecekan Database Instan...**\nSedang memeriksa tiket L2 Assign running di ClickHouse...",
+        );
+        try {
+          const pollResult = await ticketPolling.poll({ force: true });
+          if (pollResult.status === "SUCCESS") {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              `✅ **Pengecekan Instan Selesai**\n📦 Berhasil mengirim **${pollResult.newTickets} tiket baru** ke WhatsApp.`,
+            );
+          } else if (
+            pollResult.status === "NO_ROWS" ||
+            pollResult.status === "ALL_DUPLICATES" ||
+            pollResult.status === "NO_VALID_TICKETS"
+          ) {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              "ℹ️ **Database Up-to-Date**\nTidak ada tiket baru yang perlu dikirim dari database saat ini.",
+            );
+          } else if (pollResult.status === "ALREADY_ACTIVE") {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              "⏳ Siklus pengecekan database lain sedang berjalan, mohon tunggu sebentar.",
+            );
+          } else {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              `⚠️ **Status Pengecekan**: \`${pollResult.status}\`${pollResult.error ? `\n🛑 Error: \`${pollResult.error}\`` : ""}`,
+            );
+          }
+        } catch (pollErr) {
+          await sendTelegramCommandError(sendMessage, chatId, command, pollErr);
+        }
+        return;
+      }
+
+      if (subCommand === "off" || subCommand === "pause" || subCommand === "stop") {
+        ticketPolling.pause();
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "⏸️ **Auto-Polling Dijeda (Paused)**",
+            "",
+            "Pengecekan otomatis berkala ke database dihentikan sementara.",
+            "👉 Ketik `/poll on` untuk mengaktifkan kembali.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (subCommand === "on" || subCommand === "resume" || subCommand === "start") {
+        ticketPolling.resume();
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "▶️ **Auto-Polling Diaktifkan (Active)**",
+            "",
+            "Pengecekan otomatis berkala ke database kembali aktif setiap 5 menit pada jam operasional (07:00 - 17:00 WIB).",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      // Default: /poll status
+      try {
+        const pollStatus = await ticketPolling.getStatus();
+        const statusLines = [
+          "📊 **Status Auto-Polling Database (ClickHouse)**",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          `⚙️ **Status Fitur**     : ${pollStatus.isPaused ? "⏸️ JEDA (PAUSED)" : pollStatus.isRunning ? "✅ AKTIF (RUNNING)" : "🛑 STOPPED"}`,
+          `🕒 **Jam Kerja**        : **${pollStatus.workingHoursText}**`,
+          `⏱️ **Sedang Jam Kerja** : ${pollStatus.inWorkingHours ? "✅ Ya" : "🌙 Di luar jam kerja (Sleep)"}`,
+          `🔄 **Interval Polling** : **Setiap ${pollStatus.intervalMinutes} menit**`,
+          "",
+          `🗄️ **Koneksi Database** : ${pollStatus.dbConnected ? "🟢 Terhubung (Port 9443 HTTPS)" : `🔴 Gagal (${pollStatus.dbError || "Error"})`}`,
+          `⏱️ **Cek Terakhir**      : \`${pollStatus.lastPollTime || "-"}\``,
+          `📅 **Watermark DB**      : \`${pollStatus.lastWatermark || "-"}\``,
+          `📦 **Terkirim Hari Ini** : **${pollStatus.totalSentToday} tiket**`,
+        ];
+        if (pollStatus.lastError) {
+          statusLines.push("", `⚠️ **Error Terakhir**: \`${pollStatus.lastError}\``);
+        }
+        statusLines.push(
+          "",
+          "💡 **Perintah Kendali:**",
+          "• `/poll now` : Tarik & kirim tiket baru instan detik ini",
+          "• `/poll off` : Jeda pengecekan otomatis",
+          "• `/poll on`  : Lanjutkan pengecekan otomatis",
+        );
+        await sendRichMessage(sendMessage, chatId, statusLines.join("\n"));
+      } catch (err) {
+        await sendTelegramCommandError(sendMessage, chatId, command, err);
+      }
       return;
     }
 

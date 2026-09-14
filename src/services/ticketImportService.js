@@ -485,7 +485,7 @@ function validateHeaders(headers) {
 }
 
 // membaca sheet pertama file .xlsx dan mengubah setiap baris menjadi object berbasis header Excel.
-async function parseWorkbook(buffer) {
+export async function parseWorkbook(buffer) {
   try {
     logger.info("Parsing Excel workbook", { bytes: buffer.length });
     const signature = inspectWorkbookBuffer(buffer);

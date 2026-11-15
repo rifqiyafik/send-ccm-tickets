@@ -117,10 +117,38 @@ test("executeWperfSync executes statements sequentially and triggers onProgress 
     kabupaten: 10,
     kecamatan: 10,
   });
+  assert.ok(progressReports.includes(12), "Harus melewati 12%");
   assert.ok(progressReports.includes(25), "Harus melewati 25%");
+  assert.ok(progressReports.includes(37), "Harus melewati 37%");
   assert.ok(progressReports.includes(50), "Harus melewati 50%");
+  assert.ok(progressReports.includes(62), "Harus melewati 62%");
   assert.ok(progressReports.includes(75), "Harus melewati 75%");
+  assert.ok(progressReports.includes(87), "Harus melewati 87%");
   assert.ok(progressReports.includes(100), "Harus mencapai 100%");
+});
+
+test("formatWperfProgressMessage renders individual status for all 4 Materialized Views", () => {
+  const msg = formatWperfProgressMessage({
+    stage: 0,
+    percent: 25,
+    durationSec: 10,
+    mvDetails: {
+      region: { status: "done", durationSec: 2 },
+      nop: { status: "done", durationSec: 3 },
+      kabupaten: { status: "processing", durationSec: null },
+      kecamatan: { status: "pending", durationSec: null },
+    },
+    rowCounts: {},
+  });
+
+  assert.ok(msg.includes("Region"), "Harus memuat Region");
+  assert.ok(msg.includes("✅ Selesai (2s)"), "Region harus berstatus Selesai dengan durasi");
+  assert.ok(msg.includes("NOP"), "Harus memuat NOP");
+  assert.ok(msg.includes("✅ Selesai (3s)"), "NOP harus berstatus Selesai dengan durasi");
+  assert.ok(msg.includes("Kabupaten"), "Harus memuat Kabupaten");
+  assert.ok(msg.includes("⏳ Memproses..."), "Kabupaten harus berstatus Memproses");
+  assert.ok(msg.includes("Kecamatan"), "Harus memuat Kecamatan");
+  assert.ok(msg.includes("⏳ Menunggu"), "Kecamatan harus berstatus Menunggu");
 });
 
 test("wperfSyncService scheduled trigger runs at 09:00 WIB and sends reports exclusively to admins", async () => {

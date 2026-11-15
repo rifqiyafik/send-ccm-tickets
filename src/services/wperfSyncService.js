@@ -44,7 +44,14 @@ export function formatWperfProgressMessage({
   error = null,
   durationSec = 0,
   rowCounts = {},
+  mvDetails = {},
 } = {}) {
+  const durationFormatted = `${durationSec} detik${
+    durationSec >= 60
+      ? ` (${Math.floor(durationSec / 60)}m ${durationSec % 60}s)`
+      : ""
+  }`;
+
   if (error) {
     return [
       "❌ **Pembaruan WPERF Gagal**",
@@ -63,13 +70,23 @@ export function formatWperfProgressMessage({
       timeStyle: "medium",
     });
 
+    const formatMvDone = (key, label) => {
+      const dur = mvDetails?.[key]?.durationSec;
+      return `  • ${label.padEnd(10)}: ✅ Selesai${dur != null ? ` (${dur}s)` : ""}`;
+    };
+
     return [
       "✅ **Pembaruan Data WPERF Berhasil**",
       "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-      `⏱️ **Total Durasi:** ${durationSec} detik`,
+      `⏱️ **Total Durasi:** ${durationFormatted}`,
       `📅 **Waktu Selesai:** ${wibTimeString} WIB`,
       "",
-      "🔄 **Materialized Views:** 4/4 Refresh Selesai",
+      "🔄 **Materialized Views (4/4 Selesai):**",
+      formatMvDone("region", "Region"),
+      formatMvDone("nop", "NOP"),
+      formatMvDone("kabupaten", "Kabupaten"),
+      formatMvDone("kecamatan", "Kecamatan"),
+      "",
       "📥 **Tabel Leapdate (UPSERT):**",
       `  • Region    : ${rowCounts.region != null ? `${rowCounts.region} baris` : "Selesai"}`,
       `  • NOP       : ${rowCounts.nop != null ? `${rowCounts.nop} baris` : "Selesai"}`,
@@ -81,8 +98,27 @@ export function formatWperfProgressMessage({
   }
 
   const bar = formatProgressBar(percent);
-  const getStatus = (targetStage) => {
-    if (stage > targetStage) return "✅ Selesai";
+
+  // Status untuk masing-masing Materialized View
+  const getMvStatus = (key) => {
+    const info = mvDetails?.[key];
+    if (info?.status === "done") {
+      const dur = info.durationSec != null ? ` (${info.durationSec}s)` : "";
+      return `✅ Selesai${dur}`;
+    }
+    if (info?.status === "processing") {
+      return "⏳ Memproses...";
+    }
+    // Jika tidak ada info di mvDetails, fallback berdasarkan stage
+    if (stage > 0) return "✅ Selesai";
+    return "⏳ Menunggu";
+  };
+
+  // Status untuk tabel Leapdate
+  const getLeapStatus = (targetStage, count) => {
+    if (stage > targetStage || count != null) {
+      return `✅ Selesai ${count != null ? `(${count} baris)` : ""}`;
+    }
     if (stage === targetStage) return "⏳ Memproses...";
     return "⏳ Menunggu";
   };
@@ -91,21 +127,25 @@ export function formatWperfProgressMessage({
     "📊 **Pembaruan Data WPERF**",
     "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
     `📈 **Progress:** \`[${bar}] ${percent}%\``,
-    `⏱️ **Durasi Berjalan:** ${durationSec} detik`,
+    `⏱️ **Durasi Berjalan:** ${durationFormatted}`,
     "",
-    `🔄 **1. Refresh Materialized Views (4 MV):** ${getStatus(0)}`,
+    "🔄 **1. Refresh Materialized Views (4 MV):**",
+    `  • Region    : ${getMvStatus("region")}`,
+    `  • NOP       : ${getMvStatus("nop")}`,
+    `  • Kabupaten : ${getMvStatus("kabupaten")}`,
+    `  • Kecamatan : ${getMvStatus("kecamatan")}`,
     "",
     "📥 **2. Update Tabel Leapdate:**",
-    `  • Region    : ${getStatus(1)} ${rowCounts.region != null ? `(${rowCounts.region} baris)` : ""}`,
-    `  • NOP       : ${getStatus(2)} ${rowCounts.nop != null ? `(${rowCounts.nop} baris)` : ""}`,
-    `  • Kabupaten : ${getStatus(3)} ${rowCounts.kabupaten != null ? `(${rowCounts.kabupaten} baris)` : ""}`,
-    `  • Kecamatan : ${getStatus(4)} ${rowCounts.kecamatan != null ? `(${rowCounts.kecamatan} baris)` : ""}`,
+    `  • Region    : ${getLeapStatus(1, rowCounts.region)}`,
+    `  • NOP       : ${getLeapStatus(2, rowCounts.nop)}`,
+    `  • Kabupaten : ${getLeapStatus(3, rowCounts.kabupaten)}`,
+    `  • Kecamatan : ${getLeapStatus(4, rowCounts.kecamatan)}`,
   ].join("\n");
 }
 
 let activeSyncPromise = null;
 
-// menjalankan proses sinkronisasi SQL bertahap (Refresh MV -> Region -> NOP -> Kabupaten -> Kecamatan)
+// menjalankan proses sinkronisasi SQL bertahap (Refresh MV 1..4 -> Region -> NOP -> Kabupaten -> Kecamatan)
 export async function executeWperfSync({
   sqlFilePath = DEFAULT_SQL_PATH,
   queryFn = queryDatabase,
@@ -125,6 +165,13 @@ export async function executeWperfSync({
     kecamatan: null,
   };
 
+  const mvDetails = {
+    region: { status: "pending", durationSec: null },
+    nop: { status: "pending", durationSec: null },
+    kabupaten: { status: "pending", durationSec: null },
+    kecamatan: { status: "pending", durationSec: null },
+  };
+
   const notify = async (stage, percent, isDone = false, error = null) => {
     if (typeof onProgress === "function") {
       try {
@@ -135,6 +182,7 @@ export async function executeWperfSync({
           error,
           durationSec: getDurationSec(),
           rowCounts,
+          mvDetails,
         });
       } catch (cbErr) {
         logger.debug("onProgress callback error ignored", { error: cbErr.message });
@@ -143,6 +191,9 @@ export async function executeWperfSync({
   };
 
   activeSyncPromise = (async () => {
+    let currentStage = 0;
+    let currentStep = "Step 0 - Refreshing Materialized Views";
+
     try {
       const statements = await loadWperfStatements(sqlFilePath);
       if (statements.length < 5) {
@@ -151,51 +202,65 @@ export async function executeWperfSync({
         );
       }
 
-      let currentStage = 0;
-      let currentStep = "Step 0 - Refreshing Materialized Views";
-
-      // TAHAP 0: Refresh 4 Materialized Views
-      logger.info("WPERF sync: Step 0 - Refreshing Materialized Views");
+      // TAHAP 0: Refresh 4 Materialized Views bertahap
+      logger.info("WPERF sync: Step 0 - Refreshing Materialized Views (4 MVs)");
       await notify(0, 0);
 
-      // Statement 0 s.d 3 adalah REFRESH MATERIALIZED VIEW
-      const refreshStatements = statements.slice(0, 4);
-      for (const refreshSql of refreshStatements) {
-        await queryFn(refreshSql);
+      const mvSteps = [
+        { key: "region", label: "Region", stmtIndex: 0, startPercent: 0, donePercent: 12 },
+        { key: "nop", label: "NOP", stmtIndex: 1, startPercent: 12, donePercent: 25 },
+        { key: "kabupaten", label: "Kabupaten", stmtIndex: 2, startPercent: 25, donePercent: 37 },
+        { key: "kecamatan", label: "Kecamatan", stmtIndex: 3, startPercent: 37, donePercent: 50 },
+      ];
+
+      for (const mv of mvSteps) {
+        currentStep = `Step 0 - Refresh MV ${mv.label}`;
+        logger.info(`WPERF sync: Refreshing MV ${mv.label}...`);
+        mvDetails[mv.key].status = "processing";
+        await notify(0, mv.startPercent);
+
+        const mvStart = Date.now();
+        await queryFn(statements[mv.stmtIndex]);
+        const mvDuration = Math.max(1, Math.round((Date.now() - mvStart) / 1000));
+
+        mvDetails[mv.key].status = "done";
+        mvDetails[mv.key].durationSec = mvDuration;
+        logger.info(`WPERF sync: MV ${mv.label} refreshed in ${mvDuration}s`);
+        await notify(0, mv.donePercent);
       }
 
-      // TAHAP 1: Region Level (25%)
+      // TAHAP 1: Region Level (62%)
       currentStage = 1;
       currentStep = "Step 1 - Updating Region level";
       logger.info("WPERF sync: Step 1 - Updating Region level");
-      await notify(1, 0);
+      await notify(1, 50);
       const regionRes = await queryFn(statements[4]);
       rowCounts.region = regionRes?.rowCount ?? 0;
-      await notify(1, 25);
+      await notify(1, 62);
 
-      // TAHAP 2: NOP Level (50%)
+      // TAHAP 2: NOP Level (75%)
       currentStage = 2;
       currentStep = "Step 2 - Updating NOP level";
       logger.info("WPERF sync: Step 2 - Updating NOP level");
-      await notify(2, 25);
+      await notify(2, 62);
       const nopRes = await queryFn(statements[5]);
       rowCounts.nop = nopRes?.rowCount ?? 0;
-      await notify(2, 50);
+      await notify(2, 75);
 
-      // TAHAP 3: Kabupaten Level (75%)
+      // TAHAP 3: Kabupaten Level (87%)
       currentStage = 3;
       currentStep = "Step 3 - Updating Kabupaten level";
       logger.info("WPERF sync: Step 3 - Updating Kabupaten level");
-      await notify(3, 50);
+      await notify(3, 75);
       const kabRes = await queryFn(statements[6]);
       rowCounts.kabupaten = kabRes?.rowCount ?? 0;
-      await notify(3, 75);
+      await notify(3, 87);
 
       // TAHAP 4: Kecamatan Level (100%)
       currentStage = 4;
       currentStep = "Step 4 - Updating Kecamatan level";
       logger.info("WPERF sync: Step 4 - Updating Kecamatan level");
-      await notify(4, 75);
+      await notify(4, 87);
       const kecRes = await queryFn(statements[7]);
       rowCounts.kecamatan = kecRes?.rowCount ?? 0;
 
@@ -205,12 +270,14 @@ export async function executeWperfSync({
       logger.info("WPERF sync completed successfully", {
         durationSec: getDurationSec(),
         rowCounts,
+        mvDetails,
       });
 
       return {
         success: true,
         durationSec: getDurationSec(),
         rowCounts,
+        mvDetails,
       };
     } catch (error) {
       logger.error("WPERF sync failed", {
@@ -289,6 +356,9 @@ export function createWperfSyncService({
     initialMessage = "⏳ **Memulai sinkronisasi WPERF...**",
   } = {}) {
     const messageTracker = new Map();
+    const lastSentText = new Map();
+    const syncStartTime = Date.now();
+    let lastProgressState = null;
 
     // kirim pesan awal ke target admin
     for (const chatId of targetChatIds) {
@@ -298,6 +368,7 @@ export function createWperfSyncService({
         const msgId = res?.message_id;
         if (msgId) {
           messageTracker.set(String(chatId), msgId);
+          lastSentText.set(String(chatId), rich.text);
         }
       } catch (sendErr) {
         logger.warn("Failed to send initial WPERF status message", {
@@ -308,13 +379,18 @@ export function createWperfSyncService({
     }
 
     const onProgress = async (progressState) => {
+      lastProgressState = progressState;
       const text = formatWperfProgressMessage(progressState);
       const rich = createTelegramRichMessage(text);
 
       for (const [chatId, msgId] of messageTracker.entries()) {
+        if (lastSentText.get(chatId) === rich.text) {
+          continue; // Hindari edit redundan jika isi teks sama persis
+        }
         try {
           if (typeof telegramBot.editMessageText === "function") {
             await telegramBot.editMessageText(chatId, msgId, rich.text, rich.options);
+            lastSentText.set(chatId, rich.text);
           } else {
             await telegramBot.sendMessage(chatId, rich.text, rich.options);
           }
@@ -328,11 +404,30 @@ export function createWperfSyncService({
       }
     };
 
-    return executeWperfSync({
-      sqlFilePath,
-      queryFn,
-      onProgress,
-    });
+    // Heartbeat ticker: setiap 3 detik memperbarui durasi berjalan di Telegram
+    // agar waktu tetap berdetik secara real-time meskipun query database sedang berjalan lama
+    const ticker = setInterval(async () => {
+      if (!lastProgressState || lastProgressState.isDone || lastProgressState.error) {
+        return;
+      }
+      const elapsedSec = Math.round((Date.now() - syncStartTime) / 1000);
+      try {
+        await onProgress({
+          ...lastProgressState,
+          durationSec: elapsedSec,
+        });
+      } catch {}
+    }, 3000);
+
+    try {
+      return await executeWperfSync({
+        sqlFilePath,
+        queryFn,
+        onProgress,
+      });
+    } finally {
+      clearInterval(ticker);
+    }
   }
 
   // eksekusi manual via command Telegram oleh admin

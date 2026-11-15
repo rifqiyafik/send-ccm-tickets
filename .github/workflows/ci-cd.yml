@@ -37,9 +37,13 @@ jobs:
       - name: Syntax check
         run: node --check index.js
 
+      - name: Prepare test config
+        run: |
+          if [ ! -f config/whatsapp.json ]; then
+            cp config/whatsapp-test.json config/whatsapp.json
+          fi
+
       - name: Run tests
-        env:
-          APP_ENV: development
         run: npm test
 
   docker:

@@ -108,19 +108,7 @@ export function resolveWhatsAppConfigPath() {
 
   const activeEnv = getActiveAppEnvironment();
   const configFile = ENV_CONFIG_FILES[activeEnv.active_env] || ENV_CONFIG_FILES.production;
-  let configPath = path.resolve(process.cwd(), configFile);
-
-  if (!fs.existsSync(configPath)) {
-    const devPath = path.resolve(process.cwd(), ENV_CONFIG_FILES.development);
-    if (fs.existsSync(devPath)) {
-      logger.info("Production config not found, falling back to development config", {
-        productionPath: configPath,
-        fallbackPath: devPath,
-      });
-      configPath = devPath;
-    }
-  }
-
+  const configPath = path.resolve(process.cwd(), configFile);
   logger.info("WhatsApp config path resolved from active environment", {
     activeEnv: activeEnv.active_env,
     source: activeEnv.source,

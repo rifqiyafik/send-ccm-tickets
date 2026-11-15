@@ -22,27 +22,48 @@ import {
   isPrivateJid,
   normalizeJid,
 } from "../utils/jid.js";
-import { cleanInlineText } from "../utils/text.js";
+import {
+  cleanInlineText,
+  hasMeaningfulLetters,
+  isMeaningfulPayload,
+} from "../utils/text.js";
 import { acquireProcessLock } from "../utils/processLock.js";
-import { enqueueTicketMessage } from "../services/messageQueueService.js";
+import {
+  cancelQueue,
+  enqueueTicketMessage,
+  getPostSendDelay,
+  getQueueConfig,
+  getReminderPostSendDelay,
+  getReminderQueueConfig,
+  getSummaryPostSendDelay,
+  getSummaryQueueConfig,
+  isQueueCancelled,
+} from "../services/messageQueueService.js";
 import { getWhatsAppAccessDecision } from "../services/accessControlService.js";
 import {
   createSentTicketPlan,
   formatSentTicketPlanReport,
   formatSqaAreaFollowUpMessage,
+  formatNopAreaSummaryMessage,
+  getSentTicketRecord,
   markTicketAsSent,
 } from "../services/sentTicketService.js";
 import {
   createFilteredTicketsExcel,
+  deduplicateTicketsByOrderId,
   formatEscalationMessagePayload,
+  formatRepetitiveEscalationPayload,
+  formatSiteVisitCombinedReminderPayload,
   formatInProgressReminderMessagePayload,
   formatImportSummary,
   formatProcessingReport,
   formatReminderMessagePayload,
   formatTargetGroupOpeningMessage,
   formatUpdateTicketFileName,
+  getReopenReminderTickets,
   processTicketExcel,
 } from "../services/ticketImportService.js";
+import { generateSiteRepetitiveAlert } from "../services/siteRepetitiveService.js";
 
 const AUTH_DIR = process.env.WA_AUTH_DIR || "sessions/baileys";
 const BAILEYS_LOG_LEVEL = process.env.BAILEYS_LOG_LEVEL || "silent";
@@ -63,6 +84,7 @@ let releaseSessionLock = null;
 let activeSock = null;
 let activeController = null;
 let activeConnectionGeneration = 0;
+let activeConnectionOpenTime = 0;
 
 function sleep(ms) {
   return new Promise((resolve) => {
@@ -157,18 +179,30 @@ function getDocumentImportOptions(text) {
     };
   }
 
-  const { command } = parseBotCommand(trimmedText);
-  const normalMode = [".import", ".send"].includes(command);
-  const ticketOnlyMode = command === ".update";
-  const summaryOnlyMode = command === ".summary";
+  const { command, argument } = parseBotCommand(trimmedText);
+  const words = trimmedText.toLowerCase().split(/\s+/);
+  const manualMode = words.includes("manual");
+
+  const normalMode = [".import", ".send", "/import", "/send", ".manual", "/manual"].includes(command);
+  const ticketOnlyMode = [".update", "/update"].includes(command);
+  const summaryOnlyMode = [".summary", "/summary"].includes(command);
   const reminderMode = [".reminder", "/reminder"].includes(command);
+  const specialMode = [".special", "/special"].includes(command);
+
   return {
     command,
-    supported: normalMode || ticketOnlyMode || summaryOnlyMode || reminderMode,
+    supported:
+      normalMode ||
+      ticketOnlyMode ||
+      summaryOnlyMode ||
+      reminderMode ||
+      specialMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
+    specialMode,
+    manualMode: manualMode || command === ".manual" || command === "/manual",
   };
 }
 
@@ -249,9 +283,9 @@ function formatJidList({ label, items, keyword }) {
 // memecah pesan panjang agar output command tetap terkirim jika hasil JID cukup banyak.
 async function sendLongText(sock, jid, text) {
   for (let index = 0; index < text.length; index += MAX_MESSAGE_LENGTH) {
-    await sock.sendMessage(jid, {
+    await sendHumanizedMessage(sock, jid, {
       text: text.slice(index, index + MAX_MESSAGE_LENGTH),
-    });
+    }, { stage: "command long text" });
   }
 }
 
@@ -404,6 +438,8 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
       ".send",
       ".update",
       ".summary",
+      ".cancel",
+      "/cancel",
     ].includes(command)
   ) {
     logger.warn("Bot command ignored: unsupported command", {
@@ -427,6 +463,18 @@ async function handleBotCommand(sock, { sourceJid, senderJid, text }) {
     reason: accessDecision.reason,
     sourceType: accessDecision.source_type,
   });
+
+  if (command === ".cancel" || command === "/cancel") {
+    cancelActiveDelivery("WhatsApp .cancel command");
+    await sock.sendMessage(sourceJid, {
+      text: [
+        "🛑 **Pembatalan Proses Selesai**",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        "✅ Seluruh antrian dan pengiriman tiket WhatsApp yang sedang berjalan berhasil dihentikan.",
+      ].join("\n"),
+    });
+    return;
+  }
 
   if (command === "." || command === ".help") {
     await sock.sendMessage(sourceJid, {
@@ -627,11 +675,11 @@ async function sendMissingTargetGroupAlert(sock, sourceJid, ticket) {
 }
 
 // mengelompokkan tiket valid berdasarkan JID grup tujuan agar pembuka/reminder dikirim sekali per grup.
-async function groupTicketsByTarget(sock, sourceJid, tickets) {
+async function groupTicketsByTarget(sock, sourceJid, tickets, options = {}) {
   const groups = new Map();
 
   for (const ticket of tickets) {
-    const targetJid = resolveTargetJid(ticket);
+    const targetJid = resolveTargetJid(ticket, options);
     if (!targetJid) {
       await sendMissingTargetGroupAlert(sock, sourceJid, ticket);
       continue;
@@ -645,6 +693,7 @@ async function groupTicketsByTarget(sock, sourceJid, tickets) {
   logger.info("Tickets grouped by target JID", {
     targetGroups: groups.size,
     tickets: tickets.length,
+    manualMode: Boolean(options.manualMode),
   });
 
   return groups;
@@ -658,20 +707,32 @@ async function sendTargetGroupPreamble(sock, targetJid, tickets) {
     assignmentType: tickets[0]?.assignment_type,
   });
 
-  await sock.sendMessage(targetJid, {
-    text: formatTargetGroupOpeningMessage(),
-  });
+  await sendHumanizedMessage(
+    sock,
+    targetJid,
+    {
+      text: formatTargetGroupOpeningMessage(),
+    },
+    { stage: "target group opening" },
+  );
+
+  await sleepWithCancellation(1500);
 
   const workbookBuffer = await createFilteredTicketsExcel({
     valid_tickets: tickets,
   });
-  await sock.sendMessage(targetJid, {
-    document: workbookBuffer,
-    mimetype:
-      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    fileName: formatUpdateTicketFileName(),
-    // caption: "File Excel berisi tiket yang dikirim ke grup ini.",
-  });
+  await sendHumanizedMessage(
+    sock,
+    targetJid,
+    {
+      document: workbookBuffer,
+      mimetype:
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      fileName: formatUpdateTicketFileName(),
+      caption: `File Update Tiket (${tickets.length} Tiket)`,
+    },
+    { stage: "target group excel document", skipPresence: true },
+  );
 }
 
 async function sendTargetGroupReminder(sock, targetJid, tickets, options = {}) {
@@ -681,86 +742,202 @@ async function sendTargetGroupReminder(sock, targetJid, tickets, options = {}) {
     assignmentType: tickets[0]?.assignment_type,
     options,
   });
-  await sock.sendMessage(
-    targetJid,
-    formatReminderMessagePayload(tickets, options),
-  );
-}
-
-function getSummaryReminderGroupKey(ticket) {
-  const assignmentType = String(ticket.assignment_type || "")
-    .trim()
-    .toUpperCase();
-  if (assignmentType === "SQA") {
-    return "SQA";
+  const payload = formatReminderMessagePayload(tickets, options);
+  if (!payload?.text?.trim()) {
+    logger.info("Target group reminder skipped: empty payload text", {
+      targetJid,
+    });
+    return;
   }
-
-  return formatTargetProgressLabel([ticket]);
+  await sendHumanizedMessage(sock, targetJid, payload, {
+    stage: "target group reminder",
+  });
 }
 
-function groupTicketsForSummaryReminder(tickets) {
-  const groups = new Map();
-  for (const ticket of tickets) {
-    const key = getSummaryReminderGroupKey(ticket);
-    const group = groups.get(key) || [];
-    group.push(ticket);
-    groups.set(key, group);
-  }
-  return groups;
-}
 
-async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets) {
-  const groupsByTarget = await groupTicketsByTarget(sock, sourceJid, tickets);
+
+async function sendSummaryOnlyReminderMessages(sock, sourceJid, tickets, options = {}) {
   const mainSqaGroup = getGroupConfig("MAIN SQA");
-  logger.info("Sending .summary reminder messages to WhatsApp target groups", {
+  logger.info("Sending .summary reminder messages to target groups", {
     sourceJid,
-    targetGroups: groupsByTarget.size,
     tickets: tickets.length,
+    manualMode: Boolean(options.manualMode),
   });
 
-  for (const [targetJid, targetTickets] of groupsByTarget.entries()) {
-    const reminderGroups = groupTicketsForSummaryReminder(targetTickets);
+  const summaryTasks = [];
 
-    for (const [groupKey, groupTickets] of reminderGroups.entries()) {
-      const isSqaSummary = groupKey === "SQA";
-      const reminderTargetJid = isSqaSummary ? mainSqaGroup?.jid : targetJid;
+  // 1. Tiket SQA: Satukan SELURUH tiket SQA (baik tiket reguler maupun tiket repetitif)
+  // menjadi TEPAT SATU tugas summary yang dikirimkan ke grup MAIN SQA.
+  const sqaTickets = deduplicateTicketsByOrderId(
+    tickets.filter(
+      (ticket) =>
+        ticket &&
+        String(ticket.assignment_type || "").trim().toUpperCase() === "SQA" &&
+        ticket.targetGroupKey !== "SITE VISIT" &&
+        ticket.assignment_type !== "SITE_VISIT" &&
+        !ticket.is_site_visit,
+    ),
+  );
+  if (sqaTickets.length > 0) {
+    summaryTasks.push({
+      targetJid: mainSqaGroup?.jid,
+      groupKey: "MAIN SQA",
+      groupTickets: sqaTickets,
+      isSqaSummary: true,
+      targetLabel: "MAIN SQA",
+    });
+  }
 
-      if (!reminderTargetJid) {
-        logger.warn(".summary reminder skipped: target JID is not configured", {
-          sourceJid,
-          groupKey,
-          tickets: groupTickets.length,
-          assignmentType: groupTickets[0]?.assignment_type,
-        });
-        await sendTargetDeliveryFailedAlert(sock, sourceJid, {
-          targetJid: isSqaSummary ? "MAIN SQA" : targetJid,
-          stage: ".summary reminder target missing",
-          tickets: groupTickets,
-          error: new Error(
-            isSqaSummary
-              ? "MAIN SQA target group belum dikonfigurasi."
-              : "Target group belum dikonfigurasi.",
-          ),
-        });
-        continue;
-      }
-
-      const payload = formatReminderMessagePayload(groupTickets, {
-        targetGroupKey: isSqaSummary
-          ? "MAIN SQA"
-          : getTargetGroupKey(reminderTargetJid),
-        usePicSqa: isSqaSummary,
+  // 2. Tiket NOP: Kelompokkan tiket NOP per masing-masing grup target NOP
+  const nopTickets = deduplicateTicketsByOrderId(
+    tickets.filter(
+      (ticket) =>
+        ticket &&
+        String(ticket.assignment_type || "").trim().toUpperCase() === "NOP" &&
+        ticket.targetGroupKey !== "SITE VISIT" &&
+        ticket.assignment_type !== "SITE_VISIT" &&
+        !ticket.is_site_visit,
+    ),
+  );
+  if (nopTickets.length > 0) {
+    const nopGroupsByTarget = await groupTicketsByTarget(sock, sourceJid, nopTickets, options);
+    for (const [targetJid, targetTickets] of nopGroupsByTarget.entries()) {
+      summaryTasks.push({
+        targetJid,
+        groupKey: getTargetGroupKey(targetJid),
+        groupTickets: targetTickets,
+        isSqaSummary: false,
+        targetLabel: formatTargetProgressLabel(targetTickets),
       });
-      logger.info("Sending .summary reminder message to target group", {
+    }
+  }
+
+  // Catatan: Grup SITE VISIT sengaja DIKECUALIKAN dari summary;
+  // Ke Site Visit hanya dikirimkan detail tiket repetitif (ReOpen >= 3) dan reminder saja.
+
+  const totalSteps = summaryTasks.length;
+  if (totalSteps === 0) return;
+
+  const summaryConfig = getSummaryQueueConfig();
+  const isManual = Boolean(options.manualMode);
+  const getDelayInfoText = () => {
+    if (isManual) {
+      const manualSec = Math.round(getSummaryPostSendDelay(options) / 1000);
+      return `${manualSec} detik (Manual Telegram)`;
+    }
+    const minSec = Math.round(summaryConfig.minDelayMs / 1000);
+    const maxSec = Math.round(summaryConfig.maxDelayMs / 1000);
+    return minSec === maxSec
+      ? `${minSec} detik`
+      : `${minSec} - ${maxSec} detik (Anti-Ban Jitter)`;
+  };
+
+  let overallSentCount = 0;
+
+  for (let i = 0; i < summaryTasks.length; i++) {
+    if (isDeliveryCancelled()) break;
+    const task = summaryTasks[i];
+    const { targetJid: reminderTargetJid, groupKey, groupTickets, isSqaSummary, targetLabel } = task;
+
+    if (!reminderTargetJid) {
+      logger.warn(".summary reminder skipped: target JID is not configured", {
         sourceJid,
-        targetJid: reminderTargetJid,
-        originalTargetJid: targetJid,
         groupKey,
         tickets: groupTickets.length,
         assignmentType: groupTickets[0]?.assignment_type,
       });
-      await sock.sendMessage(reminderTargetJid, payload);
+      await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+        targetJid: isSqaSummary ? "MAIN SQA" : "-",
+        stage: ".summary reminder target missing",
+        tickets: groupTickets,
+        error: new Error(
+          isSqaSummary
+            ? "MAIN SQA target group belum dikonfigurasi."
+            : "Target group belum dikonfigurasi.",
+        ),
+      });
+      continue;
     }
+
+    const payload = formatReminderMessagePayload(groupTickets, {
+      targetGroupKey: isSqaSummary
+        ? "MAIN SQA"
+        : getTargetGroupKey(reminderTargetJid),
+      usePicSqa: isSqaSummary,
+    });
+
+    if (!payload?.text?.trim()) {
+      logger.info(".summary reminder skipped: empty payload text", {
+        reminderTargetJid,
+        groupKey,
+      });
+      continue;
+    }
+
+    try {
+      await sendHumanizedMessage(sock, reminderTargetJid, payload, {
+        stage: ".summary reminder delivery",
+      });
+      logger.info("Sent .summary reminder message to target group", {
+        sourceJid,
+        targetJid: reminderTargetJid,
+        groupKey,
+        tickets: groupTickets.length,
+        assignmentType: groupTickets[0]?.assignment_type,
+      });
+    } catch (error) {
+      await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+        targetJid: reminderTargetJid,
+        stage: ".summary reminder delivery",
+        tickets: groupTickets,
+        error,
+      });
+    }
+
+    overallSentCount += 1;
+
+    let nextItemLabel = null;
+    if (i < summaryTasks.length - 1) {
+      nextItemLabel = `Mengirim Rekap Summary ke ${summaryTasks[i + 1].targetLabel}`;
+    }
+
+    const delayMs = getSummaryPostSendDelay(options);
+    const progressLines = [
+      "⏳ **PROGRESS PENGIRIMAN SUMMARY**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📊 **Total Progress** : ${formatReminderProgressBar(overallSentCount, totalSteps)}`,
+      `📍 **Tahap Saat Ini** : Mengirim Rekap Summary ke ${targetLabel} (${i + 1}/${totalSteps})`,
+      "",
+      `✅ **Terkirim**       : Summary ${targetLabel} (${groupTickets.length} Tiket)`,
+      `⏱️ **Jeda Waktu**     : **${getDelayInfoText()}**`,
+    ];
+
+    if (nextItemLabel) {
+      progressLines.push(`⏳ **Berikutnya**     : ${nextItemLabel}`);
+    }
+
+    await sendTicketProgressMessage(sock, sourceJid, progressLines.join("\n"), {
+      isProgress: true,
+      overallSentCount,
+      totalSteps,
+    });
+
+    if (i < summaryTasks.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+      await sleepWithCancellation(delayMs);
+    }
+  }
+
+  // Final summary complete card
+  if (!isDeliveryCancelled()) {
+    const summaryLines = [
+      "✅ **PENGIRIMAN SUMMARY SELESAI**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📊 **Total Terkirim** : **${overallSentCount}/${totalSteps} Target Summary**`,
+    ];
+    await sendTicketProgressMessage(sock, sourceJid, summaryLines.join("\n"), {
+      isProgress: true,
+      isFinal: true,
+    });
   }
 }
 
@@ -786,13 +963,210 @@ function formatTargetProgressLabel(tickets) {
 
   return assignmentType || cleanInlineText(firstTicket.assignment_group) || "Target";
 }
+
+function formatProgressBar(current, total, length = 10) {
+  if (!total || total <= 0) return "[░░░░░░░░░░] 0%";
+  const ratio = Math.min(Math.max(current / total, 0), 1);
+  const filled = Math.round(ratio * length);
+  const empty = length - filled;
+  const percent = Math.round(ratio * 100);
+  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${current}/${total} Tiket (${percent}%)`;
+}
+
+const activeProgressTracker = new Map();
+let activeDeliveryCancelled = false;
+let activeDeliverySleepTimer = null;
+let activeDeliverySleepResolve = null;
+
+// membatalkan seluruh proses pengiriman tiket yang sedang berjalan dan mereset kartu progress.
+export function cancelActiveDelivery(reason = "Cancelled by user") {
+  logger.warn("Active ticket delivery cancelled", { reason });
+  activeDeliveryCancelled = true;
+  cancelQueue(reason);
+
+  if (activeDeliverySleepTimer) {
+    clearTimeout(activeDeliverySleepTimer);
+    activeDeliverySleepTimer = null;
+  }
+  if (activeDeliverySleepResolve) {
+    activeDeliverySleepResolve();
+    activeDeliverySleepResolve = null;
+  }
+
+  for (const [sourceJid, existingKey] of activeProgressTracker.entries()) {
+    if (activeSock?.sendMessage) {
+      activeSock
+        .sendMessage(sourceJid, {
+          text: [
+            "🛑 **PENGIRIMAN TIKET DIBATALKAN**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            "⚠️ Proses pengiriman tiket berhasil dihentikan oleh pengguna (`/cancel`).",
+          ].join("\n"),
+          edit: existingKey,
+          isProgress: true,
+          isFinal: true,
+        })
+        .catch(() => {});
+    }
+  }
+  activeProgressTracker.clear();
+
+  return true;
+}
+
+export function resetDeliveryCancellation() {
+  activeDeliveryCancelled = false;
+}
+
+export function isDeliveryCancelled() {
+  return activeDeliveryCancelled || isQueueCancelled();
+}
+
+function sleepWithCancellation(ms) {
+  if (ms <= 0 || isDeliveryCancelled()) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    activeDeliverySleepResolve = resolve;
+    activeDeliverySleepTimer = setTimeout(() => {
+      activeDeliverySleepTimer = null;
+      activeDeliverySleepResolve = null;
+      resolve();
+    }, ms);
+  });
+}
+
+// mengirim pesan dengan proteksi anti-pesan kosong dan simulasi mengetik manusiawi (anti-ban)
+async function sendHumanizedMessage(sock, jid, payload, options = {}) {
+  if (!sock?.sendMessage || !payload || !jid) {
+    logger.warn("sendHumanizedMessage skipped: invalid arguments", {
+      jid,
+      hasSock: Boolean(sock?.sendMessage),
+    });
+    return null;
+  }
+
+  const textContent = typeof payload === "string" ? payload : payload?.text;
+
+  // 1. Guard ketat: Jangan kirim pesan jika payload kosong, tidak memiliki huruf bermakna, dan bukan attachment valid
+  if (!isMeaningfulPayload(payload)) {
+    logger.warn("Prevented sending empty or letterless message to target", {
+      jid,
+      payloadType: typeof payload,
+      payloadKeys: Object.keys(payload || {}),
+      stage: options.stage || "unknown",
+      textContent,
+    });
+    return null;
+  }
+
+  if (isDeliveryCancelled()) {
+    logger.warn("sendHumanizedMessage aborted: delivery cancelled", { jid });
+    return null;
+  }
+
+  // 2. Humanized Typing Presence (hanya untuk socket Baileys aktif dan JID WhatsApp riil)
+  const isRealWaJid =
+    typeof jid === "string" &&
+    (jid.endsWith("@g.us") ||
+      jid.endsWith("@s.whatsapp.net") ||
+      jid.endsWith("@lid"));
+  const shouldSimulatePresence =
+    Boolean(sock.sendPresenceUpdate) && isRealWaJid && !options.skipPresence;
+
+  if (shouldSimulatePresence) {
+    try {
+      await sock.sendPresenceUpdate("composing", jid);
+      // Durasi mengetik natural berdasarkan panjang teks (antara 2000ms s/d 4500ms)
+      const textLen = textContent ? textContent.length : 30;
+      const typingMs = Math.min(
+        4500,
+        Math.max(2000, Math.floor(textLen * 18)),
+      );
+      await sleepWithCancellation(typingMs);
+    } catch (err) {
+      logger.debug("Presence update composing failed, continuing send", {
+        error: err.message,
+      });
+    }
+  }
+
+  if (isDeliveryCancelled()) {
+    logger.warn("sendHumanizedMessage aborted after typing: delivery cancelled", {
+      jid,
+    });
+    return null;
+  }
+
+  // 3. Kirim pesan
+  const result = await sock.sendMessage(jid, payload);
+
+  // 4. Kembalikan presence ke paused
+  if (shouldSimulatePresence) {
+    try {
+      await sock.sendPresenceUpdate("paused", jid);
+    } catch (_) {}
+  }
+
+  return result ?? true;
+}
+
 async function sendTicketProgressMessage(sock, sourceJid, text, meta = {}) {
   try {
+    if (!hasMeaningfulLetters(text)) {
+      logger.warn("sendTicketProgressMessage skipped: text has no meaningful letters", {
+        sourceJid,
+        text,
+      });
+      return null;
+    }
+
     logger.info("Sending ticket progress message", {
       sourceJid,
       ...meta,
     });
-    await sock.sendMessage(sourceJid, { text });
+
+    const isFinal = Boolean(meta.isFinal);
+    const existingKey = activeProgressTracker.get(sourceJid);
+
+    if (existingKey && sock?.sendMessage) {
+      try {
+        const payload = {
+          text,
+          edit: existingKey,
+          isProgress: true,
+          ...meta,
+        };
+        const editResult = await sock.sendMessage(sourceJid, payload);
+        if (isFinal) {
+          activeProgressTracker.delete(sourceJid);
+        } else if (editResult?.key) {
+          activeProgressTracker.set(sourceJid, editResult.key);
+        }
+        return editResult;
+      } catch (editError) {
+        logger.warn(
+          "Failed to edit existing progress message, fallback to sending new message",
+          {
+            sourceJid,
+            error: editError.message,
+          },
+        );
+      }
+    }
+
+    const payload = {
+      text,
+      isProgress: true,
+      ...meta,
+    };
+    const sent = await sock.sendMessage(sourceJid, payload);
+    if (isFinal) {
+      activeProgressTracker.delete(sourceJid);
+    } else if (sent?.key) {
+      activeProgressTracker.set(sourceJid, sent.key);
+    }
+    return sent;
   } catch (error) {
     logger.error("Failed to send ticket progress message", {
       sourceJid,
@@ -854,8 +1228,15 @@ async function sendMainSqaSummaryOnly(
   ticketsByTarget,
   validTickets,
 ) {
-  const sqaTickets = validTickets.filter(
-    (ticket) => ticket.assignment_type === "SQA",
+  const sqaTickets = deduplicateTicketsByOrderId(
+    (validTickets || []).filter(
+      (ticket) =>
+        ticket &&
+        ticket.assignment_type === "SQA" &&
+        ticket.targetGroupKey !== "SITE VISIT" &&
+        ticket.assignment_type !== "SITE_VISIT" &&
+        !ticket.is_site_visit,
+    ),
   );
   if (sqaTickets.length === 0) {
     logger.info("MAIN SQA summary skipped: no SQA tickets");
@@ -932,15 +1313,36 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
     tickets: reminderTickets.length,
   });
 
-  for (const [targetJid, tickets] of remindersByTarget.entries()) {
+  const reminderEntries = [...remindersByTarget.entries()];
+  const delayMs = Number(process.env.WA_SEND_DELAY_MS || 10000);
+
+  for (let i = 0; i < reminderEntries.length; i++) {
+    if (isDeliveryCancelled()) break;
+    const [targetJid, tickets] = reminderEntries[i];
+    const isSiteVisitGroup = tickets.some(
+      (t) =>
+        t.is_repetitive ||
+        t.targetGroupKey === "SITE VISIT" ||
+        t.assignment_type === "SITE_VISIT",
+    );
+    const payload = isSiteVisitGroup
+      ? formatSiteVisitCombinedReminderPayload(tickets)
+      : formatInProgressReminderMessagePayload(tickets, { includeSummary: true });
+
     try {
-      await sock.sendMessage(
-        targetJid,
-        formatInProgressReminderMessagePayload(tickets),
-      );
+      if (payload.text) {
+        await sendHumanizedMessage(sock, targetJid, payload, {
+          stage: "daily in progress reminder",
+        });
+      }
 
       for (const ticket of tickets) {
-        await markTicketAsSent(ticket, { sourceJid, targetJid });
+        await markTicketAsSent(ticket, {
+          sourceJid,
+          targetJid,
+          dispatchType: "REMINDER",
+          isReminder: true,
+        });
       }
     } catch (error) {
       await sendTargetDeliveryFailedAlert(sock, sourceJid, {
@@ -950,7 +1352,20 @@ async function sendDailyInProgressReminders(sock, sourceJid, reminderTickets) {
         error,
       });
     }
+
+    if (i < reminderEntries.length - 1 && delayMs > 0 && !isDeliveryCancelled()) {
+      await sleepWithCancellation(delayMs);
+    }
   }
+}
+
+function formatReminderProgressBar(current, total, length = 10) {
+  if (!total || total <= 0) return "[░░░░░░░░░░] 0%";
+  const ratio = Math.min(Math.max(current / total, 0), 1);
+  const filled = Math.round(ratio * length);
+  const empty = length - filled;
+  const percent = Math.round(ratio * 100);
+  return `[${"█".repeat(filled)}${"░".repeat(empty)}] ${current}/${total} (${percent}%)`;
 }
 
 export async function sendReminderCommandResult(
@@ -967,29 +1382,182 @@ export async function sendReminderCommandResult(
     return;
   }
 
-  const sqaTickets = validTickets.filter(
-    (ticket) => ticket.assignment_type === "SQA",
+  const sqaTickets = deduplicateTicketsByOrderId(
+    validTickets.filter(
+      (ticket) =>
+        ticket &&
+        ticket.assignment_type === "SQA" &&
+        ticket.targetGroupKey !== "SITE VISIT" &&
+        ticket.assignment_type !== "SITE_VISIT" &&
+        !ticket.is_repetitive &&
+        !ticket.is_site_visit,
+    ),
   );
-  const nopTickets = validTickets.filter(
-    (ticket) => ticket.assignment_type === "NOP",
+  const nopTickets = deduplicateTicketsByOrderId(
+    validTickets.filter(
+      (ticket) =>
+        ticket &&
+        ticket.assignment_type === "NOP" &&
+        ticket.targetGroupKey !== "SITE VISIT" &&
+        ticket.assignment_type !== "SITE_VISIT" &&
+        !ticket.is_site_visit,
+    ),
+  );
+  const siteVisitTickets = deduplicateTicketsByOrderId(
+    validTickets.filter(
+      (ticket) =>
+        ticket &&
+        (ticket.assignment_type === "SQA" || ticket.assignment_type === "SITE_VISIT") &&
+        (ticket.is_repetitive ||
+          ticket.targetGroupKey === "SITE VISIT" ||
+          ticket.assignment_type === "SITE_VISIT" ||
+          ticket.is_site_visit),
+    ),
   );
 
-  logger.info("Processing .reminder command result", {
+  const reminderConfig = getReminderQueueConfig();
+  const isManual = Boolean(options.manualMode);
+  const getDelay = () => getReminderPostSendDelay(options);
+
+  const getDelayInfoText = () => {
+    if (isManual) {
+      const manualSec = Math.round(getDelay() / 1000);
+      return `${manualSec} detik (Manual Telegram)`;
+    }
+    const minSec = Math.round(reminderConfig.minDelayMs / 1000);
+    const maxSec = Math.round(reminderConfig.maxDelayMs / 1000);
+    const minMin = Math.round(minSec / 60);
+    const maxMin = Math.round(maxSec / 60);
+    return minSec === maxSec
+      ? `${minSec} detik (${minMin} menit, Anti-Ban WA Active)`
+      : `${minSec} - ${maxSec} detik (${minMin} - ${maxMin} menit, Anti-Ban WA Active)`;
+  };
+
+  // 1. Group NOP tickets
+  const nopRemindersByTarget =
+    nopTickets.length > 0
+      ? await groupTicketsByTarget(sock, sourceJid, nopTickets, options)
+      : new Map();
+  const nopEntries = [...nopRemindersByTarget.entries()];
+
+  // 2. Group SQA tickets by PIC CCM
+  const sqaGroupedByCcm = new Map();
+  if (sqaTickets.length > 0) {
+    for (const ticket of sqaTickets) {
+      const ccmName = ticket.ccm_handling || ticket.pic_sqa || "UNKNOWN";
+      const key = cleanInlineText(ccmName).toUpperCase();
+      const group = sqaGroupedByCcm.get(key) || { name: ccmName, tickets: [] };
+      group.tickets.push(ticket);
+      sqaGroupedByCcm.set(key, group);
+    }
+  }
+  const sqaValues = [...sqaGroupedByCcm.values()];
+
+  // 2b. MAIN SQA Group JID
+  const mainSqaJid =
+    sqaTickets.length > 0
+      ? resolveTargetJid({
+          assignment_type: "SQA",
+          cluster_area: "MAIN SQA",
+        })
+      : null;
+
+  // 3. Group Site Visit tickets and classify (new vs reminder)
+  const siteVisitGroups =
+    siteVisitTickets.length > 0
+      ? await groupTicketsByTarget(sock, sourceJid, siteVisitTickets, options)
+      : new Map();
+  const siteVisitEntries = [...siteVisitGroups.entries()];
+  const siteVisitClassified = [];
+  let totalSiteVisitSteps = 0;
+
+  for (const [targetJid, tickets] of siteVisitEntries) {
+    const newTickets = [];
+    const reminderTickets = [];
+    for (const ticket of tickets) {
+      const sentRecord = await getSentTicketRecord(ticket.order_id);
+      const wasSentToSiteVisit = Boolean(
+        sentRecord &&
+          (sentRecord.sent_to_site_visit ||
+            sentRecord.site_visit_sent_at ||
+            sentRecord.effective_target === "SITE VISIT"),
+      );
+      if (!wasSentToSiteVisit) {
+        newTickets.push(ticket);
+      } else {
+        reminderTickets.push(ticket);
+      }
+    }
+    siteVisitClassified.push({
+      targetJid,
+      tickets,
+      newTickets,
+      reminderTickets,
+    });
+    totalSiteVisitSteps +=
+      newTickets.length + (reminderTickets.length > 0 ? 1 : 0);
+  }
+
+  const totalSteps =
+    nopEntries.length +
+    sqaValues.length +
+    (mainSqaJid ? 1 : 0) +
+    totalSiteVisitSteps;
+
+  logger.info("Processing .reminder command result with step tracking", {
     sourceJid,
     totalValid: validTickets.length,
-    sqaCount: sqaTickets.length,
-    nopCount: nopTickets.length,
+    totalSteps,
+    nopGroups: nopEntries.length,
+    sqaJapri: sqaValues.length,
+    hasMainSqa: Boolean(mainSqaJid),
+    siteVisitSteps: totalSiteVisitSteps,
+    manualMode: Boolean(options.manualMode),
   });
 
-  // 1. Process NOP tickets: send reminder to NOP target groups
-  if (nopTickets.length > 0) {
-    const nopRemindersByTarget = await groupTicketsByTarget(
-      sock,
-      sourceJid,
-      nopTickets,
-    );
+  if (totalSteps === 0) {
+    await sock.sendMessage(sourceJid, {
+      text: "ℹ️ Tidak ada reminder yang perlu dikirimkan dari file Excel ini.",
+    });
+    return;
+  }
 
-    for (const [targetJid, tickets] of nopRemindersByTarget.entries()) {
+  let overallSentCount = 0;
+
+  const reportReminderProgress = async ({
+    currentStage,
+    sentItem,
+    nextItem,
+    delayInfo,
+  }) => {
+    const delayText = delayInfo || getDelayInfoText();
+    const progressLines = [
+      "⏳ **PROGRESS PENGIRIMAN REMINDER**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📊 **Total Progress** : ${formatReminderProgressBar(overallSentCount, totalSteps)}`,
+      `📍 **Tahap Saat Ini** : ${currentStage}`,
+      "",
+      `✅ **Terkirim**       : ${sentItem}`,
+      `⏱️ **Jeda Waktu**     : **${delayText}**`,
+    ];
+
+    if (nextItem) {
+      progressLines.push(`⏳ **Berikutnya**     : ${nextItem}`);
+    }
+
+    await sendTicketProgressMessage(sock, sourceJid, progressLines.join("\n"), {
+      isProgress: true,
+      overallSentCount,
+      totalSteps,
+    });
+  };
+
+  // 1. Process NOP tickets: send reminder to NOP target groups
+  if (nopEntries.length > 0 && !isDeliveryCancelled()) {
+    for (let i = 0; i < nopEntries.length; i++) {
+      if (isDeliveryCancelled()) break;
+      const [targetJid, tickets] = nopEntries[i];
+      const targetLabel = formatTargetProgressLabel(tickets);
       try {
         const payload = formatInProgressReminderMessagePayload(tickets, {
           isReminderCmd: true,
@@ -997,7 +1565,9 @@ export async function sendReminderCommandResult(
         });
 
         if (payload.text) {
-          await sock.sendMessage(targetJid, payload);
+          await sendHumanizedMessage(sock, targetJid, payload, {
+            stage: "reminder command NOP",
+          });
           logger.info("Sent NOP .reminder payload to target group", {
             targetJid,
             tickets: tickets.length,
@@ -1011,104 +1581,322 @@ export async function sendReminderCommandResult(
           error,
         });
       }
+
+      overallSentCount += 1;
+
+      let nextItemLabel = null;
+      if (i < nopEntries.length - 1) {
+        nextItemLabel = `Mengirim Reminder ke Grup ${formatTargetProgressLabel(nopEntries[i + 1][1])}`;
+      } else if (sqaValues.length > 0) {
+        nextItemLabel = `Mengirim Reminder SQA JAPRI ke ${sqaValues[0].name}`;
+      } else if (mainSqaJid) {
+        nextItemLabel = "Mengirim Reminder Summary ke Grup MAIN SQA";
+      } else if (totalSiteVisitSteps > 0) {
+        nextItemLabel = "Mengirim Tiket / Reminder ke SITE VISIT";
+      }
+
+      await reportReminderProgress({
+        currentStage: `Mengirim Reminder ke Grup ${targetLabel} (${i + 1}/${nopEntries.length})`,
+        sentItem: `Reminder ${targetLabel} (${tickets.length} Tiket)`,
+        nextItem: nextItemLabel,
+      });
+
+      const delayMs = getDelay("NOP");
+      if (
+        (i < nopEntries.length - 1 ||
+          sqaValues.length > 0 ||
+          mainSqaJid ||
+          totalSiteVisitSteps > 0) &&
+        delayMs > 0 &&
+        !isDeliveryCancelled()
+      ) {
+        await sleepWithCancellation(delayMs);
+      }
     }
   }
 
   // 2. Process SQA tickets: group by ccm_handling, send JAPRI (Direct Message)
-  if (sqaTickets.length > 0) {
-    const sqaGroupedByCcm = new Map();
-    for (const ticket of sqaTickets) {
-      const ccmName = ticket.ccm_handling || ticket.pic_sqa || "UNKNOWN";
-      const key = cleanInlineText(ccmName).toUpperCase();
-      const group = sqaGroupedByCcm.get(key) || { name: ccmName, tickets: [] };
-      group.tickets.push(ticket);
-      sqaGroupedByCcm.set(key, group);
-    }
-
-    for (const { name, tickets } of sqaGroupedByCcm.values()) {
+  // 2. Process SQA tickets: kirim draft reminder ke pengirim data (sourceJid) untuk diteruskan manual ke PIC CCM (Budi, Ferry)
+  // guna mencegah ban WhatsApp akibat bot blast ke chat personal
+  if (sqaValues.length > 0 && !isDeliveryCancelled()) {
+    for (let i = 0; i < sqaValues.length; i++) {
+      if (isDeliveryCancelled()) break;
+      const { name, tickets } = sqaValues[i];
       const contact = getMentionContact(name);
       const payload = formatInProgressReminderMessagePayload(tickets, {
         isReminderCmd: true,
         includeSummary: true,
       });
 
-      if (!payload.text) continue;
-
-      if (contact && contact.jid) {
+      if (payload.text) {
+        const ccmLabel = contact?.label || name;
+        const manualPayload = {
+          text: `📋 *[DRAFT JAPRI CCM - ${ccmLabel.toUpperCase()}]*\n_Silakan kirim/forward manual ke ${ccmLabel}:_\n\n${payload.text}`,
+          mentions: payload.mentions || [],
+        };
         try {
-          await sock.sendMessage(contact.jid, payload);
-          logger.info("Sent SQA .reminder JAPRI to PIC CCM", {
+          await sendHumanizedMessage(sock, sourceJid, manualPayload, {
+            stage: "reminder command SQA JAPRI draft to sourceJid",
+            skipPresence: true,
+          });
+          logger.info("Sent SQA reminder draft to data sender (sourceJid)", {
             ccmName: name,
-            contactJid: contact.jid,
+            sourceJid,
             tickets: tickets.length,
           });
         } catch (error) {
-          logger.error(
-            "Failed to send SQA reminder JAPRI, falling back to Telegram source chat",
-            {
-              ccmName: name,
-              contactJid: contact.jid,
-              error,
-            },
-          );
-          await sock.sendMessage(sourceJid, {
-            text: `⚠️ **Gagal JAPRI WA ke ${name} (${contact.jid})**\n\n${payload.text}`,
-          });
-        }
-      } else {
-        logger.warn(
-          "PIC CCM WhatsApp contact not found, falling back to Telegram source chat",
-          {
+          logger.error("Failed to send SQA reminder draft to sourceJid", {
             ccmName: name,
             sourceJid,
-          },
-        );
-        await sock.sendMessage(sourceJid, {
-          text: `⚠️ **[FALLBACK SQA REMINDER]**\nNomor WA untuk PIC CCM **${name}** belum terdaftar di config mentions.\nBerikut reminder tiketnya:\n\n${payload.text}`,
-        });
-      }
-    }
-
-    // Send SQA reminder summary to MAIN SQA group with pic_sqa tags
-    const mainSqaJid = resolveTargetJid({
-      assignment_type: "SQA",
-      cluster_area: "MAIN SQA",
-    });
-
-    if (mainSqaJid) {
-      try {
-        const mainSqaPayload = formatInProgressReminderMessagePayload(
-          sqaTickets,
-          {
-            isReminderCmd: true,
-            includeSummary: true,
-            usePicSqa: true,
-            targetGroupKey: "MAIN SQA",
-          },
-        );
-
-        if (mainSqaPayload.text) {
-          await sock.sendMessage(mainSqaJid, mainSqaPayload);
-          logger.info("Sent SQA /reminder payload to MAIN SQA group", {
-            mainSqaJid,
-            tickets: sqaTickets.length,
+            error,
           });
         }
-      } catch (error) {
-        logger.error(
-          "Failed to send SQA /reminder payload to MAIN SQA group",
-          {
-            mainSqaJid,
-            error,
-          },
-        );
+      }
+
+      overallSentCount += 1;
+
+      let nextItemLabel = null;
+      if (i < sqaValues.length - 1) {
+        nextItemLabel = `Menyiapkan Draft Reminder CCM untuk ${sqaValues[i + 1].name}`;
+      } else if (mainSqaJid) {
+        nextItemLabel = "Mengirim Reminder Summary ke Grup MAIN SQA";
+      } else if (totalSiteVisitSteps > 0) {
+        nextItemLabel = "Menyiapkan Draft Tiket / Reminder ke SITE VISIT";
+      }
+
+      await reportReminderProgress({
+        currentStage: `Menyiapkan Draft Reminder CCM ke Pengirim Data (${contact?.label || name}) (${i + 1}/${sqaValues.length})`,
+        sentItem: `Draft CCM ${contact?.label || name} (${tickets.length} Tiket)`,
+        nextItem: nextItemLabel,
+      });
+
+      const delayMs = getDelay("SQA");
+      if (
+        (i < sqaValues.length - 1 || mainSqaJid || totalSiteVisitSteps > 0) &&
+        delayMs > 0 &&
+        !isDeliveryCancelled()
+      ) {
+        await sleepWithCancellation(delayMs);
       }
     }
+  }
+
+  // 2b. Send SQA reminder summary to MAIN SQA group with pic_sqa tags
+  if (mainSqaJid && !isDeliveryCancelled()) {
+    try {
+      const mainSqaPayload = formatInProgressReminderMessagePayload(
+        sqaTickets,
+        {
+          isReminderCmd: true,
+          includeSummary: true,
+          usePicSqa: true,
+          targetGroupKey: "MAIN SQA",
+        },
+      );
+
+      if (mainSqaPayload.text) {
+        await sendHumanizedMessage(sock, mainSqaJid, mainSqaPayload, {
+          stage: "reminder command MAIN SQA",
+        });
+        logger.info("Sent SQA /reminder payload to MAIN SQA group", {
+          mainSqaJid,
+          tickets: sqaTickets.length,
+        });
+      }
+    } catch (error) {
+      logger.error("Failed to send SQA /reminder payload to MAIN SQA group", {
+        mainSqaJid,
+        error,
+      });
+    }
+
+    overallSentCount += 1;
+
+    let nextItemLabel = null;
+    if (totalSiteVisitSteps > 0) {
+      nextItemLabel = "Menyiapkan Draft Tiket / Reminder ke SITE VISIT";
+    }
+
+    await reportReminderProgress({
+      currentStage: "Mengirim Reminder Summary ke Grup MAIN SQA",
+      sentItem: `Reminder Summary MAIN SQA (${sqaTickets.length} Tiket)`,
+      nextItem: nextItemLabel,
+    });
+
+    const delayMs = getDelay("SQA");
+    if (totalSiteVisitSteps > 0 && delayMs > 0 && !isDeliveryCancelled()) {
+      await sleepWithCancellation(delayMs);
+    }
+  }
+
+  // 3. Process Site Visit tickets: first-time detail & combined reminder
+  // Dikirim ke pengirim data (sourceJid) agar diteruskan secara manual ke grup Site Visit
+  if (siteVisitClassified.length > 0 && !isDeliveryCancelled()) {
+    for (let i = 0; i < siteVisitClassified.length; i++) {
+      if (isDeliveryCancelled()) break;
+      const { targetJid, newTickets, reminderTickets } =
+        siteVisitClassified[i];
+
+      // 3a. Kirim detail lengkap untuk tiket yang belum pernah dikirim ke Site Visit
+      for (let j = 0; j < newTickets.length; j++) {
+        if (isDeliveryCancelled()) break;
+        const ticket = newTickets[j];
+        try {
+          const payload = formatRepetitiveEscalationPayload(ticket);
+          const manualPayload = {
+            text: `📋 *[DRAFT TIKET BARU - SITE VISIT]*\n_Silakan kirim/forward manual ke Grup Site Visit:_\n\n${payload.text}`,
+            mentions: payload.mentions || [],
+          };
+          await sendHumanizedMessage(sock, sourceJid, manualPayload, {
+            stage: "reminder command Site Visit draft to sourceJid",
+            skipPresence: true,
+          });
+          logger.info(
+            "Sent Site Visit first-time detail draft to sourceJid",
+            {
+              orderId: ticket.order_id,
+              sourceJid,
+            },
+          );
+          await markTicketAsSent(ticket, {
+            sourceJid,
+            targetJid,
+            dispatchType: "SITE_VISIT",
+          });
+        } catch (error) {
+          await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+            targetJid: sourceJid,
+            stage: "reminder command Site Visit draft to sourceJid",
+            tickets: [ticket],
+            error,
+          });
+        }
+
+        overallSentCount += 1;
+
+        let nextItemLabel = null;
+        if (j < newTickets.length - 1) {
+          nextItemLabel = `Menyiapkan Draft Tiket Baru SITE VISIT: ${newTickets[j + 1].order_id}`;
+        } else if (reminderTickets.length > 0) {
+          nextItemLabel = "Menyiapkan Draft Reminder Gabungan SITE VISIT";
+        }
+
+        await reportReminderProgress({
+          currentStage: `Menyiapkan Draft Tiket Baru SITE VISIT (${ticket.order_id})`,
+          sentItem: `Draft Tiket Baru \`${ticket.order_id}\` (TS ${ticket.ts_name || ticket.city || "-"})`,
+          nextItem: nextItemLabel,
+        });
+
+        const delayMs = getDelay("SITE_VISIT");
+        if (
+          (j < newTickets.length - 1 || reminderTickets.length > 0) &&
+          delayMs > 0 &&
+          !isDeliveryCancelled()
+        ) {
+          await sleepWithCancellation(delayMs);
+        }
+      }
+
+      // 3b. Kirim template reminder gabungan untuk tiket yang sudah pernah dikirim sebelumnya
+      if (reminderTickets.length > 0 && !isDeliveryCancelled()) {
+        try {
+          const combinedPayload = formatSiteVisitCombinedReminderPayload(
+            reminderTickets,
+            options,
+          );
+          if (combinedPayload.text) {
+            const manualCombinedPayload = {
+              text: `📋 *[DRAFT REMINDER GABUNGAN - SITE VISIT]*\n_Silakan kirim/forward manual ke Grup Site Visit:_\n\n${combinedPayload.text}`,
+              mentions: combinedPayload.mentions || [],
+            };
+            await sendHumanizedMessage(sock, sourceJid, manualCombinedPayload, {
+              stage: "reminder command Site Visit combined draft to sourceJid",
+              skipPresence: true,
+            });
+            logger.info("Sent Site Visit combined reminder draft to sourceJid", {
+              sourceJid,
+              ticketsCount: reminderTickets.length,
+            });
+            for (const ticket of reminderTickets) {
+              await markTicketAsSent(ticket, {
+                sourceJid,
+                targetJid,
+                dispatchType: "REMINDER",
+                isReminder: true,
+              });
+            }
+          }
+        } catch (error) {
+          await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+            targetJid: sourceJid,
+            stage: "reminder command Site Visit combined draft to sourceJid",
+            tickets: reminderTickets,
+            error,
+          });
+        }
+
+        overallSentCount += 1;
+
+        await reportReminderProgress({
+          currentStage: "Menyiapkan Draft Reminder Gabungan SITE VISIT",
+          sentItem: `Draft Reminder Gabungan Site Visit (${reminderTickets.length} Tiket)`,
+          nextItem: null,
+          delayInfo: "Selesai",
+        });
+      }
+
+      const delayMs = getDelay("SITE_VISIT");
+      if (
+        i < siteVisitClassified.length - 1 &&
+        delayMs > 0 &&
+        !isDeliveryCancelled()
+      ) {
+        await sleepWithCancellation(delayMs);
+      }
+    }
+  }
+
+  // Final Complete Card
+  if (!isDeliveryCancelled()) {
+    const summaryLines = [
+      "✅ **PENGIRIMAN REMINDER SELESAI**",
+      "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+      `📊 **Total Terkirim** : **${overallSentCount}/${totalSteps} Target Reminder**`,
+    ];
+
+    if (nopEntries.length > 0) {
+      summaryLines.push(
+        `• 📢 **Grup NOP** : ${nopEntries.length} grup (${nopTickets.length} tiket)`,
+      );
+    }
+    if (sqaValues.length > 0) {
+      summaryLines.push(
+        `• 👤 **SQA JAPRI** : ${sqaValues.length} PIC CCM (${sqaTickets.length} tiket)`,
+      );
+    }
+    if (mainSqaJid) {
+      summaryLines.push(
+        `• 👥 **MAIN SQA** : 1 Rekap Summary (${sqaTickets.length} tiket)`,
+      );
+    }
+    if (totalSiteVisitSteps > 0) {
+      summaryLines.push(
+        `• 🚗 **SITE VISIT** : ${siteVisitTickets.length} tiket repetitif`,
+      );
+    }
+
+    await sendTicketProgressMessage(sock, sourceJid, summaryLines.join("\n"), {
+      isProgress: true,
+      isFinal: true,
+    });
   }
 }
 
 // mengirim summary, report, Excel balasan, preamble grup, dan pesan eskalasi ke grup tujuan.
 export async function sendImportResult(sock, sourceJid, result, options = {}) {
+  activeDeliveryCancelled = false;
+  const manualMode = Boolean(options.manualMode);
+  const specialMode = Boolean(options.specialMode);
   const ticketOnlyMode = Boolean(options.ticketOnlyMode);
   const summaryOnlyMode = Boolean(options.summaryOnlyMode);
   const reminderMode = Boolean(options.reminderMode);
@@ -1118,19 +1906,28 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     total: result.total_rows,
     valid: result.valid_count,
     skipped: result.skipped_count,
+    manualMode,
+    specialMode,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
   });
 
-  const modeName = ticketOnlyMode
+  const baseMode = specialMode
+    ? ".special"
+    : ticketOnlyMode
     ? ".update"
     : summaryOnlyMode
     ? ".summary"
     : reminderMode
     ? ".reminder"
-    : null;
-  const modeNote = ticketOnlyMode
+    : ".import";
+  const modeName = manualMode ? `${baseMode} manual` : (baseMode === ".import" ? null : baseMode);
+  const modeNote = manualMode
+    ? "Mode `manual` aktif: Seluruh tiket, file Excel, dan reminder dikirimkan ke Telegram untuk diteruskan secara manual ke WhatsApp."
+    : specialMode
+    ? "Mode `.special` aktif: Seluruh tiket valid dikirim ulang ke grup target dan sent_tickets.json diperbarui (bypass cek duplikat)."
+    : ticketOnlyMode
     ? "Mode `.update` aktif: Detail tiket dikirim langsung ke grup target tanpa salam pembuka & reminder summary."
     : summaryOnlyMode
     ? "Mode `.summary` aktif: Bot hanya membuat report dan summary tanpa mengirim detail tiket ke grup target."
@@ -1142,10 +1939,11 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     text: formatImportSummary(result, { mode: modeName, modeNote }),
   });
 
-  if (!result.ok) {
-    logger.warn("Import result is not OK, stopping outbound ticket send", {
+  if (!result.ok || isDeliveryCancelled()) {
+    logger.warn("Import result is not OK or cancelled, stopping outbound ticket send", {
       reason: result.reason,
       missingColumns: result.missing_columns,
+      cancelled: isDeliveryCancelled(),
     });
     return;
   }
@@ -1156,6 +1954,10 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     await sock.sendMessage(sourceJid, {
       text: processingReport,
     });
+  }
+
+  if (isDeliveryCancelled()) {
+    return;
   }
 
   if (result.valid_tickets.length > 0) {
@@ -1172,24 +1974,76 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     });
   }
 
-  const sentTicketPlan = await createSentTicketPlan(result.valid_tickets);
+  if (isDeliveryCancelled()) {
+    return;
+  }
+
+  const sentTicketPlan = await createSentTicketPlan(
+    result.valid_tickets,
+    new Date(),
+    options,
+  );
   await sock.sendMessage(sourceJid, {
     text: formatSentTicketPlanReport(sentTicketPlan),
   });
 
-  const sqaAreaFollowUpMessage = formatSqaAreaFollowUpMessage(
-    result.valid_tickets,
-  );
-  if (sqaAreaFollowUpMessage) {
-    logger.info("Sending SQA area follow-up message", {
-      sourceJid,
-      sqaTickets: result.valid_tickets.filter(
-        (ticket) => ticket.assignment_type === "SQA",
-      ).length,
-      source: "valid_tickets",
-    });
-    await sock.sendMessage(sourceJid, {
-      text: sqaAreaFollowUpMessage,
+  if (isDeliveryCancelled()) {
+    return;
+  }
+
+  if (!ticketOnlyMode) {
+    const sqaAreaFollowUpMessage = formatSqaAreaFollowUpMessage(
+      result.valid_tickets,
+    );
+    if (sqaAreaFollowUpMessage) {
+      logger.info("Sending SQA area follow-up message", {
+        sourceJid,
+        sqaTickets: result.valid_tickets.filter(
+          (ticket) => ticket.assignment_type === "SQA",
+        ).length,
+        source: "valid_tickets",
+      });
+      await sock.sendMessage(sourceJid, {
+        text: sqaAreaFollowUpMessage,
+      });
+    }
+
+    const nopAreaSummaryMessage = formatNopAreaSummaryMessage(
+      result.valid_tickets,
+    );
+    if (nopAreaSummaryMessage) {
+      logger.info("Sending NOP area summary message", {
+        sourceJid,
+        sqaTickets: result.valid_tickets.filter(
+          (ticket) => ticket.assignment_type === "SQA",
+        ).length,
+        source: "valid_tickets",
+      });
+      await sock.sendMessage(sourceJid, {
+        text: nopAreaSummaryMessage,
+      });
+    }
+  }
+
+  // Peringatan komplain repetitif site ID (hanya dikirimkan ke grup/chat pengirim)
+  try {
+    const siteRepetitiveAlert = await generateSiteRepetitiveAlert(
+      result.valid_tickets,
+      options,
+    );
+    if (siteRepetitiveAlert) {
+      logger.info("Sending site repetitive complaints alert to sender group", {
+        sourceJid,
+        siteCount: siteRepetitiveAlert.siteCount,
+        totalTickets: siteRepetitiveAlert.totalTickets,
+      });
+      await sock.sendMessage(sourceJid, {
+        text: siteRepetitiveAlert.text,
+      });
+    }
+  } catch (siteRepErr) {
+    logger.warn("Failed checking site repetitive complaints in sendImportResult", {
+      error: siteRepErr.message,
     });
   }
 
@@ -1198,6 +2052,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       sock,
       sourceJid,
       result.valid_tickets,
+      options,
     );
     logger.info("Stopping import flow after summary-only report", {
       sourceJid,
@@ -1220,8 +2075,15 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
         sock,
         sourceJid,
         sentTicketPlan.sendable_tickets,
-        { skipPreamble: true },
+        { skipPreamble: true, ...options, manualMode },
       );
+    }
+
+    if (isDeliveryCancelled()) {
+      logger.info("Stopping reminder flow because delivery was cancelled", {
+        sourceJid,
+      });
+      return;
     }
 
     await sendReminderCommandResult(
@@ -1230,6 +2092,13 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       result.valid_tickets,
       options,
     );
+
+    if (isDeliveryCancelled()) {
+      logger.info("Skipping reminder success message because delivery was cancelled", {
+        sourceJid,
+      });
+      return;
+    }
 
     const reminderOutputLines = [
       "✅ **Reminder Berhasil Dikirim**",
@@ -1241,6 +2110,7 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
       "📋 **Status Pengiriman Reminder**:",
       "• SQA: Reminder JAPRI terkirim ke PIC CCM & ringkasan terkirim ke MAIN SQA.",
       "• NOP: Reminder terkirim ke grup NOP target.",
+      "• Site Visit: Reminder tiket repetitif terkirim ke grup SITE VISIT.",
     ];
 
     await sock.sendMessage(sourceJid, {
@@ -1255,17 +2125,24 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     return;
   }
 
-  await sendDailyInProgressReminders(
-    sock,
-    sourceJid,
-    sentTicketPlan.in_progress_reminder_tickets || [],
-  );
-
   if (ticketOnlyMode) {
-    logger.info("Skipping MAIN SQA summary in .update ticket-only mode", {
-      sourceJid,
-    });
+    logger.info(
+      "Skipping daily in-progress reminders and MAIN SQA summary in .update ticket-only mode",
+      {
+        sourceJid,
+      },
+    );
   } else {
+    await sendDailyInProgressReminders(
+      sock,
+      sourceJid,
+      sentTicketPlan.in_progress_reminder_tickets || [],
+    );
+
+    if (isDeliveryCancelled()) {
+      return;
+    }
+
     await sendMainSqaSummaryOnly(
       sock,
       sourceJid,
@@ -1274,11 +2151,12 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     );
   }
 
-  if (sentTicketPlan.sendable_tickets.length === 0) {
-    logger.info("No tickets left to send after deduplication/SLA checks", {
+  if (isDeliveryCancelled() || sentTicketPlan.sendable_tickets.length === 0) {
+    logger.info("No tickets left to send or delivery cancelled after deduplication/SLA checks", {
       sourceJid,
       duplicate: sentTicketPlan.duplicate_tickets.length,
       outSla: sentTicketPlan.out_sla_tickets.length,
+      cancelled: isDeliveryCancelled(),
       inProgressReminder:
         sentTicketPlan.in_progress_reminder_tickets?.length || 0,
     });
@@ -1289,27 +2167,53 @@ export async function sendImportResult(sock, sourceJid, result, options = {}) {
     sock,
     sourceJid,
     sentTicketPlan.sendable_tickets,
-    { skipPreamble: ticketOnlyMode },
+    { skipPreamble: ticketOnlyMode, ...options, manualMode },
   );
 }
 
-async function sendTicketDetailsToTargetGroups(
+export async function sendTicketDetailsToTargetGroups(
   sock,
   sourceJid,
   sendableTickets,
   options = {},
 ) {
+  if (!options.preserveCancellation) {
+    activeDeliveryCancelled = false;
+  }
   const skipPreamble = Boolean(options.skipPreamble);
   const ticketsByTarget = await groupTicketsByTarget(
     sock,
     sourceJid,
     sendableTickets,
+    options,
   );
 
-  const targetEntries = [...ticketsByTarget.entries()];
+  const targetEntries = [...ticketsByTarget.entries()].sort(
+    ([aJid, aTickets], [bJid, bTickets]) => {
+      const aIsSiteVisit = aTickets.some(
+        (t) => t.is_repetitive || t.targetGroupKey === "SITE VISIT",
+      );
+      const bIsSiteVisit = bTickets.some(
+        (t) => t.is_repetitive || t.targetGroupKey === "SITE VISIT",
+      );
+      if (aIsSiteVisit && !bIsSiteVisit) return 1;
+      if (!aIsSiteVisit && bIsSiteVisit) return -1;
+      return 0;
+    },
+  );
+  const totalTicketsCount = sendableTickets.length;
+  let overallSentCount = 0;
+  const failedTickets = [];
+
   for (const [targetIndex, [targetJid, tickets]] of targetEntries.entries()) {
+    if (isDeliveryCancelled()) {
+      logger.warn("Stopping sendTicketDetailsToTargetGroups: delivery cancelled");
+      break;
+    }
+
     const targetLabel = formatTargetProgressLabel(tickets);
     let sentCount = 0;
+    const nextEntry = targetEntries[targetIndex + 1];
 
     if (skipPreamble) {
       logger.info(
@@ -1323,11 +2227,32 @@ async function sendTicketDetailsToTargetGroups(
       try {
         await sendTargetGroupPreamble(sock, targetJid, tickets);
         if (tickets[0]?.assignment_type !== "SQA") {
-          await sendTargetGroupReminder(sock, targetJid, tickets, {
-            targetGroupKey: getTargetGroupKey(targetJid),
+          const detailTickets = getReopenReminderTickets(tickets, {
+            requirePicNop: true,
           });
+          if (detailTickets.length > 0) {
+            await sendTargetGroupReminder(sock, targetJid, tickets, {
+              targetGroupKey: getTargetGroupKey(targetJid),
+            });
+          } else {
+            logger.info(
+              "Skipping target group reminder: no reopen detail tickets to remind",
+              {
+                targetJid,
+                tickets: tickets.length,
+              },
+            );
+          }
         }
       } catch (error) {
+        for (const t of tickets) {
+          failedTickets.push({
+            orderId: t.order_id,
+            targetLabel,
+            targetJid,
+            error: `Preamble gagal: ${error?.message || "Koneksi/timeout grup"}`,
+          });
+        }
         await sendTargetDeliveryFailedAlert(sock, sourceJid, {
           targetJid,
           stage: "target group preamble",
@@ -1339,89 +2264,158 @@ async function sendTicketDetailsToTargetGroups(
     }
 
     for (const ticket of tickets) {
+      if (isDeliveryCancelled()) {
+        logger.warn("Stopping ticket iteration: delivery cancelled", {
+          orderId: ticket.order_id,
+        });
+        break;
+      }
+
       logger.info("Sending escalation ticket", {
         orderId: ticket.order_id,
         assignmentType: ticket.assignment_type,
         targetJid,
         pic: ticket.pic,
+        manualMode: Boolean(options.manualMode),
       });
       await enqueueTicketMessage(
         async () => {
-          try {
-            await sock.sendMessage(
-              targetJid,
-              formatEscalationMessagePayload(ticket),
-            );
-            await markTicketAsSent(ticket, { sourceJid, targetJid });
-            sentCount += 1;
-
-            if (
-              TICKET_PROGRESS_INTERVAL > 0 &&
-              sentCount % TICKET_PROGRESS_INTERVAL === 0
-            ) {
-              await sendTicketProgressMessage(
-                sock,
-                sourceJid,
-                [
-                  "✅ PROGRESS KIRIM TIKET",
-                  "━━━━━━━━━━━━━━━━━━━━",
-                  `📍 Target   : ${targetLabel}`,
-                  `📦 Terkirim : ${sentCount}/${tickets.length} tiket`,
-                  `🎫 Order ID : ${ticket.order_id || "-"}`,
-                ].join("\n"),
-                {
-                  targetJid,
-                  targetLabel,
-                  sentCount,
-                  totalTickets: tickets.length,
-                },
-              );
-            }
-          } catch (error) {
-            await sendTargetDeliveryFailedAlert(sock, sourceJid, {
-              targetJid,
-              stage: "ticket detail",
-              tickets: [ticket],
-              error,
+          if (isDeliveryCancelled()) {
+            logger.warn("Skipping ticket send: delivery cancelled", {
+              orderId: ticket.order_id,
             });
+            return;
           }
+
+          const sendResult = await sendHumanizedMessage(
+            sock,
+            targetJid,
+            formatEscalationMessagePayload(ticket),
+            { stage: "ticket detail send" },
+          );
+          if (sendResult === null) {
+            throw new Error(
+              `Pengiriman WhatsApp gagal: respons kosong atau socket tidak siap (order: ${ticket.order_id})`,
+            );
+          }
+
+          await markTicketAsSent(ticket, { sourceJid, targetJid });
+          sentCount += 1;
+          overallSentCount += 1;
+
+          const currentOrder = ticket.order_id || "-";
+          const nextTicket = tickets[sentCount];
+          const queueConfig = getQueueConfig();
+          const isManual = Boolean(options.manualMode);
+          let delayInfoText;
+          if (isManual) {
+            const manualSec = Math.round(queueConfig.manualSendDelayMs / 1000);
+            delayInfoText = `${manualSec} detik (Manual Telegram)`;
+          } else {
+            const minSec = Math.round(queueConfig.minDelayMs / 1000);
+            const maxSec = Math.round(queueConfig.maxDelayMs / 1000);
+            delayInfoText =
+              minSec === maxSec
+                ? `${minSec} detik`
+                : `${minSec} - ${maxSec} detik (Random Jitter)`;
+          }
+
+          const progressLines = [
+            "⏳ **PROGRESS PENGIRIMAN TIKET**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            `📊 **Total Progress** : ${formatProgressBar(overallSentCount, totalTicketsCount)}`,
+            `📍 **Target Group**   : ${targetLabel} (${sentCount}/${tickets.length})`,
+            "",
+            `✅ **Terkirim**       : \`${currentOrder}\``,
+            `👤 **PIC**            : **${ticket.pic || "-"}**`,
+            `⏱️ **Jeda Waktu**     : **${delayInfoText}**`,
+          ];
+
+          if (nextTicket) {
+            progressLines.push(
+              `⏳ **Tiket Berikut**  : \`${nextTicket.order_id || "-"}\` (menunggu jeda ${delayInfoText}...)`,
+            );
+          } else if (nextEntry) {
+            const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
+            const groupDelaySec = Math.round(
+              TARGET_GROUP_COMPLETION_DELAY_MS / 1000,
+            );
+            progressLines.push(
+              `⏳ **Status**         : Lanjut ke **${nextTargetLabel}** (jeda antar grup ${groupDelaySec} detik...)`,
+            );
+          }
+
+          await sendTicketProgressMessage(
+            sock,
+            sourceJid,
+            progressLines.join("\n"),
+            {
+              isProgress: true,
+              targetJid,
+              targetLabel,
+              sentCount,
+              totalTickets: tickets.length,
+              overallSentCount,
+              totalTicketsCount,
+            },
+          );
         },
         {
           orderId: ticket.order_id,
           assignmentType: ticket.assignment_type,
           targetJid,
           pic: ticket.pic,
+          manualMode: Boolean(options.manualMode),
+          onPermanentlyFailed: async (error) => {
+            failedTickets.push({
+              orderId: ticket.order_id,
+              targetLabel,
+              targetJid,
+              error: error?.message || "Pengiriman gagal setelah retry",
+            });
+            await sendTargetDeliveryFailedAlert(sock, sourceJid, {
+              targetJid,
+              stage: "ticket detail",
+              tickets: [ticket],
+              error,
+            });
+          },
         },
       );
     }
 
-    const nextEntry = targetEntries[targetIndex + 1];
-    const nextTargetLabel = nextEntry
-      ? formatTargetProgressLabel(nextEntry[1])
-      : "";
-
-    await sendTicketProgressMessage(
-      sock,
-      sourceJid,
-      [
-        "✅ TARGET SELESAI DIPROSES",
-        "━━━━━━━━━━━━━━━━━━━━",
-        `📍 Target   : ${targetLabel}`,
-        `📦 Terkirim : ${sentCount}/${tickets.length} tiket`,
-        nextTargetLabel
-          ? `⏳ Jeda     : ${Math.round(TARGET_GROUP_COMPLETION_DELAY_MS / 1000)} detik sebelum lanjut ke ${nextTargetLabel}`
-          : "🏁 Status   : Semua target tiket sudah selesai diproses",
-      ].join("\n"),
-      {
-        targetJid,
-        targetLabel,
-        sentCount,
-        totalTickets: tickets.length,
-        nextTargetLabel,
-      },
-    );
+    if (isDeliveryCancelled()) {
+      logger.warn("Stopping target groups: delivery cancelled");
+      break;
+    }
 
     if (nextEntry && TARGET_GROUP_COMPLETION_DELAY_MS > 0) {
+      const nextTargetLabel = formatTargetProgressLabel(nextEntry[1]);
+      const groupDelaySec = Math.round(
+        TARGET_GROUP_COMPLETION_DELAY_MS / 1000,
+      );
+
+      await sendTicketProgressMessage(
+        sock,
+        sourceJid,
+        [
+          "⏳ **PROGRESS PENGIRIMAN TIKET**",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          `📊 **Total Progress** : ${formatProgressBar(overallSentCount, totalTicketsCount)}`,
+          `📍 **Target Selesai** : ${targetLabel} (${sentCount}/${tickets.length})`,
+          "",
+          `⏳ **Status**         : Menunggu jeda ${groupDelaySec}s sebelum lanjut ke **${nextTargetLabel}**...`,
+        ].join("\n"),
+        {
+          isProgress: true,
+          targetJid,
+          targetLabel,
+          sentCount,
+          totalTickets: tickets.length,
+          nextTargetLabel,
+        },
+      );
+
       logger.info("Waiting before next target group", {
         targetJid,
         targetLabel,
@@ -1429,13 +2423,136 @@ async function sendTicketDetailsToTargetGroups(
         nextTargetLabel,
         delayMs: TARGET_GROUP_COMPLETION_DELAY_MS,
       });
-      await sleep(TARGET_GROUP_COMPLETION_DELAY_MS);
+      await new Promise((resolve) => {
+        activeDeliverySleepResolve = resolve;
+        activeDeliverySleepTimer = setTimeout(() => {
+          activeDeliverySleepTimer = null;
+          activeDeliverySleepResolve = null;
+          resolve();
+        }, TARGET_GROUP_COMPLETION_DELAY_MS);
+      });
     }
+  }
+
+  if (isDeliveryCancelled()) {
+    logger.info("sendTicketDetailsToTargetGroups finished early due to cancellation");
+    return {
+      total: totalTicketsCount,
+      sentCount: overallSentCount,
+      cancelled: true,
+    };
+  }
+
+  const hasFailed = failedTickets.length > 0;
+  const summaryHeader = hasFailed
+    ? "⚠️ **PENGIRIMAN TIKET SELESAI (DENGAN CATATAN)**"
+    : "✅ **PENGIRIMAN TIKET SELESAI**";
+
+  const progressSummaryLines = [
+    summaryHeader,
+    "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    `📦 **Total Terkirim** : **${overallSentCount}/${totalTicketsCount} Tiket**`,
+  ];
+
+  if (hasFailed) {
+    progressSummaryLines.push(
+      `❌ **Gagal Terkirim** : **${failedTickets.length} Tiket**`,
+    );
+  }
+
+  progressSummaryLines.push(
+    "",
+    "🗂️ **Rincian per Target:**",
+    ...targetEntries.map(
+      ([, tList]) =>
+        `• ${formatTargetProgressLabel(tList)}: **${tList.length} tiket**`,
+    ),
+  );
+
+  if (hasFailed) {
+    progressSummaryLines.push(
+      "",
+      "⚠️ **Daftar Tiket Gagal Terkirim:**",
+      ...failedTickets.map(
+        (f) => `• \`${f.orderId}\` (${f.targetLabel}): ${f.error}`,
+      ),
+      "",
+      "💡 _Tiket yang gagal di atas tidak dicatat ke database riwayat sehingga Anda dapat mengirimkannya ulang secara aman._",
+    );
+  } else {
+    progressSummaryLines.push(
+      "",
+      "📋 **Status Pengiriman:**",
+      "• Seluruh tiket valid telah berhasil diteruskan ke grup WhatsApp masing-masing.",
+    );
+  }
+
+  await sendTicketProgressMessage(
+    sock,
+    sourceJid,
+    progressSummaryLines.join("\n"),
+    {
+      isProgress: true,
+      isFinal: true,
+    },
+  );
+
+  return {
+    total: totalTicketsCount,
+    sentCount: overallSentCount,
+    cancelled: false,
+  };
+}
+
+// menandai pesan masuk sebagai telah dibaca (centang dua biru) dengan jeda membaca alami (anti-ban)
+export async function markMessageAsRead(sock, message, options = {}) {
+  if (!sock?.readMessages || !message?.key) return false;
+  if (message.key.fromMe) return false;
+
+  const isAutoReadEnabled = process.env.WA_AUTO_READ !== "false";
+  if (!isAutoReadEnabled && !options.force) return false;
+
+  const minDelay = Number(process.env.WA_AUTO_READ_DELAY_MIN_MS || 1500);
+  const maxDelay = Number(process.env.WA_AUTO_READ_DELAY_MAX_MS || 4000);
+  const jitter =
+    maxDelay > minDelay
+      ? Math.floor(Math.random() * (maxDelay - minDelay + 1))
+      : 0;
+  const delayMs =
+    options.delayMs !== undefined ? options.delayMs : minDelay + jitter;
+
+  if (delayMs > 0) {
+    await sleepWithCancellation(delayMs);
+  }
+
+  if (isDeliveryCancelled()) return false;
+
+  try {
+    await sock.readMessages([message.key]);
+    logger.info("Marked WhatsApp message as read (centang 2 biru)", {
+      remoteJid: message.key.remoteJid,
+      id: message.key.id,
+      delayMs,
+    });
+    return true;
+  } catch (error) {
+    logger.debug("Failed to mark WhatsApp message as read", {
+      error: error.message,
+    });
+    return false;
   }
 }
 
 // handler utama pesan masuk; hanya memproses dokumen Excel dari grup/private yang diizinkan.
-async function handleIncomingMessage(sock, messageEvent) {
+export async function handleIncomingMessage(sock, messageEvent) {
+  // 1. Abaikan event selain notify (misalnya sync history/append saat baru login)
+  if (messageEvent?.type && messageEvent.type !== "notify") {
+    logger.debug("Ignoring non-notify message event (history sync)", {
+      type: messageEvent.type,
+    });
+    return;
+  }
+
   const message = messageEvent.messages?.[0];
   if (!message?.message) {
     logger.debug("Ignoring empty message");
@@ -1445,6 +2562,44 @@ async function handleIncomingMessage(sock, messageEvent) {
   const sourceJid = message.key.remoteJid;
   if (message.key.fromMe) {
     logger.debug("Ignoring fromMe message");
+    return;
+  }
+
+  // 2. Proteksi Anti-Replay: Abaikan pesan offline/lama yang dikirim sebelum bot online
+  const rawTimestamp = message.messageTimestamp;
+  const messageTimestampMs =
+    typeof rawTimestamp === "number"
+      ? rawTimestamp * 1000
+      : typeof rawTimestamp?.low === "number"
+        ? rawTimestamp.low * 1000
+        : Number(rawTimestamp || 0) * 1000;
+
+  const isStaleMessage =
+    messageTimestampMs > 0 &&
+    (Date.now() - messageTimestampMs > 120000 ||
+      (activeConnectionOpenTime > 0 &&
+        messageTimestampMs < activeConnectionOpenTime - 10000));
+
+  if (isStaleMessage) {
+    logger.info("Ignoring stale/offline WhatsApp message received during sync", {
+      sourceJid,
+      messageAgeSec: Math.round((Date.now() - messageTimestampMs) / 1000),
+    });
+    return;
+  }
+
+  // 3. Cek apakah akses pesan/perintah masuk dari WhatsApp dinonaktifkan (Telegram-only mode)
+  const isIncomingDisabled =
+    process.env.WA_DISABLE_INCOMING === "true" ||
+    process.env.WA_ENABLE_INCOMING === "false";
+
+  if (isIncomingDisabled) {
+    logger.debug(
+      "Incoming WhatsApp message ignored: WA incoming access is disabled via .env (Telegram-only mode)",
+      {
+        sourceJid,
+      },
+    );
     return;
   }
 
@@ -1462,6 +2617,14 @@ async function handleIncomingMessage(sock, messageEvent) {
 
   const text = getMessageText(message.message);
   const documentMessage = getDocumentMessage(message.message);
+
+  // Tandai pesan sebagai telah dibaca (centang 2 biru) dengan jeda alami sebelum merespons
+  if (text.startsWith(".") || documentMessage) {
+    await markMessageAsRead(sock, message);
+  } else {
+    markMessageAsRead(sock, message).catch(() => {});
+  }
+
   if (text.startsWith(".") && !documentMessage) {
     await handleBotCommand(sock, { sourceJid, senderJid, text });
     return;
@@ -1498,6 +2661,8 @@ async function handleIncomingMessage(sock, messageEvent) {
         "➡️ Flow normal: gunakan caption `.import` atau `.send`.",
         "📌 Update tiket saja: gunakan caption `.update`.",
         "📊 Summary saja: gunakan caption `.summary`.",
+        "⏰ Reminder saja: gunakan caption `.reminder`.",
+        "⚡ Kirim ulang tiket (bypass duplikat): gunakan caption `.special`.",
         "",
         "---",
         "ℹ️ File tanpa caption command akan diabaikan.",
@@ -1533,23 +2698,35 @@ async function handleIncomingMessage(sock, messageEvent) {
   }
 
   await sock.sendMessage(sourceJid, {
-    text: importOptions.summaryOnlyMode
+    text: importOptions.specialMode
+      ? [
+          "📂 **File Excel Diterima (Mode .special)**",
+          "",
+          "⏳ Sedang memproses **pengiriman ulang seluruh tiket**...",
+        ].join("\n")
+      : importOptions.summaryOnlyMode
       ? [
           "📂 **File Excel Diterima (Mode .summary)**",
           "",
           "⏳ Sedang memproses **report dan summary saja**...",
         ].join("\n")
+      : importOptions.reminderMode
+      ? [
+          "📂 **File Excel Diterima (Mode .reminder)**",
+          "",
+          "⏳ Sedang memproses **pengiriman reminder**...",
+        ].join("\n")
       : importOptions.ticketOnlyMode
-        ? [
-            "📂 **File Excel Diterima (Mode .update)**",
-            "",
-            "⏳ Sedang memproses **detail tiket saja**...",
-          ].join("\n")
-        : [
-            "📂 **File Excel Diterima**",
-            "",
-            "⏳ Sedang memproses **tiket lengkap**...",
-          ].join("\n"),
+      ? [
+          "📂 **File Excel Diterima (Mode .update)**",
+          "",
+          "⏳ Sedang memproses **detail tiket saja**...",
+        ].join("\n")
+      : [
+          "📂 **File Excel Diterima**",
+          "",
+          "⏳ Sedang memproses **tiket lengkap**...",
+        ].join("\n"),
   });
   try {
     const buffer = await downloadDocumentBuffer(documentMessage);
@@ -1565,7 +2742,18 @@ async function handleIncomingMessage(sock, messageEvent) {
       ticketOnlyMode: importOptions.ticketOnlyMode,
       summaryOnlyMode: importOptions.summaryOnlyMode,
     });
-    await sendImportResult(sock, sourceJid, result, importOptions);
+    sendImportResult(sock, sourceJid, result, importOptions).catch((err) => {
+      logger.error("Failed to process ticket delivery in background", err);
+      sock
+        .sendMessage(sourceJid, {
+          text: [
+            "❌ **Gagal Mengirim Tiket ke WhatsApp**",
+            "",
+            `🛑 Error: ${err.message}`,
+          ].join("\n"),
+        })
+        .catch(() => {});
+    });
   } catch (error) {
     logger.error("Failed to process incoming Excel", error);
     await sock.sendMessage(sourceJid, {
@@ -1604,6 +2792,14 @@ export async function startBot(options = {}) {
   activeConnectionGeneration = generation;
   let stopRequested = false;
   logger.info("Starting WhatsApp bot auth state", { authDir });
+  if (
+    process.env.WA_DISABLE_INCOMING === "true" ||
+    process.env.WA_ENABLE_INCOMING === "false"
+  ) {
+    logger.info(
+      "WhatsApp incoming commands & uploads are DISABLED (Telegram-only mode active)",
+    );
+  }
   const localReleaseSessionLock = acquireProcessLock(authDir, "whatsapp-bot");
   releaseSessionLock = localReleaseSessionLock;
   bindSessionLockCleanup();
@@ -1640,10 +2836,48 @@ export async function startBot(options = {}) {
 
   const sock = makeWASocket({
     auth: state,
-    browser: Browsers.ubuntu("Chrome"),
+    browser: Browsers.windows("Desktop"),
     version,
     logger: pino({ level: BAILEYS_LOG_LEVEL }),
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    defaultQueryTimeoutMs: 60_000,
+    connectTimeoutMs: 60_000,
+    keepAliveIntervalMs: 30_000,
+    retryRequestDelayMs: 500,
+    maxMsgRetryCount: 5,
+    generateHighQualityLinkPreview: false,
+    getMessage: async () => undefined,
   });
+
+  // Guard level terendah: Cegah socket WhatsApp mengirim pesan kosong / tanpa huruf apapun
+  const rawSendMessage = sock.sendMessage.bind(sock);
+  sock.sendMessage = async (jid, payload, ...rest) => {
+    const isWaTarget =
+      typeof jid === "string" &&
+      (jid.endsWith("@g.us") ||
+        jid.endsWith("@s.whatsapp.net") ||
+        jid.endsWith("@lid") ||
+        !jid.includes(":"));
+
+    if (isWaTarget && !isMeaningfulPayload(payload)) {
+      logger.warn("BLOCKED empty or letterless message to WhatsApp socket", {
+        jid,
+        payloadType: typeof payload,
+        payloadKeys: Object.keys(payload || {}),
+        textPreview:
+          typeof payload === "string"
+            ? payload.slice(0, 50)
+            : typeof payload?.text === "string"
+            ? payload.text.slice(0, 50)
+            : null,
+      });
+      return null;
+    }
+
+    return await rawSendMessage(jid, payload, ...rest);
+  };
+
   activeSock = sock;
 
   function isCurrentSocket() {
@@ -1730,6 +2964,7 @@ export async function startBot(options = {}) {
 
     if (connection === "open") {
       logger.info("WhatsApp bot connected", { authDir, generation });
+      activeConnectionOpenTime = Date.now();
     }
 
     if (connection === "close") {

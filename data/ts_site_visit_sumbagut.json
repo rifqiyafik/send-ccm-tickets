@@ -1,0 +1,103 @@
+[
+  {
+    "area": "MEDAN",
+    "nop": "NOP MEDAN",
+    "cities": ["KOTA MEDAN", "DELI SERDANG"],
+    "ts": ["Willy Panjaitan"]
+  },
+  {
+    "area": "ACEH",
+    "nop": "NOP ACEH",
+    "cities": [
+      "KOTA BANDA ACEH",
+      "ACEH BESAR",
+      "BIREUEN",
+      "PIDIE",
+      "PIDIE JAYA",
+      "KOTA SABANG",
+      "ACEH BARAT",
+      "NAGAN RAYA",
+      "ACEH JAYA",
+      "ACEH BARAT DAYA",
+      "ACEH SELATAN",
+      "SIMEULUE",
+      "ACEH SINGKIL",
+      "KOTA SUBULUSSALAM",
+      "ACEH TENGAH",
+      "BENER MERIAH",
+      "GAYO LUES"
+    ],
+    "ts": ["Riski"]
+  },
+  {
+    "area": "BINJAI",
+    "nop": "NOP BINJAI",
+    "cities": [
+      "KOTA BINJAI",
+      "LANGKAT",
+      "ACEH TAMIANG",
+      "ACEH TIMUR",
+      "KOTA LANGSA",
+      "ACEH UTARA",
+      "KOTA LHOKSEUMAWE"
+    ],
+    "ts": ["Pewenri", "Dedi"]
+  },
+  {
+    "area": "SIDEMPUAN",
+    "nop": "NOP PADANG SIDEMPUAN",
+    "cities": [
+      "KOTA PADANG SIDEMPUAN",
+      "KOTA PADANGSIDIMPUAN",
+      "PADANG SIDEMPUAN",
+      "TAPANULI SELATAN",
+      "MANDAILING NATAL",
+      "KOTA SIBOLGA",
+      "TAPANULI TENGAH",
+      "NIAS",
+      "NIAS SELATAN",
+      "KOTA GUNUNGSITOLI",
+      "NIAS UTARA",
+      "NIAS BARAT"
+    ],
+    "ts": ["Januar", "Okis"]
+  },
+  {
+    "area": "SIANTAR",
+    "nop": "NOP PEMATANG SIANTAR",
+    "cities": [
+      "KOTA PEMATANGSIANTAR",
+      "KOTA PEMATANG SIANTAR",
+      "SIMALUNGUN",
+      "SERDANG BEDAGAI",
+      "KOTA TEBING TINGGI",
+      "BATU BARA",
+      "KARO",
+      "DAIRI",
+      "PAKPAK BHARAT",
+      "TOBA SAMOSIR",
+      "TOBA",
+      "SAMOSIR",
+      "HUMBANG HASUNDUTAN",
+      "ACEH TENGGARA"
+    ],
+    "ts": ["Rudi", "Dedek"]
+  },
+  {
+    "area": "RANTAU",
+    "nop": "NOP RANTAU PRAPAT",
+    "cities": [
+      "ASAHAN",
+      "KOTA TANJUNG BALAI",
+      "LABUHANBATU",
+      "LABUHAN BATU",
+      "LABUHANBATU UTARA",
+      "LABUHAN BATU UTARA",
+      "LABUHANBATU SELATAN",
+      "LABUHAN BATU SELATAN",
+      "PADANG LAWAS",
+      "PADANG LAWAS UTARA"
+    ],
+    "ts": ["Jhonson Ambarita"]
+  }
+]

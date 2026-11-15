@@ -3,7 +3,7 @@
     "city": "ACEH BARAT",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ruli Mahendra",
     "vendor": "ERICSSON"
   },
@@ -11,7 +11,7 @@
     "city": "ACEH BARAT DAYA",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ruli Mahendra",
     "vendor": "ERICSSON"
   },
@@ -19,7 +19,7 @@
     "city": "ACEH BESAR",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ikhsan Purnomo",
     "vendor": "ERICSSON"
   },
@@ -27,7 +27,7 @@
     "city": "ACEH JAYA",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ruli Mahendra",
     "vendor": "ERICSSON"
   },
@@ -35,7 +35,7 @@
     "city": "ACEH SELATAN",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Try Rizky Darmawansyah",
     "vendor": "ERICSSON"
   },
@@ -43,7 +43,7 @@
     "city": "ACEH SINGKIL",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Try Rizky Darmawansyah",
     "vendor": "ERICSSON"
   },
@@ -51,7 +51,7 @@
     "city": "ACEH TAMIANG",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Rizlul Khairi",
     "vendor": "ERICSSON"
   },
@@ -59,13 +59,13 @@
     "city": "ACEH TENGAH",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Irwan Saleh Siregar",
     "vendor": "ERICSSON"
   },
   {
     "city": "ACEH TENGGARA",
-    "departement_ns": " NOP ACEH",
+    "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
     "pic_nop": "Ivan Setiawan Situmorang",
@@ -75,7 +75,7 @@
     "city": "ACEH TIMUR",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Rizlul Khairi",
     "vendor": "ERICSSON"
   },
@@ -83,8 +83,8 @@
     "city": "ACEH UTARA",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
-    "pic_nop": "Rizlul Khairi",
+    "pic_sqa": "Ridha",
+    "pic_nop": "Syahbana",
     "vendor": "ERICSSON"
   },
   {
@@ -97,7 +97,7 @@
   },
   {
     "city": "BATU BARA",
-    "departement_ns": " NOP RANTAU PRAPAT",
+    "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
     "pic_nop": "Royza Iqbal Zaini",
@@ -107,7 +107,7 @@
     "city": "BENER MERIAH",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Irwan Saleh Siregar",
     "vendor": "ERICSSON"
   },
@@ -115,7 +115,7 @@
     "city": "BIREUEN",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Irwan Saleh Siregar",
     "vendor": "ERICSSON"
   },
@@ -139,7 +139,7 @@
     "city": "GAYO LUES",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Irwan Saleh Siregar",
     "vendor": "ERICSSON"
   },
@@ -171,7 +171,7 @@
     "city": "KOTA BANDA ACEH",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ikhsan Purnomo",
     "vendor": "ERICSSON"
   },
@@ -179,7 +179,7 @@
     "city": "KOTA BINJAI",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Dean RM Simamora",
     "vendor": "HUAWEI"
   },
@@ -195,7 +195,7 @@
     "city": "KOTA LANGSA",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Rizlul Khairi",
     "vendor": "ERICSSON"
   },
@@ -203,8 +203,8 @@
     "city": "KOTA LHOKSEUMAWE",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
-    "pic_nop": "Rizlul Khairi",
+    "pic_sqa": "Ridha",
+    "pic_nop": "Syahbana",
     "vendor": "ERICSSON"
   },
   {
@@ -243,7 +243,7 @@
     "city": "KOTA SABANG",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ikhsan Purnomo",
     "vendor": "ERICSSON"
   },
@@ -259,7 +259,7 @@
     "city": "KOTA SUBULUSSALAM",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Try Rizky Darmawansyah",
     "vendor": "ERICSSON"
   },
@@ -300,7 +300,7 @@
     "departement_ns": " NOP RANTAU PRAPAT",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Edy Syofra Nasution",
+    "pic_nop": "Dito Anan Septanno",
     "vendor": "ERICSSON"
   },
   {
@@ -308,7 +308,7 @@
     "departement_ns": " NOP RANTAU PRAPAT",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Edy Syofra Nasution",
+    "pic_nop": "Dito Anan Septanno",
     "vendor": "ERICSSON"
   },
   {
@@ -324,14 +324,14 @@
     "departement_ns": " NOP RANTAU PRAPAT",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Nasrul Amin S",
+    "pic_nop": "Edy Syofra Nasution",
     "vendor": "ERICSSON"
   },
   {
     "city": "LANGKAT",
     "departement_ns": " NOP BINJAI",
     "ccm_handling": "Budi Harahap",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Dean RM Simamora",
     "vendor": "HUAWEI"
   },
@@ -347,7 +347,7 @@
     "city": "NAGAN RAYA",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Ruli Mahendra",
     "vendor": "ERICSSON"
   },
@@ -388,7 +388,7 @@
     "departement_ns": " NOP PADANG SIDEMPUAN",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Edy Syofra Nasution",
+    "pic_nop": "Dito Anan Septanno",
     "vendor": "ERICSSON"
   },
   {
@@ -396,7 +396,7 @@
     "departement_ns": " NOP PADANG SIDEMPUAN",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Edy Syofra Nasution",
+    "pic_nop": "Dito Anan Septanno",
     "vendor": "ERICSSON"
   },
   {
@@ -411,7 +411,7 @@
     "city": "PIDIE",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Irwan Saleh Siregar",
     "vendor": "ERICSSON"
   },
@@ -419,7 +419,7 @@
     "city": "PIDIE JAYA",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Irwan Saleh Siregar",
     "vendor": "ERICSSON"
   },
@@ -436,7 +436,7 @@
     "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Ray P Tarigan",
+    "pic_nop": "Ivan Setiawan Situmorang",
     "vendor": "ERICSSON"
   },
   {
@@ -452,14 +452,14 @@
     "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Ray P Tarigan",
+    "pic_nop": "Royza Iqbal Zaini",
     "vendor": "ERICSSON"
   },
   {
     "city": "SIMEULUE",
     "departement_ns": " NOP ACEH",
     "ccm_handling": "Ferry",
-    "pic_sqa": "Herman",
+    "pic_sqa": "Ridha",
     "pic_nop": "Try Rizky Darmawansyah",
     "vendor": "ERICSSON"
   },
@@ -492,7 +492,7 @@
     "departement_ns": " NOP PEMATANG SIANTAR",
     "ccm_handling": "Ferry",
     "pic_sqa": "Fernando Pasaribu",
-    "pic_nop": "Ray P Tarigan",
+    "pic_nop": "Ivan Setiawan Situmorang",
     "vendor": "ERICSSON"
   }
 ]

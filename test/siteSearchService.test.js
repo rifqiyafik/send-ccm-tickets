@@ -125,3 +125,91 @@ test("resolves site details from site cover when site_id1 is empty", () => {
   assert.equal(result.cluster_area, "NOP BINJAI");
   assert.equal(result.source, "problem_analysis_nsh");
 });
+
+test("resolves site details from site_id_l2_assign when site_id1 is empty or opaque", () => {
+  const resolveSiteFromTicketRow = createSiteResolver({
+    rows: [
+      {
+        site_id: "PMR059",
+        site_name: "PERDAGANGAN",
+        kabupaten: "SIMALUNGUN",
+        vendor: "ERICSSON",
+        departement_ns: "NOP PEMATANGSIANTAR",
+      },
+    ],
+  });
+
+  // 1. When site_id1 is empty
+  const res1 = resolveSiteFromTicketRow({
+    site_id1_l1_assign: "",
+    site_id_l2_assign: "PMR059",
+  });
+  assert.equal(res1.ok, true);
+  assert.equal(res1.site_id, "PMR059");
+  assert.equal(res1.source, "site_id_l2_assign");
+
+  // 2. When site_id1 is opaque (e.g. numeric ID 12345678)
+  const res2 = resolveSiteFromTicketRow({
+    site_id1_l1_assign: "12345678",
+    site_id_l2_assign: "PMR059ML2", // with cell sector
+  });
+  assert.equal(res2.ok, true);
+  assert.equal(res2.site_id, "PMR059");
+  assert.equal(res2.source, "site_id_l2_assign_token");
+});
+
+test("resolves site details from tech tag pattern e.g. Site cover (4G): LHK330ML1", () => {
+  const resolveSiteFromTicketRow = createSiteResolver({
+    rows: [
+      {
+        site_id: "LHK330",
+        site_name: "PAYAPUNTEUT",
+        kabupaten: "KOTA LHOKSEUMAWE",
+        vendor: "HUAWEI",
+        departement_ns: "NOP BANDA ACEH",
+      },
+    ],
+  });
+
+  const res = resolveSiteFromTicketRow({
+    site_id1_l1_assign: "-",
+    problem_analysis_nsh: "- Site cover (4G): LHK330ML1 jarak site 115 Metre",
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.site_id, "LHK330");
+});
+
+test("resolves site details from geographic kecamatan fallback", () => {
+  const resolveSiteFromTicketRow = createSiteResolver({
+    rows: [
+      {
+        site_id: "DLS704",
+        site_name: "BAKTIRAJA",
+        kabupaten: "HUMBANG HASUNDUTAN",
+        kecamatan: "BAKTIRAJA",
+        vendor: "ERICSSON",
+        departement_ns: "NOP PEMATANGSIANTAR",
+      },
+    ],
+  });
+
+  const res = resolveSiteFromTicketRow({
+    site_id1_l1_assign: "",
+    "Lokasi Pelanggan": "Kecamatan BAKTIRAJA Humbang Hasundutan Sumatra Utara",
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.site_id, "DLS704");
+  assert.equal(res.source, "geo_kecamatan_BAKTIRAJA");
+});
+
+test("returns ok: false and site_id: null when all fallbacks are exhausted (never NOT_IDENTIFIED)", () => {
+  const resolveSiteFromTicketRow = createSiteResolver({ rows: [] });
+
+  const res = resolveSiteFromTicketRow({
+    site_id1_l1_assign: "-",
+    "Lokasi Pelanggan": "medan",
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.site_id, null);
+  assert.equal(res.reason, "SITE_ID_EMPTY_AND_SITE_COVER_NOT_FOUND");
+});

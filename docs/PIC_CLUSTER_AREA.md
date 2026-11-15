@@ -283,35 +283,31 @@ graph LR
 
 | PIC (Utama) | Total Sites | Wilayah Kabupaten Utama |
 | :--- | :---: | :--- |
-| **Ray P Tarigan** | 438 | Simalungun (288), Toba Samosir (83), Samosir (61) |
-| **Royza Iqbal Zaini** | 432 | Serdang Bedagai (197), Batu Bara (109), Kota Pematangsiantar (77), Kota Tebing Tinggi (49) |
-| **Ivan Setiawan Situmorang** | 351 | Karo (128), Dairi (83), Humbang Hasundutan (66), Aceh Tenggara (51), Pakpak Bharat (22) |
+| **Royza Iqbal Zaini** | 720 | Simalungun (288), Serdang Bedagai (197), Batu Bara (109), Kota Pematangsiantar (77), Kota Tebing Tinggi (49) |
+| **Ivan Setiawan Situmorang** | 501 | Karo (129), Dairi (84), Toba Samosir (83), Humbang Hasundutan (70), Samosir (61), Aceh Tenggara (51), Pakpak Bharat (22) |
 
 ```mermaid
 graph LR
     NOP_PMS["NOP PEMATANG SIANTAR<br/>1.235 Sites"]
-    RPT["Ray P Tarigan<br/>438 sites"]
-    RIZ["Royza Iqbal Zaini<br/>432 sites"]
-    ISS["Ivan Setiawan S.<br/>351 sites"]
+    RIZ["Royza Iqbal Zaini<br/>720 sites"]
+    ISS["Ivan Setiawan S.<br/>501 sites"]
     
-    NOP_PMS --> RPT
     NOP_PMS --> RIZ
     NOP_PMS --> ISS
     
-    RPT --> RPT1["Simalungun (288)"]
-    RPT --> RPT2["Toba Samosir (83)"]
-    RPT --> RPT3["Samosir (61)"]
+    RIZ --> RIZ1["Simalungun (288)"]
+    RIZ --> RIZ2["Serdang Bedagai (197)"]
+    RIZ --> RIZ3["Batu Bara (109)"]
+    RIZ --> RIZ4["Kota Pematangsiantar (77)"]
+    RIZ --> RIZ5["Kota Tebing Tinggi (49)"]
     
-    RIZ --> RIZ1["Serdang Bedagai (197)"]
-    RIZ --> RIZ2["Batu Bara (109)"]
-    RIZ --> RIZ3["Kota Pematangsiantar (77)"]
-    RIZ --> RIZ4["Kota Tebing Tinggi (49)"]
-    
-    ISS --> ISS1["Karo (128)"]
-    ISS --> ISS2["Dairi (83)"]
-    ISS --> ISS3["Humbang Hasundutan (66)"]
-    ISS --> ISS4["Aceh Tenggara (51)"]
-    ISS --> ISS5["Pakpak Bharat (22)"]
+    ISS --> ISS1["Karo (129)"]
+    ISS --> ISS2["Dairi (84)"]
+    ISS --> ISS3["Toba Samosir (83)"]
+    ISS --> ISS4["Humbang Hasundutan (70)"]
+    ISS --> ISS5["Samosir (61)"]
+    ISS --> ISS6["Aceh Tenggara (51)"]
+    ISS --> ISS7["Pakpak Bharat (22)"]
 ```
 
 ---

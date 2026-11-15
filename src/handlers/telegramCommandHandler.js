@@ -3,6 +3,7 @@ import {
   createTelegramRichMessage,
   splitTelegramMessageText,
 } from "../utils/telegramFormat.js";
+import { INDONESIAN_MONTHS_MAP as INDONESIAN_MONTHS } from "../utils/dateTime.js";
 import {
   formatRegisteredTelegramChatsList,
   formatTelegramRegisterRequest,
@@ -10,22 +11,275 @@ import {
   isAuthorizedTelegramChat,
   listAuthorizedTelegramChats,
   registerTelegramChat,
+  resolveTelegramTargetChatId,
 } from "../services/telegramAccessService.js";
 import {
+  getGroupKeyByJid,
+  getMentionNameByJid,
+  replaceJidMentionsWithLabels,
+} from "../config/appConfig.js";
+import {
+  cancelActiveDelivery,
   formatWhatsAppGroupsCommand,
   formatWhatsAppPrivateCommand,
   sendImportResult,
 } from "./whatsappMessageHandler.js";
-import { processTicketExcel } from "../services/ticketImportService.js";
+import {
+  processTicketExcel,
+  parseWorkbook,
+  processTicketRows,
+  shortenNopName,
+  normalizeSlaStatus,
+} from "../services/ticketImportService.js";
+import { isDatabaseConfigured } from "../services/databaseService.js";
+import {
+  batchUpsertMasterTickets,
+  isAllowedInjectAssignGroup,
+} from "../services/inapTicketStore.js";
+import { generateSiteRepetitiveAlert } from "../services/siteRepetitiveService.js";
+import { formatAsciiTable, createCodeBlock } from "../utils/asciiTable.js";
 import {
   changeRuntimeEnvironment,
   formatEnvironmentChangeResult,
   formatEnvironmentChangeUsage,
   formatEnvironmentStatus,
 } from "../services/runtimeEnvironmentService.js";
+import { isMeaningfulPayload } from "../utils/text.js";
 
 const logger = createLogger("telegramCommandHandler");
 const TELEGRAM_SOURCE_PREFIX = "telegram:";
+
+const MONTH_FILTER_LOOKUP = {
+  januari: "01",
+  jan: "01",
+  "01": "01",
+  "1": "01",
+  februari: "02",
+  feb: "02",
+  "02": "02",
+  "2": "02",
+  maret: "03",
+  mar: "03",
+  "03": "03",
+  "3": "03",
+  april: "04",
+  apr: "04",
+  "04": "04",
+  "4": "04",
+  mei: "05",
+  "05": "05",
+  "5": "05",
+  juni: "06",
+  jun: "06",
+  "06": "06",
+  "6": "06",
+  juli: "07",
+  jul: "07",
+  "07": "07",
+  "7": "07",
+  agustus: "08",
+  agu: "08",
+  agt: "08",
+  "08": "08",
+  "8": "08",
+  september: "09",
+  sep: "09",
+  "09": "09",
+  "9": "09",
+  oktober: "10",
+  okt: "10",
+  "10": "10",
+  november: "11",
+  nov: "11",
+  "11": "11",
+  desember: "12",
+  des: "12",
+  "12": "12",
+};
+
+export function extractTicketSummaryRows(rawRows, processedResult = null) {
+  const processedMap = new Map();
+  if (processedResult?.valid_tickets) {
+    for (const t of processedResult.valid_tickets) {
+      if (t.order_id) processedMap.set(t.order_id, t);
+    }
+  }
+
+  const items = [];
+  for (const row of rawRows || []) {
+    const orderId = String(row["Order ID"] || row.order_id || "").trim();
+    if (!orderId || orderId === "-") continue;
+
+    const matched = processedMap.get(orderId);
+
+    const city =
+      matched?.city ||
+      row["City"] ||
+      row["Kabupaten/Kota(Create Ticket)"] ||
+      row["Kabupaten/Kota"] ||
+      row.city ||
+      "-";
+
+    const clusterArea =
+      matched?.cluster_area ||
+      shortenNopName(
+        row["Cluster Area"] ||
+          row["Assign to L2(L2 Assign)"] ||
+          row["Assignment Group"] ||
+          row.cluster_area ||
+          "-",
+      );
+
+    const rawSla = String(
+      row["SLA Status"] ||
+        row["Sla Status"] ||
+        row["(L1 Assign_sla)"] ||
+        "",
+    ).trim();
+
+    const matchedSla =
+      matched?.sla_status &&
+      matched.sla_status !== "UNKNOWN" &&
+      matched.sla_status !== "-"
+        ? matched.sla_status
+        : "";
+
+    const slaStatus =
+      matchedSla ||
+      (rawSla ? normalizeSlaStatus(rawSla) : "") ||
+      "-";
+
+    const pic =
+      matched?.pic ||
+      row["PIC"] ||
+      row["Assign Personal(L2 Assign)"] ||
+      row.pic ||
+      "-";
+
+    const siteId =
+      matched?.site_id ||
+      row["Site ID 1"] ||
+      row["site_id1(L1 Assign)"] ||
+      row["Site ID"] ||
+      row.site_id ||
+      "-";
+
+    const createTime = String(row["Create Time"] || row.create_time || "").trim();
+
+    let year = "";
+    let month = "";
+    const idMatch = orderId.match(/^CC-(\d{4})(\d{2})/i);
+    if (idMatch) {
+      year = idMatch[1];
+      month = idMatch[2];
+    } else if (createTime) {
+      const dt = new Date(createTime);
+      if (!isNaN(dt.getTime())) {
+        year = String(dt.getFullYear());
+        month = String(dt.getMonth() + 1).padStart(2, "0");
+      }
+    }
+
+    items.push({
+      order_id: orderId,
+      city,
+      cluster_area: clusterArea,
+      sla_status: slaStatus,
+      pic,
+      site_id: siteId,
+      create_time: createTime,
+      year: year || "2026",
+      month: month || "00",
+      monthKey: `${year || "2026"}-${month || "00"}`,
+      monthLabel: `${INDONESIAN_MONTHS[month] || "Bulan Lainnya"} ${year || "2026"}`,
+    });
+  }
+
+  items.sort((a, b) => a.order_id.localeCompare(b.order_id));
+  return items;
+}
+
+export function formatInjectMonthSummaryMessages(summaryRows, options = {}) {
+  const filterKey = options.monthFilter ? String(options.monthFilter).toLowerCase().trim() : "";
+  const monthFilter = filterKey ? MONTH_FILTER_LOOKUP[filterKey] : null;
+
+  let rows = summaryRows;
+  if (monthFilter) {
+    rows = rows.filter((r) => r.month === monthFilter);
+  }
+
+  const monthGroups = new Map();
+  for (const row of rows) {
+    const key = row.monthKey;
+    if (!monthGroups.has(key)) {
+      monthGroups.set(key, {
+        label: row.monthLabel,
+        month: row.month,
+        year: row.year,
+        rows: [],
+      });
+    }
+    monthGroups.get(key).rows.push(row);
+  }
+
+  const sortedKeys = [...monthGroups.keys()].sort();
+
+  const columns = [
+    { key: "order_id", header: "Order ID", minWidth: 20, maxWidth: 22 },
+    { key: "city", header: "City", minWidth: 12, maxWidth: 19 },
+    { key: "cluster_area", header: "Cluster Area", minWidth: 14, maxWidth: 22 },
+    { key: "sla_status", header: "SLA Status", minWidth: 10, maxWidth: 10 },
+    { key: "pic", header: "PIC", minWidth: 12, maxWidth: 26 },
+    { key: "site_id", header: "Site ID", minWidth: 7, maxWidth: 9 },
+  ];
+
+  const messages = [];
+  const CHUNK_SIZE = 20;
+  const MAX_CHUNKS_PER_MONTH = options.maxChunksPerMonth ?? 5;
+  const MAX_TOTAL_MESSAGES = options.maxTotalMessages ?? 10;
+
+  for (const key of sortedKeys) {
+    if (messages.length >= MAX_TOTAL_MESSAGES) {
+      break;
+    }
+    const group = monthGroups.get(key);
+    group.rows.sort((a, b) => a.order_id.localeCompare(b.order_id));
+
+    const totalInMonth = group.rows.length;
+    const allChunks = [];
+    for (let i = 0; i < totalInMonth; i += CHUNK_SIZE) {
+      allChunks.push(group.rows.slice(i, i + CHUNK_SIZE));
+    }
+
+    const previewChunks = allChunks.slice(0, MAX_CHUNKS_PER_MONTH);
+
+    previewChunks.forEach((chunkRows, chunkIdx) => {
+      if (messages.length >= MAX_TOTAL_MESSAGES) return;
+      const table = formatAsciiTable(columns, chunkRows);
+      const partTag =
+        allChunks.length > 1
+          ? ` (Bagian ${chunkIdx + 1}/${allChunks.length} - ${chunkRows.length} Tiket)`
+          : ` (${totalInMonth} Tiket)`;
+
+      messages.push(
+        [
+          `📅 **Bulan: ${group.label}${partTag}**`,
+          createCodeBlock(table),
+        ].join("\n"),
+      );
+    });
+
+    if (allChunks.length > MAX_CHUNKS_PER_MONTH) {
+      const shownCount = previewChunks.reduce((acc, c) => acc + c.length, 0);
+      const remaining = totalInMonth - shownCount;
+      messages.push(
+        `ℹ️ *Tabel preview Bulan ${group.label} dibatasi hingga bagian ${MAX_CHUNKS_PER_MONTH}/${allChunks.length} (${shownCount} tiket).* Sisa ${remaining} tiket lainnya tetap tersimpan lengkap di database PostgreSQL.`,
+      );
+    }
+  }
+
+  return messages;
+}
 
 function getMessageText(update) {
   return String(update.message?.text || "").trim();
@@ -85,18 +339,35 @@ function getTelegramDocumentImportOptions(caption) {
     };
   }
 
-  const { command } = parseCommand(text);
-  const normalMode = [".import", ".send"].includes(command);
-  const ticketOnlyMode = command === ".update";
-  const summaryOnlyMode = command === ".summary";
-  const reminderMode = [".reminder", "/reminder"].includes(command);
+  const { command, argument } = parseCommand(text);
+  const words = text.toLowerCase().split(/\s+/);
+  const manualMode = words.includes("manual");
+
+  const baseCommand = command.toLowerCase();
+  const normalMode = [".import", ".send", "/import", "/send", ".manual", "/manual"].includes(baseCommand);
+  const ticketOnlyMode = [".update", "/update"].includes(baseCommand);
+  const summaryOnlyMode = [".summary", "/summary"].includes(baseCommand);
+  const reminderMode = [".reminder", "/reminder"].includes(baseCommand);
+  const specialMode = [".special", "/special"].includes(baseCommand);
+  const injectMode = [".inject", "/inject"].includes(baseCommand);
+
   return {
     command,
-    supported: normalMode || ticketOnlyMode || summaryOnlyMode || reminderMode,
+    argument: argument || "",
+    supported:
+      normalMode ||
+      ticketOnlyMode ||
+      summaryOnlyMode ||
+      reminderMode ||
+      specialMode ||
+      injectMode,
     missingCommand: false,
     ticketOnlyMode,
     summaryOnlyMode,
     reminderMode,
+    specialMode,
+    injectMode,
+    manualMode: manualMode || baseCommand === ".manual" || baseCommand === "/manual",
   };
 }
 
@@ -112,17 +383,39 @@ function isSupportedTelegramExcelFile(document) {
   );
 }
 
-function createTelegramWhatsAppAdapter({
+export function createTelegramWhatsAppAdapter({
   ensureWhatsAppReady,
   getWhatsAppSocket,
   sourceChatId,
   sendDocument,
   sendMessage,
+  editMessageText,
+  initialProgressMessageId = null,
+  manualMode = false,
 }) {
   const sourceJid = `${TELEGRAM_SOURCE_PREFIX}${sourceChatId}`;
+  let progressMessageId = initialProgressMessageId;
 
   return {
     sourceJid,
+    async sendPresenceUpdate(presence, jid) {
+      if (manualMode || String(jid).startsWith("manual:")) {
+        return;
+      }
+      try {
+        const whatsappSock =
+          (await ensureWhatsAppReady?.()) || getWhatsAppSocket?.();
+        if (whatsappSock?.sendPresenceUpdate) {
+          await whatsappSock.sendPresenceUpdate(presence, jid);
+        }
+      } catch (error) {
+        logger.debug("Failed to delegate presence update to WhatsApp socket", {
+          presence,
+          jid,
+          error: error.message,
+        });
+      }
+    },
     async sendMessage(jid, payload) {
       if (jid === sourceJid) {
         if (payload?.document) {
@@ -135,8 +428,27 @@ function createTelegramWhatsAppAdapter({
         }
 
         if (payload?.text) {
-          await sendRichMessage(sendMessage, sourceChatId, payload.text);
-          return;
+          const cleanText = replaceJidMentionsWithLabels(payload.text);
+          if (payload.isProgress && editMessageText) {
+            if (progressMessageId) {
+              await editRichMessage(
+                editMessageText,
+                sourceChatId,
+                progressMessageId,
+                cleanText,
+              );
+              return { message_id: progressMessageId };
+            }
+            const sent = await sendRichMessage(
+              sendMessage,
+              sourceChatId,
+              cleanText,
+            );
+            progressMessageId = sent?.message_id || null;
+            return sent;
+          }
+
+          return await sendRichMessage(sendMessage, sourceChatId, cleanText);
         }
 
         logger.warn("Telegram source payload skipped: unsupported payload", {
@@ -146,14 +458,102 @@ function createTelegramWhatsAppAdapter({
         return;
       }
 
+      // Jika dalam manualMode atau JID belum dikonfigurasi di WhatsApp, kirim ke Telegram!
+      if (manualMode || String(jid).startsWith("manual:")) {
+        const groupKey = getGroupKeyByJid(jid);
+        const mentionLabel = !groupKey ? getMentionNameByJid(jid) : null;
+        const targetChatId = groupKey
+          ? await resolveTelegramTargetChatId(groupKey)
+          : null;
+
+        const destinationChatId = targetChatId || sourceChatId;
+        const targetLabel = groupKey || mentionLabel || jid;
+
+        logger.info("Routing payload in Telegram manual mode", {
+          sourceChatId,
+          destinationChatId,
+          targetJid: jid,
+          groupKey,
+          targetLabel,
+          hasConfiguredGroup: Boolean(targetChatId),
+        });
+
+        const sendPayloadToChat = async (chatId, isFallback = false) => {
+          if (payload?.document) {
+            const cleanCaption = replaceJidMentionsWithLabels(
+              payload.caption || "",
+            );
+            const docCaption = [
+              !targetChatId || isFallback
+                ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n`
+                : "",
+              cleanCaption,
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            await sendDocument(chatId, payload.document, {
+              mimetype: payload.mimetype,
+              fileName: payload.fileName,
+              caption: docCaption,
+            });
+            return;
+          }
+
+          if (payload?.text) {
+            const cleanText = replaceJidMentionsWithLabels(payload.text);
+            const messageText = [
+              isFallback
+                ? `⚠️ **[Target Telegram: ${targetLabel} (${destinationChatId}) Gagal Terkirim: Diteruskan ke Sini]**\n`
+                : "",
+              !targetChatId || isFallback
+                ? `📋 **[MANUAL FORWARD TO: ${targetLabel}]**\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`
+                : "",
+              cleanText,
+            ]
+              .filter(Boolean)
+              .join("");
+
+            return await sendRichMessage(sendMessage, chatId, messageText);
+          }
+        };
+
+        try {
+          return await sendPayloadToChat(destinationChatId, false);
+        } catch (error) {
+          if (destinationChatId !== sourceChatId) {
+            logger.warn(
+              "Failed to send to Telegram target group, falling back to source chat",
+              {
+                destinationChatId,
+                sourceChatId,
+                error: error.message,
+              },
+            );
+            return await sendPayloadToChat(sourceChatId, true);
+          }
+          throw error;
+        }
+      }
+
       const whatsappSock =
         (await ensureWhatsAppReady?.()) || getWhatsAppSocket?.();
       if (!whatsappSock?.sendMessage) {
         throw new Error("WhatsApp session belum aktif. Jalankan /login dulu.");
       }
 
+      if (!isMeaningfulPayload(payload)) {
+        logger.warn("Adapter prevented sending empty or letterless message to WhatsApp", {
+          targetJid: jid,
+          payloadType: typeof payload,
+          payloadKeys: Object.keys(payload || {}),
+          textContent: typeof payload === "string" ? payload : payload?.text,
+        });
+        return null;
+      }
+
       try {
-        await whatsappSock.sendMessage(jid, payload);
+        return await whatsappSock.sendMessage(jid, payload);
       } catch (error) {
         if (!isWhatsAppConnectionClosedError(error)) {
           throw error;
@@ -175,14 +575,27 @@ function createTelegramWhatsAppAdapter({
           throw error;
         }
 
-        await latestSock.sendMessage(jid, payload);
+        return await latestSock.sendMessage(jid, payload);
       }
     },
   };
 }
 
 function isWhatsAppConnectionClosedError(error) {
-  return /connection closed/i.test(String(error?.message || ""));
+  const message = String(error?.message || "");
+  const statusCode =
+    error?.output?.statusCode ||
+    error?.data?.output?.statusCode ||
+    error?.output?.payload?.statusCode;
+
+  return (
+    /connection closed|timed out|request time-out|socket closed|stream errored|network error|econnreset/i.test(
+      message,
+    ) ||
+    statusCode === 408 ||
+    statusCode === 503 ||
+    statusCode === 515
+  );
 }
 
 function wait(ms) {
@@ -215,9 +628,17 @@ function detectTelegramChatType(chatId) {
 }
 
 function isAdminOnlyCommand(command) {
-  return ["/logout", "/delete_session", "/whitelist", "/change_env"].includes(
-    command,
-  );
+  return [
+    "/logout",
+    "/delete_session",
+    "/whitelist",
+    "/change_env",
+    "/poll",
+    "/autopoll",
+    "/fetch",
+    "/wperf",
+    "/update_wperf",
+  ].includes(command);
 }
 
 function isAdminOnlyRegisterCommand(command, argument) {
@@ -228,29 +649,26 @@ function formatTelegramGroupHelp() {
   return [
     "🤖 **Panduan Bot Kirim CCM Ticket (Grup Telegram)**",
     "",
-    "⚠️ **Langkah Wajib Sebelum Mengirim File Tiket:**",
-    "1. **Cek Koneksi WhatsApp Bot**: Jalankan `/status` terlebih dahulu.",
-    "2. **Pastikan Session WhatsApp Aktif**: Jika status `❌ NO` (terputus/stopped), hubungi admin untuk melakukan `/login` di **Chat Personal Bot** terlebih dahulu sebelum mengirimkan file Excel!",
+    "⚠️ **Cek Koneksi WhatsApp Bot:** Pastikan sesi WhatsApp aktif (`/status` / `/login`) jika tidak menggunakan mode manual.",
     "",
     "--------------------------------------------------",
     "",
-    "📤 **Cara Mengirim File Tiket Excel:**",
-    "- Upload file Excel (`.xlsx` / `.xls`) ke chat ini.",
-    "- Tambahkan **Caption Command** sesuai kebutuhan:",
-    "",
-    "🔹 **Mode Pengiriman File:**",
-    "• **Tanpa Caption / `.import` / `.send`**: Pengiriman Normal. Detail tiket dikirim ke grup target (SQA & NOP), file balasan Excel dibuat, dan summary dikirim.",
-    "• `.update`: Mode Update Cepat. Hanya mengirim detail tiket eskalasi ke grup target (tanpa salam pembuka & summary).",
-    "• `.summary`: Mode Ringkasan. Hanya membuat report/summary dan file Excel balasan di chat ini tanpa mengirim detail ke grup target.",
-    "• `/reminder`: Mode Reminder Tiket Unresolved. Hanya mengirimkan reminder untuk semua tiket yang belum resolve di file Excel.",
+    "📤 **Upload File Excel (`.xlsx`) dengan Caption:**",
+    "• `.import` : Flow normal ke WhatsApp (tiket, Excel balasan, & summary).",
+    "• `.update` : Kirim detail tiket eskalasi saja ke WhatsApp.",
+    "• `.summary` : Kirim rekap summary & Excel balasan saja ke chat ini.",
+    "• `.reminder` : Kirim reminder tiket unresolved (SQA via JAPRI, NOP & Site Visit ke grup).",
+    "• `.special` : Force resend tiket (bypass database sent_tickets).",
+    "• `... manual` : Tambahkan kata `manual` (misal: `.update manual`) untuk kirim ke Telegram target tanpa WhatsApp.",
     "",
     "--------------------------------------------------",
     "",
     "📊 **Fitur Utama Bot:**",
-    "✅ Routing otomatis ke grup target SQA & NOP berdasarkan Region/Cluster.",
-    "✅ Tagging / Mention otomatis ke PIC CCM & PIC SQA / NOP.",
-    "✅ Deteksi ReOpen & kalkulasi waktu keterlambatan SLA (Out SLA).",
-    "✅ Rekap & report filter Excel otomatis.",
+    "✅ **Auto Routing SQA & NOP**: Kirim tiket ke grup target SQA & NOP berdasarkan Region/Cluster.",
+    "✅ **Tiket Repetitif & Site Visit**: Otomatis routing tiket ReOpen ≥ 3 ke grup **SITE VISIT** & tag PIC TS wilayah (Medan, Aceh, Binjai, Sidempuan, Siantar) + PIC SQA.",
+    "✅ **Auto Tagging / Mention**: Tagging otomatis ke PIC CCM, PIC SQA, PIC NOP, & TS Site Visit.",
+    "✅ **SLA & ReOpen Tracker**: Deteksi kenaikan ReOpen & kalkulasi durasi keterlambatan SLA (Out SLA).",
+    "✅ **Rekap & Report Filter Excel**: Otomatis generate Excel balasan & laporan pemrosesan tiket.",
     "",
     "ℹ️ *Untuk perintah manajemen sesi, login, dan konfigurasi bot, gunakan `/help` di Chat Personal Bot.*",
   ].join("\n");
@@ -258,9 +676,7 @@ function formatTelegramGroupHelp() {
 
 function formatTelegramPersonalHelp() {
   return [
-    "🤖 **CCM Ticket Bot - Admin Command Center (Personal Guide)**",
-    "",
-    "📌 **Daftar Command Lengkap:**",
+    "🤖 **Admin Command Center (Personal Guide)**",
     "",
     "### 🔐 WhatsApp Session Management",
     "- `/sessions` → Lihat daftar session WhatsApp tersimpan",
@@ -279,6 +695,8 @@ function formatTelegramPersonalHelp() {
     "- `/env` → Cek environment dan config WhatsApp aktif (`production` / `development`)",
     "- `/groups [keyword]` → Cari/lihat daftar grup WhatsApp dari session aktif",
     "- `/private [keyword]` → Cari/lihat daftar kontak private chat WhatsApp",
+    "- `/remind_inject` → Trigger manual pesan pengingat penutupan report (.inject) 17:00 WIB",
+    "- `/wperf` → Trigger manual pembaruan & sinkronisasi data WPERF (Refresh MV & Leapdate)",
     "",
     "### 📂 Group & Whitelist Management",
     "- `/register` → Request whitelist chat Telegram ini",
@@ -292,6 +710,13 @@ function formatTelegramPersonalHelp() {
     "- `.update` → Kirim detail tiket eskalasi saja ke grup target",
     "- `.summary` → Kirim ringkasan & Excel balasan saja ke pengirim",
     "- `.reminder` → Kirim reminder semua tiket yang belum resolve",
+    "- `.special` → Kirim ulang seluruh tiket valid (bypass cek duplikat sent_tickets)",
+    "- `... manual` → Tambahkan `manual` di belakang command untuk routing via **Telegram Only** (tanpa WA)",
+    "",
+    "### 🔁 Fitur Eskalasi Tiket Repetitif (Site Visit)",
+    "- Tiket ReOpen = 3: Tetap dikirim ke SQA + dikirim khusus ke grup **SITE VISIT**.",
+    "- Tiket ReOpen > 3: Tidak lagi dikirim ke SQA, melainkan dialihkan khusus ke grup **SITE VISIT**.",
+    "- Auto-tag dual PIC: Tag PIC TS wilayah kerja (Medan, Aceh, Binjai, Sidempuan, Siantar) dan PIC SQA.",
     "",
     "---",
     "📝 **Catatan Alur:**",
@@ -307,14 +732,13 @@ function formatStartMessage() {
     "🤖 **CCM Ticket Bot** adalah sistem otomatisasi penanganan & eskalasi tiket Customer Complaint Management (CCM/Remedy) Telkomsel Region Sumbagut.",
     "",
     "🚀 **Fitur Utama Bot:**",
-    "✅ **Automatic Routing & Escalation**: Memproses file Excel tiket dan meneruskannya secara otomatis ke grup WhatsApp SQA & NOP sesuai wilayah/cluster.",
-    "✅ **Auto Mention & Tagging**: Tagging otomatis JID WhatsApp PIC CCM, PIC SQA, dan PIC NOP.",
-    "✅ **Smart ReOpen & SLA Tracker**: Mendeteksi kenaikan count ReOpen dan menghitung durasi keterlambatan SLA (`Out Xd Xh Xm`).",
-    "✅ **Fleksibilitas Mode Pengiriman**: Mendukung mode `.import` (full flow), `.update` (detail eskalasi saja), `.summary` (report saja), dan `.reminder` (reminder unresolved).",
-    "✅ **WhatsApp Session Management**: Kelola sesi login/logout WhatsApp dengan aman via Telegram Command Center.",
+    "✅ **Auto Routing & Tagging**: Kirim tiket ke grup target SQA/NOP & auto-mention PIC terkait.",
+    "✅ **Tiket Repetitif (>3 ReOpen)**: Otomatis dialihkan ke grup **SITE VISIT** dan tag PIC TS (Medan, Aceh, Binjai, Sidempuan, Siantar) & PIC SQA.",
+    "✅ **SLA & ReOpen Tracker**: Deteksi kenaikan ReOpen & durasi keterlambatan SLA.",
+    "✅ **Multi Mode Pengiriman**: `.import`, `.update`, `.summary`, `.reminder`, `.special`.",
+    "✅ **Mode Manual Telegram**: Tambahkan kata `manual` (contoh: `.update manual`) jika belum login WhatsApp untuk mengirim tiket langsung ke Telegram.",
     "",
-    "--------------------------------------------------",
-    "👉 Ketik `/help` untuk melihat panduan lengkap cara penggunaan dan daftar command bot.",
+    "👉 Ketik `/help` untuk panduan command lengkap.",
   ].join("\n");
 }
 
@@ -342,15 +766,36 @@ async function sendRichMessage(sendMessage, chatId, text, options = {}) {
     originalLength: String(text || "").length,
   });
 
+  let lastResult = null;
   for (const [index, chunk] of chunks.entries()) {
     const message = createTelegramRichMessage(chunk, options);
-    await sendMessage(chatId, message.text, message.options);
+    lastResult = await sendMessage(chatId, message.text, message.options);
     logger.info("Telegram rich message chunk sent", {
       chatId,
       chunk: index + 1,
       chunks: chunks.length,
       length: message.text.length,
     });
+  }
+
+  return lastResult;
+}
+
+async function editRichMessage(editMessageText, chatId, messageId, text, options = {}) {
+  if (!editMessageText || !messageId) {
+    return null;
+  }
+
+  const message = createTelegramRichMessage(text, options);
+  try {
+    return await editMessageText(chatId, messageId, message.text, message.options);
+  } catch (error) {
+    logger.warn("Telegram editRichMessage failed, ignored", {
+      chatId,
+      messageId,
+      error: error.message,
+    });
+    return null;
   }
 }
 
@@ -391,10 +836,16 @@ async function sendTelegramCommandError(sendMessage, chatId, command, error) {
 }
 
 // semua command operasional diarahkan ke Telegram agar WhatsApp fokus menerima Excel dan kirim tiket.
-export function createTelegramCommandHandler({ config, whatsappSession }) {
+export function createTelegramCommandHandler({
+  config,
+  whatsappSession,
+  ticketPolling,
+  dailyReminder,
+  wperfSync,
+}) {
   return async function handleTelegramUpdate(
     update,
-    { downloadFile, sendDocument, sendMessage },
+    { downloadFile, sendDocument, sendMessage, editMessageText },
   ) {
     const chatId = getChatId(update);
     const chat = getChat(update);
@@ -410,38 +861,17 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       logger.info("Incoming Telegram document", {
         chatId,
         fileName: document.file_name,
-        authorized: accessDecision.allowed,
-        accessReason: accessDecision.reason,
-        sourceType: accessDecision.source_type,
+        mimeType: document.mime_type,
         caption,
-        ticketOnlyMode: importOptions.ticketOnlyMode,
-        summaryOnlyMode: importOptions.summaryOnlyMode,
+        importOptions,
+        accessDecision,
       });
-
-      if (importOptions.missingCommand) {
-        logger.info("Telegram document ignored: caption command is required", {
-          chatId,
-          fileName: document.file_name,
-        });
-        return;
-      }
 
       if (!accessDecision.allowed) {
         await sendRichMessage(
           sendMessage,
           chatId,
-          [
-            "⛔ **File Excel ditolak.**",
-            "",
-            "🚫 Chat ini belum masuk **whitelist Telegram**.",
-            "",
-            "📋 **Detail:**",
-            `🆔 Chat ID: \`${chatId}\``,
-            `📄 File: \`${document.file_name || "-"}\``,
-            `🔎 Reason: \`${accessDecision.reason}\``,
-            "",
-            "👉 Kirim `/register` untuk minta approval admin.",
-          ].join("\n"),
+          formatAccessDeniedMessage(chatId, accessDecision),
         );
         return;
       }
@@ -464,6 +894,9 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             "➡️ Flow normal: gunakan caption `.import` atau `.send`.",
             "📌 Update tiket saja: gunakan caption `.update`.",
             "📊 Summary saja: gunakan caption `.summary`.",
+            "⏰ Reminder saja: gunakan caption `.reminder`.",
+            "⚡ Kirim ulang tiket (bypass duplikat): gunakan caption `.special`.",
+            "💾 Injeksi data master ke DB: gunakan caption `.inject`.",
             "",
             "---",
             "ℹ️ File tanpa caption command akan diabaikan.",
@@ -472,84 +905,103 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
         return;
       }
       if (!isSupportedTelegramExcelFile(document)) {
-        logger.warn("Telegram document rejected: unsupported format", {
-          chatId,
-          fileName: document.file_name,
-          mimetype: document.mime_type,
-        });
         await sendRichMessage(
           sendMessage,
           chatId,
           [
-            "⚠️ **Format File Belum Didukung**",
+            "⚠️ **Format File Tidak Didukung**",
             "",
-            "📄 Bot hanya membaca file Excel `.xlsx`.",
-            "",
-            "📋 **Detail:**",
             `📄 File: \`${document.file_name || "-"}\``,
-            `🧾 MIME: \`${document.mime_type || "-"}\``,
-            "",
-            "👉 Save As ke **Excel Workbook (*.xlsx)** lalu kirim ulang.",
+            "📌 Kirim file spreadsheet berformat `.xlsx` (Excel OpenXML).",
           ].join("\n"),
         );
         return;
       }
 
-      try {
-        await whatsappSession.ensureReady(chatId);
-      } catch (error) {
-        logger.warn("Telegram Excel rejected: WhatsApp session is not ready", {
-          chatId,
-          fileName: document.file_name,
-          message: error.message,
-        });
-        await sendRichMessage(
-          sendMessage,
-          chatId,
-          [
-            "⚠️ **WhatsApp Session Belum Aktif**",
-            "",
-            "📤 File sudah diterima Telegram, tapi bot belum bisa meneruskan tiket ke grup WhatsApp.",
-            "",
-            "👉 Jalankan `/login`, scan QR WhatsApp, lalu kirim ulang file Excel.",
-          ].join("\n"),
-        );
-        return;
+      if (!importOptions.manualMode && !importOptions.injectMode) {
+        try {
+          await whatsappSession.ensureReady(chatId, { interactive: true });
+        } catch (error) {
+          logger.warn("Telegram Excel rejected: WhatsApp session is not ready", {
+            chatId,
+            fileName: document.file_name,
+            message: error.message,
+          });
+          const baseCmd = importOptions.command || ".update";
+          await sendRichMessage(
+            sendMessage,
+            chatId,
+            [
+              "⚠️ **WhatsApp Session Belum Terkait**",
+              "",
+              "📤 File sudah diterima, tetapi sesi WhatsApp bot belum terkait / aktif.",
+              "",
+              "👉 **Pilihan Solusi:**",
+              "1. **Login WhatsApp**: Jalankan `/login` untuk mengaitkan sesi WhatsApp Anda.",
+              `2. **Mode Manual**: Jalankan secara manual dengan caption \`${baseCmd} manual\` (contoh: \`.update manual\`) jika tidak memiliki sesi WhatsApp.`,
+              "",
+              "ℹ️ Ketik `/help` untuk info lengkapnya.",
+            ].join("\n"),
+          );
+          return;
+        }
       }
 
-      await sendRichMessage(
+      const manualTag = importOptions.manualMode ? " (Mode Manual / Telegram Only)" : "";
+      const statusMsg = await sendRichMessage(
         sendMessage,
         chatId,
-        importOptions.reminderMode
+        importOptions.specialMode
           ? [
-              "📂 **File Excel Diterima (Mode /reminder)**",
+              `📂 **File Excel Diterima (Mode .special${manualTag})**`,
               "",
-              "⏳ Sedang memproses reminder untuk seluruh tiket valid pada file...",
-              "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
+              "⏳ Mengunduh dan membaca file Excel...",
+              "⚡ Seluruh tiket valid akan dikirim ulang dan riwayat sent_tickets diperbarui...",
               `📄 File Name: \`${document.file_name || "-"}\``,
             ].join("\n")
-          : importOptions.summaryOnlyMode
+          : importOptions.reminderMode
+          ? [
+              `📂 **File Excel Diterima (Mode .reminder${manualTag})**`,
+              "",
+              "⏳ Mengunduh dan membaca file Excel...",
+              importOptions.manualMode
+                ? "📱 Seluruh tiket dan reminder diteruskan ke Telegram untuk diteruskan manual..."
+                : "📱 Tiket SQA dikirim via JAPRI ke PIC CCM, tiket NOP ke grup NOP...",
+              `📄 File Name: \`${document.file_name || "-"}\``,
+            ].join("\n")
+          : importOptions.injectMode
             ? [
-                "📂 **File Excel Diterima (Mode .summary)**",
+                "📂 **File Excel Diterima (Mode .inject Database)**",
                 "",
-                "⏳ Sedang memproses report dan summary saja...",
+                "⏳ Mengunduh dan membaca 208 kolom file Excel...",
+                "💾 Memasukkan data master tiket ke PostgreSQL...",
+                `📄 File Name: \`${document.file_name || "-"}\``,
+              ].join("\n")
+            : importOptions.summaryOnlyMode
+            ? [
+                `📂 **File Excel Diterima (Mode .summary${manualTag})**`,
+                "",
+                "⏳ Mengunduh dan membaca file Excel...",
                 `📄 File Name: \`${document.file_name || "-"}\``,
               ].join("\n")
             : importOptions.ticketOnlyMode
               ? [
-                  "📂 **File Excel Diterima (Mode .update)**",
+                  `📂 **File Excel Diterima (Mode .update${manualTag})**`,
                   "",
-                  "⏳ Sedang memproses detail tiket saja dan meneruskan ke grup WhatsApp target...",
+                  "⏳ Mengunduh dan membaca file Excel...",
                   "🚫 Salam pembuka, Excel target, dan reminder summary akan dilewati.",
                   `📄 File Name: \`${document.file_name || "-"}\``,
                 ].join("\n")
               : [
-                  "📂 **File Excel Diterima**",
+                  `📂 **File Excel Diterima${manualTag}**`,
                   "",
-                  "⏳ Sedang memproses tiket dan meneruskan ke grup WhatsApp target...",
+                  "⏳ Mengunduh dan membaca file Excel...",
                   `📄 File Name: \`${document.file_name || "-"}\``,
                 ].join("\n"),
       );
+
+      const statusMsgId = statusMsg?.message_id;
+
       try {
         const buffer = await downloadFile(document.file_id);
         logger.info("Starting Telegram ticket Excel process", {
@@ -558,7 +1010,108 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           bytes: buffer.length,
           ticketOnlyMode: importOptions.ticketOnlyMode,
           summaryOnlyMode: importOptions.summaryOnlyMode,
+          injectMode: importOptions.injectMode,
         });
+
+        if (importOptions.injectMode) {
+          logger.info("Processing Excel in .inject mode to PostgreSQL", {
+            chatId,
+            fileName: document.file_name,
+            bytes: buffer.length,
+            monthFilter: importOptions.argument,
+          });
+          const rawRows = await parseWorkbook(buffer);
+          // Filter hanya 8 grup L2 Sumbagut yang valid (tidak NULL dan bukan grup luar seperti RTP)
+          const rows = rawRows.filter((r) =>
+            isAllowedInjectAssignGroup(
+              r["Assign to L2(L2 Assign)"] ||
+                r.assign_to_l2_l2_assign ||
+                r.assignment_group ||
+                r["assignment_group"],
+            ),
+          );
+          const skippedCount = rawRows.length - rows.length;
+
+          const upsertResult = await batchUpsertMasterTickets(rows, {
+            filterAllowedL2Groups: true,
+          });
+
+          // Normalisasi baris dan kelompokkan per bulan untuk tabel summary
+          const processedResult = processTicketRows(rows);
+          const summaryRows = extractTicketSummaryRows(rows, processedResult);
+          const tableMessages = formatInjectMonthSummaryMessages(summaryRows, {
+            monthFilter: importOptions.argument,
+          });
+
+          // Kirim tabel summary per bulan (diurutkan berdasarkan order id)
+          try {
+            for (const tableMsg of tableMessages) {
+              await sendRichMessage(sendMessage, chatId, tableMsg);
+              await new Promise((r) => setTimeout(r, 400));
+            }
+          } catch (tableErr) {
+            logger.warn("Sending summary table preview hit Telegram limit or failed", {
+              error: tableErr.message,
+            });
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              `⚠️ Pengiriman tabel preview Telegram dihentikan karena batas rate limit: ${tableErr.message}.\nSeluruh data master tiket tetap berhasil tersimpan di database PostgreSQL.`,
+            ).catch(() => {});
+          }
+
+          const report = [
+            "✅ **Injeksi Data Master Tiket Berhasil**",
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            `📄 **File Excel**         : \`${document.file_name || "-"}\``,
+            `📊 **Total Baris File**    : **${rawRows.length} baris**`,
+            `💾 **Tersimpan ke DB**    : **${upsertResult.processed} tiket**`,
+            ...(skippedCount > 0
+              ? [`⏭️ **Dilewati (Luar L2)**  : **${skippedCount} tiket**`]
+              : []),
+            `📁 **Tabel Target**       : \`SQA_SUMBAGUT.inap_ticketing_customer_complain\``,
+            "",
+            "ℹ️ Data telah tersimpan di PostgreSQL dan siap digunakan untuk verifikasi deduplikasi harian (.update).",
+          ].join("\n");
+
+          if (statusMsgId && editMessageText) {
+            await editRichMessage(editMessageText, chatId, statusMsgId, report);
+          } else {
+            await sendRichMessage(sendMessage, chatId, report);
+          }
+
+          // Peringatan komplain repetitif site ID (hanya dikirimkan ke chat/grup pengirim)
+          try {
+            const siteRepetitiveAlert = await generateSiteRepetitiveAlert(
+              rows,
+              { referenceDate: new Date() },
+            );
+            if (siteRepetitiveAlert) {
+              await sendRichMessage(
+                sendMessage,
+                chatId,
+                siteRepetitiveAlert.text,
+              );
+            }
+          } catch (siteRepErr) {
+            logger.warn("Failed checking site repetitive complaints in .inject", {
+              error: siteRepErr.message,
+            });
+          }
+
+          return;
+        }
+
+        if (isDatabaseConfigured()) {
+          parseWorkbook(buffer)
+            .then((rows) => batchUpsertMasterTickets(rows, { filterAllowedL2Groups: true }))
+            .catch((err) =>
+              logger.warn("Background upsert to PostgreSQL failed during import", {
+                error: err.message,
+              }),
+            );
+        }
+
         const result = await processTicketExcel(buffer);
         logger.info("Telegram ticket Excel process completed", {
           chatId,
@@ -569,6 +1122,22 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           summaryOnlyMode: importOptions.summaryOnlyMode,
         });
 
+        if (statusMsgId && editMessageText) {
+          await editRichMessage(
+            editMessageText,
+            chatId,
+            statusMsgId,
+            [
+              "📂 **File Excel Selesai Diparsing**",
+              "",
+              `📄 File: \`${document.file_name || "-"}\``,
+              `📊 Data: **${result.total_rows} total** | **${result.valid_count || 0} valid** | **${result.skipped_count || 0} skip**`,
+              "",
+              "⬇️ Laporan & progres pengiriman tiket ditampilkan di bawah.",
+            ].join("\n"),
+          );
+        }
+
         const adapter = createTelegramWhatsAppAdapter({
           ensureWhatsAppReady: (options) =>
             whatsappSession.ensureReady(chatId, options),
@@ -576,8 +1145,25 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           sourceChatId: chatId,
           sendDocument,
           sendMessage,
+          editMessageText,
+          initialProgressMessageId: null,
+          manualMode: importOptions.manualMode,
         });
-        await sendImportResult(adapter, adapter.sourceJid, result, importOptions);
+
+        sendImportResult(adapter, adapter.sourceJid, result, importOptions).catch(
+          (error) => {
+            logger.error("Failed to deliver ticket results in background", error);
+            sendRichMessage(
+              sendMessage,
+              chatId,
+              [
+                "❌ **Gagal Mengirim Tiket ke WhatsApp**",
+                "",
+                `🛑 Error: \`${error.message}\``,
+              ].join("\n"),
+            ).catch(() => {});
+          },
+        );
       } catch (error) {
         logger.error("Failed to process Telegram Excel", error);
         await sendRichMessage(
@@ -588,7 +1174,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
             "",
             `🛑 Error: \`${error.message}\``,
             "",
-            "👉 Pastikan format file sesuai lalu kirim ulang.",
+            "👉 Pastikan format kolom file sesuai template CCM.",
           ].join("\n"),
         );
       }
@@ -618,7 +1204,7 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       const pendingReauthResult =
         await whatsappSession.completePendingExpiredSessionReauth?.(chatId, text);
       if (pendingReauthResult) {
-        await sendRichMessage(sendMessage, chatId, pendingReauthResult, { parse_mode: "HTML" });
+        await sendRichMessage(sendMessage, chatId, pendingReauthResult);
         return;
       }
     }
@@ -832,6 +1418,130 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
+    if (command === "/poll" || command === "/autopoll" || command === "/fetch") {
+      if (!ticketPolling) {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "ℹ️ **Fitur Auto-Polling Database Belum Diaktifkan**",
+            "",
+            "Untuk mengaktifkan fitur pengecekan otomatis database ClickHouse:",
+            "1. Atur `DB_POLL_ENABLED=true` di file `.env`.",
+            "2. Lengkapi konfigurasi `DB_HOST`, `DB_USER`, `DB_PASSWORD`.",
+            "3. Restart aplikasi bot.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      const subCommand = String(argument || "").trim().toLowerCase();
+
+      if (command === "/fetch" || subCommand === "now") {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          "⏳ **Menjalankan Pengecekan Database Instan...**\nSedang memeriksa tiket L2 Assign running di ClickHouse...",
+        );
+        try {
+          const pollResult = await ticketPolling.poll({ force: true });
+          if (pollResult.status === "SUCCESS") {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              `✅ **Pengecekan Instan Selesai**\n📦 Berhasil mengirim **${pollResult.newTickets} tiket baru** ke WhatsApp.`,
+            );
+          } else if (
+            pollResult.status === "NO_ROWS" ||
+            pollResult.status === "ALL_DUPLICATES" ||
+            pollResult.status === "NO_VALID_TICKETS"
+          ) {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              "ℹ️ **Database Up-to-Date**\nTidak ada tiket baru yang perlu dikirim dari database saat ini.",
+            );
+          } else if (pollResult.status === "ALREADY_ACTIVE") {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              "⏳ Siklus pengecekan database lain sedang berjalan, mohon tunggu sebentar.",
+            );
+          } else {
+            await sendRichMessage(
+              sendMessage,
+              chatId,
+              `⚠️ **Status Pengecekan**: \`${pollResult.status}\`${pollResult.error ? `\n🛑 Error: \`${pollResult.error}\`` : ""}`,
+            );
+          }
+        } catch (pollErr) {
+          await sendTelegramCommandError(sendMessage, chatId, command, pollErr);
+        }
+        return;
+      }
+
+      if (subCommand === "off" || subCommand === "pause" || subCommand === "stop") {
+        ticketPolling.pause();
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "⏸️ **Auto-Polling Dijeda (Paused)**",
+            "",
+            "Pengecekan otomatis berkala ke database dihentikan sementara.",
+            "👉 Ketik `/poll on` untuk mengaktifkan kembali.",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      if (subCommand === "on" || subCommand === "resume" || subCommand === "start") {
+        ticketPolling.resume();
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          [
+            "▶️ **Auto-Polling Diaktifkan (Active)**",
+            "",
+            "Pengecekan otomatis berkala ke database kembali aktif setiap 5 menit pada jam operasional (07:00 - 17:00 WIB).",
+          ].join("\n"),
+        );
+        return;
+      }
+
+      // Default: /poll status
+      try {
+        const pollStatus = await ticketPolling.getStatus();
+        const statusLines = [
+          "📊 **Status Auto-Polling Database (ClickHouse)**",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          `⚙️ **Status Fitur**     : ${pollStatus.isPaused ? "⏸️ JEDA (PAUSED)" : pollStatus.isRunning ? "✅ AKTIF (RUNNING)" : "🛑 STOPPED"}`,
+          `🕒 **Jam Kerja**        : **${pollStatus.workingHoursText}**`,
+          `⏱️ **Sedang Jam Kerja** : ${pollStatus.inWorkingHours ? "✅ Ya" : "🌙 Di luar jam kerja (Sleep)"}`,
+          `🔄 **Interval Polling** : **Setiap ${pollStatus.intervalMinutes} menit**`,
+          "",
+          `🗄️ **Koneksi Database** : ${pollStatus.dbConnected ? "🟢 Terhubung (Port 9443 HTTPS)" : `🔴 Gagal (${pollStatus.dbError || "Error"})`}`,
+          `⏱️ **Cek Terakhir**      : \`${pollStatus.lastPollTime || "-"}\``,
+          `📅 **Watermark DB**      : \`${pollStatus.lastWatermark || "-"}\``,
+          `📦 **Terkirim Hari Ini** : **${pollStatus.totalSentToday} tiket**`,
+        ];
+        if (pollStatus.lastError) {
+          statusLines.push("", `⚠️ **Error Terakhir**: \`${pollStatus.lastError}\``);
+        }
+        statusLines.push(
+          "",
+          "💡 **Perintah Kendali:**",
+          "• `/poll now` : Tarik & kirim tiket baru instan detik ini",
+          "• `/poll off` : Jeda pengecekan otomatis",
+          "• `/poll on`  : Lanjutkan pengecekan otomatis",
+        );
+        await sendRichMessage(sendMessage, chatId, statusLines.join("\n"));
+      } catch (err) {
+        await sendTelegramCommandError(sendMessage, chatId, command, err);
+      }
+      return;
+    }
+
     if (command === "/sessions") {
       try {
         await sendRichMessage(
@@ -842,6 +1552,31 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       } catch (error) {
         await sendTelegramCommandError(sendMessage, chatId, command, error);
       }
+      return;
+    }
+
+    if (command === "/wperf" || command === "/update_wperf") {
+      if (!wperfSync) {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          "⚠️ **Fitur Sinkronisasi WPERF Belum Diaktifkan**\nLayanan WPERF sync belum diinisialisasi.",
+        );
+        return;
+      }
+
+      if (wperfSync.isSyncRunning()) {
+        await sendRichMessage(
+          sendMessage,
+          chatId,
+          "⏳ **Pembaruan WPERF Sedang Berjalan**\nProses pembaruan data sedang berlangsung di latar belakang. Mohon tunggu laporan selesai.",
+        );
+        return;
+      }
+
+      wperfSync.executeManualSync(chatId).catch((error) => {
+        logger.error("Manual WPERF sync failed", { error: error.message, chatId });
+      });
       return;
     }
 
@@ -885,10 +1620,20 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
       return;
     }
 
-    if (command === "/cancel") {
+    if (command === "/cancel" || command === ".cancel") {
       try {
-        const result = await whatsappSession.cancelQr(chatId);
-        await sendRichMessage(sendMessage, chatId, result, { parse_mode: "HTML" });
+        const qrResult = await whatsappSession.cancelQr(chatId);
+        cancelActiveDelivery("Telegram /cancel command");
+
+        const isQrCancelled = qrResult && qrResult.includes("Dibatalkan");
+        const cancelStatusLines = [
+          "🛑 **Pembatalan Proses Selesai**",
+          "━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+          "✅ **Pengiriman Tiket**: Seluruh antrian & pengiriman tiket aktif berhasil dihentikan.",
+          "✅ **Sesi Login QR**: " + (isQrCancelled ? "Sesi scan QR dibatalkan." : "Tidak ada sesi QR aktif."),
+        ];
+
+        await sendRichMessage(sendMessage, chatId, cancelStatusLines.join("\n"));
       } catch (error) {
         await sendTelegramCommandError(sendMessage, chatId, command, error);
       }
@@ -915,6 +1660,42 @@ export function createTelegramCommandHandler({ config, whatsappSession }) {
           chatId,
           formatWhatsAppPrivateCommand(argument),
         );
+      } catch (error) {
+        await sendTelegramCommandError(sendMessage, chatId, command, error);
+      }
+      return;
+    }
+
+    if (command === "/remind_inject" || command === "/reminder_inject") {
+      try {
+        if (!dailyReminder) {
+          await sendRichMessage(
+            sendMessage,
+            chatId,
+            "ℹ️ **Daily Reminder Service Belum Diaktifkan**",
+          );
+          return;
+        }
+
+        const isGroup = String(chatId).startsWith("-");
+        const triggerResult = await dailyReminder.triggerManual(isGroup ? chatId : null);
+        if (triggerResult.sent) {
+          await sendRichMessage(
+            sendMessage,
+            chatId,
+            [
+              "✅ **Pesan Reminder Berhasil Dikirim**",
+              "",
+              `📢 Pesan pengingat penutupan report (.inject) berhasil dikirimkan ke **${triggerResult.sentTo.length} chat/grup**.`,
+            ].join("\n"),
+          );
+        } else {
+          await sendRichMessage(
+            sendMessage,
+            chatId,
+            `⚠️ Gagal mengirim reminder: ${triggerResult.reason || "Tidak ada penerima terdaftar"}.`,
+          );
+        }
       } catch (error) {
         await sendTelegramCommandError(sendMessage, chatId, command, error);
       }

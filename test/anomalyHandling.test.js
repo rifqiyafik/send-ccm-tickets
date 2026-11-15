@@ -115,6 +115,93 @@ test("skips out-of-region SQA ticket and records anomaly for Telegram report", (
   assert.equal(result.skipped_tickets[0].reason, "CITY_NOT_FOUND");
 
   const report = formatProcessingReport(result);
-  assert.match(report, /⚠️ .*Tiket Anomali Dilewati/);
+  assert.match(
+    report,
+    /PERHATIAN: TIKET TERINDIKASI DI LUAR REGIONAL 1|Tiket Anomali Dilewati/,
+  );
   assert.match(report, /CC-20260803-00000509/);
 });
+
+test("preserves original city PADANG LAWAS when NOP RANTAU PRAPAT ticket uses fallback PIC", () => {
+  const picResult = searchPicByCityAndAssignment({
+    city: "PADANG LAWAS",
+    assignmentGroup: "NETWORK OPERATIONS AND PRODUCTIVITY RANTAU PRAPAT",
+    descriptionText: "",
+  });
+
+  assert.equal(picResult.ok, true);
+  assert.equal(picResult.assignment_type, "NOP");
+  assert.equal(picResult.city, "PADANG LAWAS");
+  assert.equal(picResult.pic_nop, "Nasrul Amin S");
+  assert.match(picResult.anomaly_info, /PADANG LAWAS/);
+});
+
+test("processes NOP RANTAU PRAPAT ticket with PSP404 and preserves PADANG LAWAS in ticket.city", () => {
+  const rows = [
+    {
+      "Order ID": "CC-20260817-00000190",
+      "Ticket Id": "1-S800190",
+      "Create Time": "2026-08-17 10:00:00",
+      "Business Status": "In Progress",
+      "Assign to L2(L2 Assign)": "NETWORK OPERATIONS AND PRODUCTIVITY RANTAU PRAPAT",
+      "Kabupaten/Kota(Create Ticket)": "-",
+      "site_id1(L1 Assign)": "PSP404",
+      "Problem Analysis NSH": "#Site Cover : PSP404",
+      "CCH Suggestion(L1 Assign_cch_suggestion)": "-",
+      "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)": "Tiket Padang Lawas",
+      "Customer MSISDN(Create Ticket_customer_msisdn)": "628218333005",
+    },
+  ];
+
+  const result = processTicketRows(rows);
+  assert.equal(result.valid_count, 1);
+  const ticket = result.valid_tickets[0];
+  assert.equal(ticket.city, "PADANG LAWAS");
+  assert.equal(ticket.assignment_group, "NETWORK OPERATIONS AND PRODUCTIVITY RANTAU PRAPAT");
+  assert.equal(ticket.pic, "Nasrul Amin S");
+});
+
+test("resolves double site cover with DPK185 typo and E_BJI179 to valid Sumbagut site BJI179 and NOP Binjai", () => {
+  const rows = [
+    {
+      "Order ID": "CC-20261005-00000246",
+      "Ticket Id": "1-T81HCEN",
+      "Create Time": "2026-10-05 17:02:44",
+      "Business Status": "ReOpen",
+      "Assign to L2(L2 Assign)": "group:Network Operations and Productivity Binjai",
+      "Kabupaten/Kota(Create Ticket)": "'-",
+      "site_id1(L1 Assign)": "-",
+      "Problem Analysis NSH": `Lokasi:  kelurahan tanah seribu kecamatan binjai selatan, kota binjai prov. Sumatera Utara
+#SiteCover: DPK185
+E_BJI179_TanahTinggi-TBG
+RSRP: - RSRQ: -
+
+HEALTHY CHECK :
+Availability: not SAFE
+
+SUSPECT ISSUE
+#Availability
+
+ACTION PLAN
+Troubleshoot`,
+      "CCH Suggestion(L1 Assign_cch_suggestion)": "-",
+      "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)":
+        "kelurahan tanah seribu kecamatan binjai selatan, kota binjai prov. Sumatera Utara",
+      "Customer MSISDN(Create Ticket_customer_msisdn)": "6282276658458",
+    },
+  ];
+
+  const result = processTicketRows(rows);
+  assert.equal(result.valid_count, 1);
+  assert.equal(result.skipped_count, 0);
+
+  const ticket = result.valid_tickets[0];
+  assert.equal(ticket.order_id, "CC-20261005-00000246");
+  assert.equal(ticket.site_id, "BJI179");
+  assert.equal(ticket.city, "KOTA BINJAI");
+  assert.equal(ticket.assignment_type, "NOP");
+  assert.equal(ticket.pic_nop, "Dean RM Simamora");
+  assert.match(ticket.anomaly_info, /DPK185/);
+  assert.match(ticket.anomaly_info, /BJI179/);
+});
+

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import QRCode from "qrcode";
 import qrcode from "qrcode-terminal";
 
 import { startBot } from "../handlers/whatsappMessageHandler.js";
@@ -50,6 +51,7 @@ function formatSessionLine(session) {
 // #penjelasan: membungkus lifecycle WhatsApp agar bisa dikontrol dari Telegram tanpa command terminal.
 export function createWhatsAppSessionService({
   sendTelegramMessage,
+  sendTelegramPhoto,
   startWhatsAppBot = startBot,
 }) {
   let controller = null;
@@ -63,10 +65,42 @@ export function createWhatsAppSessionService({
   const pendingSessionSwitches = new Map();
   const pendingExpiredSessionReauth = new Map();
   const readyWaiters = new Set();
+  const lastConnectedNotifyAt = new Map();
 
   async function notifySubscribers(text, options = {}) {
     for (const chatId of qrSubscribers) {
-      await sendTelegramMessage(chatId, text, options);
+      try {
+        await sendTelegramMessage(chatId, text, options);
+      } catch (error) {
+        logger.warn("Failed to send Telegram message to subscriber", {
+          chatId,
+          error: error.message,
+        });
+      }
+    }
+  }
+
+  async function notifySubscribersPhoto(photoBuffer, caption, options = {}) {
+    for (const chatId of qrSubscribers) {
+      if (sendTelegramPhoto) {
+        try {
+          await sendTelegramPhoto(chatId, photoBuffer, { caption, ...options });
+          continue;
+        } catch (error) {
+          logger.warn("Failed to send QR photo to subscriber, falling back to text", {
+            chatId,
+            error: error.message,
+          });
+        }
+      }
+      try {
+        await sendTelegramMessage(chatId, caption, options);
+      } catch (error) {
+        logger.warn("Failed to send Telegram fallback message to subscriber", {
+          chatId,
+          error: error.message,
+        });
+      }
     }
   }
 
@@ -111,21 +145,40 @@ export function createWhatsAppSessionService({
       return;
     }
 
-    const qrText = formatQrText(qr);
-    await notifySubscribers(
-      [
-        "📱 <b>WhatsApp Login QR</b>",
-        "",
-        `Session: <b>${escapeTelegramHtml(formatSessionLine(activeSession))}</b>`,
-        "",
-        "Scan dari <b>WhatsApp › Linked Devices › Link a Device</b>",
-        "",
-        `<pre>${escapeTelegramHtml(qrText)}</pre>`,
-        "",
-        `<i>QR ${qrNotifyCount}/${MAX_QR_NOTIFY_COUNT} — Ketik /cancel untuk membatalkan.</i>`,
-      ].join("\n"),
-      { parse_mode: "HTML" },
-    );
+    const caption = [
+      "📱 <b>WhatsApp Login QR</b>",
+      "",
+      `Session: <b>${escapeTelegramHtml(formatSessionLine(activeSession))}</b>`,
+      "",
+      "Scan dari <b>WhatsApp › Linked Devices › Link a Device</b>",
+      "",
+      `<i>QR ${qrNotifyCount}/${MAX_QR_NOTIFY_COUNT} — Ketik /cancel untuk membatalkan.</i>`,
+    ].join("\n");
+
+    let qrImageBuffer = null;
+    try {
+      qrImageBuffer = await QRCode.toBuffer(qr, {
+        type: "png",
+        margin: 2,
+        scale: 8,
+      });
+    } catch (error) {
+      logger.error("Failed to generate QR image buffer", error);
+    }
+
+    if (qrImageBuffer && sendTelegramPhoto) {
+      await notifySubscribersPhoto(qrImageBuffer, caption, { parse_mode: "HTML" });
+    } else {
+      const qrText = formatQrText(qr);
+      await notifySubscribers(
+        [
+          caption,
+          "",
+          `<pre>${escapeTelegramHtml(qrText)}</pre>`,
+        ].join("\n"),
+        { parse_mode: "HTML" },
+      );
+    }
   }
 
   function isSessionRunning() {
@@ -232,12 +285,46 @@ export function createWhatsAppSessionService({
     );
   }
 
-  function isExpiredSessionDisconnect(lastDisconnect) {
+  const authFailureCounts = new Map();
+  const sessionWasConnected = new Map();
+
+  function isExpiredSessionDisconnect(session, lastDisconnect) {
     const code = getDisconnectStatusCode(lastDisconnect);
-    return (
+    const isAuthError =
       code === WA_LOGGED_OUT_STATUS_CODE ||
-      code === WA_FORBIDDEN_STATUS_CODE
-    );
+      code === WA_FORBIDDEN_STATUS_CODE;
+
+    if (!isAuthError) {
+      if (session?.id) {
+        authFailureCounts.delete(session.id);
+      }
+      return false;
+    }
+
+    const wasConnected = Boolean(sessionWasConnected.get(session?.id));
+
+    // Jika sesi sebelumnya sudah connected lalu terputus dan mendapat 401/403 pada reconnect pertama,
+    // beri kesempatan 1x auto-recovery sebelum mematikan sesi permanen.
+    if (wasConnected) {
+      const currentFailures = (authFailureCounts.get(session?.id) || 0) + 1;
+      if (session?.id) {
+        authFailureCounts.set(session.id, currentFailures);
+      }
+
+      if (currentFailures <= 1 && desiredSessionId === session?.id) {
+        logger.warn(
+          "Transient WhatsApp auth failure detected on reconnect, attempting auto-recovery before logout",
+          {
+            sessionId: session?.id,
+            statusCode: code,
+            attempt: currentFailures,
+          },
+        );
+        return false;
+      }
+    }
+
+    return true;
   }
 
   async function handleLoggedOutSession(session, statusCode = 401) {
@@ -299,18 +386,18 @@ export function createWhatsAppSessionService({
     if (Date.now() > pending.expiresAt) {
       pendingExpiredSessionReauth.delete(key);
       return [
-        "⌛ <b>Konfirmasi Re-Auth Expired</b>",
+        "⌛ **Konfirmasi Re-Auth Expired**",
         "",
-        "Jalankan ulang <code>/login &lt;nomor_urut&gt;</code> jika masih ingin login ulang.",
+        "Jalankan ulang `/login <nomor_urut>` jika masih ingin login ulang.",
       ].join("\n");
     }
 
     if (![ "YA", "Y", "YES", "TIDAK", "N", "NO" ].includes(normalizedAnswer)) {
       return [
-        "⚠️ <b>Menunggu konfirmasi re-auth session usang</b>",
+        "⚠️ **Menunggu konfirmasi re-auth session usang**",
         "",
-        "Balas <code>YA</code> untuk bersihkan credential lama dan tampilkan QR baru.",
-        "Balas <code>TIDAK</code> untuk membatalkan.",
+        "Balas `YA` untuk bersihkan credential lama dan tampilkan QR baru.",
+        "Balas `TIDAK` untuk membatalkan.",
       ].join("\n");
     }
 
@@ -318,10 +405,10 @@ export function createWhatsAppSessionService({
 
     if ([ "TIDAK", "N", "NO" ].includes(normalizedAnswer)) {
       return [
-        "✅ <b>Re-Auth Dibatalkan</b>",
+        "✅ **Re-Auth Dibatalkan**",
         "",
         "Session tetap dalam status tidak aktif.",
-        "Jalankan <code>/login &lt;nomor_urut&gt;</code> kapan saja jika ingin login ulang.",
+        "Jalankan `/login <nomor_urut>` kapan saja jika ingin login ulang.",
       ].join("\n");
     }
 
@@ -329,10 +416,10 @@ export function createWhatsAppSessionService({
     const session = await resolveWhatsAppSession(pending.sessionId);
     if (!session) {
       return [
-        "❌ <b>Session Tidak Ditemukan</b>",
+        "❌ **Session Tidak Ditemukan**",
         "",
         "Session yang dimaksud tidak lagi terdaftar.",
-        "Jalankan <code>/sessions</code> untuk melihat daftar session terbaru.",
+        "Jalankan `/sessions` untuk melihat daftar session terbaru.",
       ].join("\n");
     }
 
@@ -356,9 +443,9 @@ export function createWhatsAppSessionService({
 
     const startResult = await startSession(session, chatId, { confirmedSwitch: true });
     return [
-      "🔄 <b>Membuat Sesi Baru</b>",
+      "🔄 **Membuat Sesi Baru**",
       "",
-      `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
+      `Session: **${session.label}**`,
       "",
       "Credential lama berhasil dihapus. Memulai autentikasi ulang...",
       "",
@@ -464,22 +551,32 @@ export function createWhatsAppSessionService({
       onConnectionUpdate: async ({ connection, lastDisconnect }) => {
         if (connection === "open") {
           qrNotifyCount = 0;
+          if (session?.id) {
+            authFailureCounts.delete(session.id);
+            sessionWasConnected.set(session.id, true);
+          }
           connectionState = "connected";
           await markWhatsAppSessionStatus(session.id, "connected");
           resolveSocketReady();
-          await notifySubscribers(
-            [
-              "✅ <b>WhatsApp Bot Connected</b>",
-              "",
-              `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
-              `Phone: <code>${escapeTelegramHtml(session.phone)}</code>`,
-            ].join("\n"),
-            { parse_mode: "HTML" },
-          );
+
+          const now = Date.now();
+          const lastNotify = lastConnectedNotifyAt.get(session.id) || 0;
+          if (now - lastNotify > 60000) {
+            lastConnectedNotifyAt.set(session.id, now);
+            await notifySubscribers(
+              [
+                "✅ <b>WhatsApp Bot Connected</b>",
+                "",
+                `Session: <b>${escapeTelegramHtml(session.label)}</b>`,
+                `Phone: <code>${escapeTelegramHtml(session.phone)}</code>`,
+              ].join("\n"),
+              { parse_mode: "HTML" },
+            );
+          }
         }
         if (connection === "close") {
           const statusCode = getDisconnectStatusCode(lastDisconnect);
-          if (isExpiredSessionDisconnect(lastDisconnect)) {
+          if (isExpiredSessionDisconnect(session, lastDisconnect)) {
             logger.warn("WhatsApp session credential expired or rejected, asking for re-auth", {
               sessionId: session.id,
               statusCode,
@@ -534,9 +631,11 @@ export function createWhatsAppSessionService({
     const sessions = await listWhatsAppSessions();
 
     if (!value) {
+      const isRunning = isSessionRunning() && connectionState === "connected";
       return formatWhatsAppSessionsList({
         sessions,
         activeSessionId: registry.active_session_id,
+        isRunning,
         title: "📱 Session WhatsApp tersedia",
       });
     }
@@ -711,9 +810,11 @@ export function createWhatsAppSessionService({
 
   async function listSessions() {
     const registry = await getWhatsAppSessionRegistry();
+    const isRunning = isSessionRunning() && connectionState === "connected";
     return formatWhatsAppSessionsList({
       sessions: await listWhatsAppSessions(),
       activeSessionId: registry.active_session_id,
+      isRunning,
     });
   }
 
@@ -725,9 +826,11 @@ export function createWhatsAppSessionService({
       sessions[0];
 
     if (!session) {
+      const isRunning = isSessionRunning() && connectionState === "connected";
       return formatWhatsAppSessionsList({
         sessions,
         activeSessionId: registry.active_session_id,
+        isRunning,
       });
     }
 
@@ -740,10 +843,12 @@ export function createWhatsAppSessionService({
     const value = String(selector || "").trim();
 
     if (!value) {
+      const isRunning = isSessionRunning() && connectionState === "connected";
       return [
         formatWhatsAppSessionsList({
           sessions,
           activeSessionId: registry.active_session_id,
+          isRunning,
           title: "🛑 Stop WhatsApp Session",
         }),
         "",
@@ -961,14 +1066,17 @@ export function createWhatsAppSessionService({
   async function cancelQr(chatId) {
     const key = chatId ? String(chatId) : null;
 
-    // Clear any pending re-auth confirmation for this user
+    // Clear any pending re-auth confirmation or switch for this user
     if (key) {
       pendingExpiredSessionReauth.delete(key);
+      pendingSessionSwitches.delete(key);
+      pendingLoginNames.delete(key);
     }
 
-    if (!controller?.getStatus?.().running || connectionState === "connected") {
+    // Jika sesi sudah terhubung atau tidak sedang menunggu scan QR, jangan hentikan sesi yang sudah login!
+    if (connectionState === "connected" || qrNotifyCount === 0 || !controller?.getStatus?.().running) {
       return [
-        "ℹ️ <b>Tidak Ada Sesi QR Aktif</b>",
+        "ℹ️ **Tidak Ada Sesi QR Aktif**",
         "",
         "Tidak ada proses scan QR yang sedang berjalan saat ini.",
       ].join("\n");
@@ -991,15 +1099,15 @@ export function createWhatsAppSessionService({
     });
 
     return [
-      "🛑 <b>Sesi Scan QR Dibatalkan</b>",
+      "🛑 **Sesi Scan QR Dibatalkan**",
       "",
       stoppedSession
-        ? `Session: <b>${escapeTelegramHtml(stoppedSession.label)}</b>`
+        ? `Session: **${stoppedSession.label}**`
         : "",
       "",
       "Proses login QR dihentikan.",
-      "Gunakan <code>/login &lt;nomor_urut&gt;</code> untuk memulai kembali kapan saja.",
-    ].join("\n");
+      "Gunakan `/login <nomor_urut>` untuk memulai kembali kapan saja.",
+    ].filter(Boolean).join("\n");
   }
 
   return {

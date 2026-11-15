@@ -17,11 +17,9 @@ export function extractCityFromDescription(descriptionText, ccmRows = []) {
   }
 
   // Extract address section if "Lokasi Pelanggan" line is present
-  const locationMatch = descriptionText.match(
-    /lokasi\s+pelanggan\s*\([^)]*\)\s*:\s*([^\r\n]+)/i,
-  );
-  const searchSection = locationMatch
-    ? normalizeSearchKey(locationMatch[1])
+  const locationMatches = [...descriptionText.matchAll(/lokasi\s+pelanggan\s*\([^)]*\)\s*:\s*([^\r\n]+)/gi)];
+  const searchSection = locationMatches.length > 0
+    ? normalizeSearchKey(locationMatches.map(m => m[1]).join(" "))
     : normalizedText;
 
   // Find matching city from ccmRows (prioritize longer city names first)

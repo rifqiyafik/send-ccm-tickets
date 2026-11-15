@@ -1,5 +1,6 @@
 import { getGroupConfig, normalizeKey } from "./appConfig.js";
 import { createLogger } from "../utils/logger.js";
+import { normalizeJid } from "../utils/jid.js";
 
 const logger = createLogger("whatsappRouting");
 
@@ -13,7 +14,7 @@ function parseGroupMapping(value = "") {
       .filter(Boolean)
       .map((item) => {
         const [key, ...jidParts] = item.split(":");
-        return [key.trim().toUpperCase(), jidParts.join(":").trim()];
+        return [key.trim().toUpperCase(), normalizeJid(jidParts.join(":").trim())];
       })
       .filter(([key, jid]) => key && jid)
   );
@@ -37,6 +38,14 @@ function getNopGroupKeyFromAssignmentGroup(assignmentGroup) {
 
 // menentukan key grup target berdasarkan tipe assignment tiket.
 export function getTargetGroupKey(ticket) {
+  if (
+    (ticket.is_repetitive ||
+      ticket.targetGroupKey === "SITE VISIT" ||
+      ticket.assignment_type === "SITE_VISIT") &&
+    (ticket.assignment_type === "SQA" || ticket.assignment_type === "SITE_VISIT" || !ticket.assignment_type)
+  ) {
+    return "SITE VISIT";
+  }
   const clusterAreaKey = String(ticket.cluster_area ?? "").trim().toUpperCase();
   const targetGroupKey = String(ticket.targetGroupKey ?? "").trim().toUpperCase();
   if (clusterAreaKey === "MAIN SQA" || targetGroupKey === "MAIN SQA") {
@@ -50,7 +59,7 @@ export function getTargetGroupKey(ticket) {
 }
 
 // menentukan grup tujuan; prioritas target_groups di config/whatsapp.json, lalu env WHATSAPP_GROUPS.
-export function resolveTargetJid(ticket) {
+export function resolveTargetJid(ticket, options = {}) {
   logger.info("Resolving WhatsApp target JID", {
     orderId: ticket.order_id,
     assignmentType: ticket.assignment_type,
@@ -60,11 +69,19 @@ export function resolveTargetJid(ticket) {
   const configGroupKey = getTargetGroupKey(ticket);
   const configGroup = getGroupConfig(configGroupKey);
   if (configGroup?.jid) {
+    const cleanJid = normalizeJid(configGroup.jid);
     logger.info("Resolved target JID from target_groups config", {
       groupKey: configGroupKey,
-      jid: configGroup.jid,
+      jid: cleanJid,
     });
-    return configGroup.jid;
+    return cleanJid;
+  }
+
+  if (options.manualMode && configGroupKey) {
+    logger.info("Resolved target JID from manual mode fallback", {
+      groupKey: configGroupKey,
+    });
+    return `manual:${configGroupKey}`;
   }
 
   const picKey = String(ticket.pic || "").toUpperCase();
@@ -79,18 +96,18 @@ export function resolveTargetJid(ticket) {
     WHATSAPP_GROUPS[assignmentKey] ||
     null;
 
-  if (!targetJid) {
-    logger.warn("Target JID not found", {
-      orderId: ticket.order_id,
-      groupKey: configGroupKey,
-      assignmentType: ticket.assignment_type,
-      clusterArea: ticket.cluster_area,
-      nsa: ticket.nsa,
-      pic: ticket.pic,
-    });
-    return null;
+  if (targetJid) {
+    const cleanTargetJid = normalizeJid(targetJid);
+    logger.info("Resolved target JID from env fallback", { targetJid: cleanTargetJid });
+    return cleanTargetJid;
   }
 
-  logger.info("Resolved target JID from env fallback", { targetJid });
-  return targetJid;
+  if (configGroupKey) {
+    logger.info("Target group JID not configured, falling back to manual routing", {
+      groupKey: configGroupKey,
+    });
+    return `manual:${configGroupKey}`;
+  }
+
+  return `manual:UNKNOWN`;
 }

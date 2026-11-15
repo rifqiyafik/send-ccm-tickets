@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import writeXlsxFile from "write-excel-file/node";
 
+import { closeDatabasePool } from "../src/services/databaseService.js";
 import { createTelegramCommandHandler } from "../src/handlers/telegramCommandHandler.js";
 import { registerTelegramChat } from "../src/services/telegramAccessService.js";
 
@@ -83,8 +85,11 @@ function createMockRuntime(overrides = {}) {
   const handler = createTelegramCommandHandler({
     config: {
       admin_chat_ids: ["999"],
+      ...overrides.config,
     },
     whatsappSession,
+    ticketPolling: overrides.ticketPolling,
+    dailyReminder: overrides.dailyReminder,
   });
   const tools = {
     async downloadFile() {
@@ -356,4 +361,134 @@ test("returns start greeting and features overview for /start command", async ()
   assert.match(sentMessages[0].text, /Ketik.*\/help.*panduan/);
 
   context.cleanup();
+});
+
+test("handles /remind_inject command and triggers manual reminder", async () => {
+  const context = setupTelegramAccessConfig("handler-remind-inject");
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  let triggeredChatId = null;
+  const dailyReminder = {
+    async triggerManual(chatId) {
+      triggeredChatId = chatId;
+      return { sent: true, sentTo: ["123456789"], failedTo: [] };
+    },
+  };
+
+  const { handler, sentMessages, tools } = createMockRuntime({
+    dailyReminder,
+  });
+
+  await handler(
+    createTextUpdate({
+      chatId: "123456789",
+      text: "/remind_inject",
+      type: "private",
+    }),
+    tools,
+  );
+
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].text, /Pesan Reminder Berhasil Dikirim/);
+
+  context.cleanup();
+});
+
+test("handles document with caption .inject and sends repetitive site alert", async () => {
+  const context = setupTelegramAccessConfig("handler-inject-repetitive");
+  await registerTelegramChat({
+    chatId: "123456789",
+    label: "Approved User",
+    type: "private",
+    registeredBy: "999",
+  });
+
+  const columns = [
+    { value: "Order ID" },
+    { value: "Ticket Id" },
+    { value: "Create Time" },
+    { value: "Order Status" },
+    { value: "Assign to L2(L2 Assign)" },
+    { value: "site_id1(L1 Assign)" },
+    { value: "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)" },
+    { value: "Kabupaten/Kota(Create Ticket)" },
+  ];
+
+  const rows = [
+    columns,
+    [
+      { value: "1-INJ-001" },
+      { value: "INC-INJ-001" },
+      { value: "2026-11-13 08:00:00" },
+      { value: "running" },
+      { value: "group:Network Operations and Productivity Medan" },
+      { value: "MAK002" },
+      { value: "Internet lambat total di kantor camat" },
+      { value: "KOTA MEDAN" },
+    ],
+    [
+      { value: "1-INJ-002" },
+      { value: "INC-INJ-002" },
+      { value: "2026-11-13 09:30:00" },
+      { value: "running" },
+      { value: "group:Network Operations and Productivity Medan" },
+      { value: "MAK002" },
+      { value: "Sinyal hilang timbul sejak pagi" },
+      { value: "KOTA MEDAN" },
+    ],
+  ];
+
+  const excelBuffer = await writeXlsxFile(rows, { buffer: true });
+
+  const { handler, sentMessages, tools } = createMockRuntime();
+  tools.downloadFile = async () => excelBuffer;
+
+  const documentUpdate = {
+    message: {
+      caption: ".inject",
+      chat: {
+        id: "123456789",
+        type: "private",
+      },
+      from: {
+        id: "123",
+        first_name: "Tester",
+      },
+      document: {
+        file_id: "doc-123",
+        file_name: "INAP_TEST.xlsx",
+        mime_type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      },
+    },
+  };
+
+  await handler(documentUpdate, tools);
+
+  // Verifikasi laporan inject terkirim
+  const injectReport = sentMessages.find(
+    (m) => m.text && m.text.includes("Injeksi Data Master Tiket Berhasil"),
+  );
+  assert.ok(injectReport, "Laporan injeksi master harus terkirim");
+
+  // Verifikasi alert komplain repetitif site ID terkirim ke chat pengirim
+  const repetitiveAlert = sentMessages.find(
+    (m) => m.text && m.text.includes("KOMPLAIN REPETITIF SITE ID"),
+  );
+  assert.ok(repetitiveAlert, "Alert komplain repetitif site ID harus terkirim ke pengirim");
+  assert.ok(repetitiveAlert.text.includes("MAK002"));
+  assert.ok(repetitiveAlert.text.includes("1-INJ-001"));
+  assert.ok(repetitiveAlert.text.includes("1-INJ-002"));
+  assert.ok(repetitiveAlert.text.includes("Internet lambat total di kantor camat"));
+  assert.ok(repetitiveAlert.text.includes("Sinyal hilang timbul sejak pagi"));
+
+  context.cleanup();
+});
+
+test.after(async () => {
+  await closeDatabasePool();
 });

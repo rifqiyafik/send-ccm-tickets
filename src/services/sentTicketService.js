@@ -3,6 +3,14 @@ import path from "node:path";
 
 import { createLogger } from "../utils/logger.js";
 import { cleanTableValue } from "../utils/text.js";
+import { formatIndonesianDate, getWibDateString } from "../utils/dateTime.js";
+import { shortenNopName } from "./ticketImportService.js";
+import { isDatabaseConfigured } from "./databaseService.js";
+import {
+  loadSentTicketMap,
+  recordSentTickets,
+  cleanOldSentHistory,
+} from "./inapTicketStore.js";
 
 const logger = createLogger("sentTicketService");
 const DEFAULT_STORE_PATH = path.join(
@@ -11,7 +19,7 @@ const DEFAULT_STORE_PATH = path.join(
   "runtime",
   "sent_tickets.json",
 );
-const DEFAULT_RETENTION_DAYS = 7;
+const DEFAULT_RETENTION_DAYS = 14;
 const LOCAL_TIME_ZONE = process.env.APP_TIME_ZONE || "Asia/Jakarta";
 
 function getStorePath() {
@@ -23,6 +31,30 @@ function getRetentionDays() {
   return Number.isFinite(value) && value > 0 ? value : DEFAULT_RETENTION_DAYS;
 }
 
+export function shouldUseDatabase(options = {}) {
+  if (options.useDatabaseStore === true) return true;
+  if (options.useDatabaseStore === false) return false;
+  if (!isDatabaseConfigured()) return false;
+  if (
+    process.env.NODE_ENV === "test" ||
+    process.env.npm_lifecycle_event === "test" ||
+    Boolean(process.env.NODE_TEST_CONTEXT) ||
+    process.execArgv.includes("--test") ||
+    process.argv.some(
+      (arg) =>
+        typeof arg === "string" &&
+        (arg.includes(".test.js") || arg.includes(".test.mjs")),
+    )
+  ) {
+    return false;
+  }
+  const storePath = process.env.SENT_TICKET_STORE_PATH;
+  if (storePath && path.resolve(storePath) !== path.resolve(DEFAULT_STORE_PATH)) {
+    return false;
+  }
+  return true;
+}
+
 function normalizeOrderId(value) {
   return cleanTableValue(value).toUpperCase();
 }
@@ -32,18 +64,7 @@ function normalizeBusinessStatus(value) {
     .toUpperCase()
     .replace(/[\s_-]+/g, "");
 }
-
-function formatLocalDate(value = new Date()) {
-  const date = value instanceof Date ? value : new Date(value);
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    timeZone: LOCAL_TIME_ZONE,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(date);
-  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${map.year}-${map.month}-${map.day}`;
-}
+const formatLocalDate = getWibDateString;
 
 function toTitleCase(value) {
   return cleanTableValue(value)
@@ -169,7 +190,12 @@ function isTicketValueEmpty(value) {
 
 function getExistingSentDate(record) {
   if (record?.sent_date) {
-    return record.sent_date;
+    const raw = String(record.sent_date).trim();
+    const match = raw.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (match) {
+      return match[1];
+    }
+    return formatLocalDate(raw);
   }
 
   if (record?.sent_at) {
@@ -312,7 +338,79 @@ function cleanupExpiredRecords(store, now = new Date()) {
   };
 }
 
-function resolveTicketSendDecision(ticket, existingRecord, today) {
+function resolveEffectiveTarget(ticket) {
+  if (!ticket) return "";
+  if (
+    (ticket.is_repetitive ||
+      ticket.targetGroupKey === "SITE VISIT" ||
+      ticket.assignment_type === "SITE_VISIT") &&
+    (ticket.assignment_type === "SQA" || ticket.assignment_type === "SITE_VISIT" || !ticket.assignment_type)
+  ) {
+    return "SITE VISIT";
+  }
+  if (ticket.assignment_type === "SQA") {
+    return "SQA";
+  }
+  if (ticket.assignment_type === "NOP") {
+    return shortenNopName(
+      ticket.cluster_area ||
+        ticket.nsa ||
+        ticket.assignment_group ||
+        "NOP",
+    );
+  }
+  if (ticket.cluster_area || ticket.assignment_group) {
+    return shortenNopName(ticket.cluster_area || ticket.assignment_group);
+  }
+  return "";
+}
+
+function resolvePreviousTarget(existingRecord) {
+  if (!existingRecord) return "";
+  if (existingRecord.effective_target) {
+    return existingRecord.effective_target;
+  }
+  if (existingRecord.assignment_type === "SQA") {
+    return "SQA";
+  }
+  if (existingRecord.assignment_type === "NOP") {
+    return shortenNopName(
+      existingRecord.cluster_area ||
+        existingRecord.assignment_group ||
+        "NOP",
+    );
+  }
+  if (existingRecord.cluster_area || existingRecord.assignment_group) {
+    return shortenNopName(
+      existingRecord.cluster_area || existingRecord.assignment_group,
+    );
+  }
+  return "";
+}
+
+function isCrossAssignmentEscalation(previousTarget, currentTarget) {
+  if (!previousTarget || !currentTarget) return false;
+  if (previousTarget === currentTarget) return false;
+  if (previousTarget === "-" || currentTarget === "-") return false;
+
+  // SITE VISIT adalah channel eskalasi repetitif, bukan perpindahan assignment grup
+  if (previousTarget === "SITE VISIT" || currentTarget === "SITE VISIT") {
+    return false;
+  }
+
+  // Jika salah satu adalah generic "NOP" (karena legacy record) dan target sekarang adalah cabang NOP (misal "NOP ACEH"),
+  // maka keduanya adalah sama-sama assignment NOP, sehingga jangan dianggap pindah assignment.
+  if (
+    (previousTarget === "NOP" && currentTarget.startsWith("NOP")) ||
+    (currentTarget === "NOP" && previousTarget.startsWith("NOP"))
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function resolveTicketSendDecision(ticket, existingRecord, today, options = {}) {
   const orderId = normalizeOrderId(ticket.order_id);
 
   if (!orderId || orderId === "-") {
@@ -332,10 +430,30 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
     };
   }
 
+  if (options.specialMode) {
+    return {
+      send: true,
+      reason: "SPECIAL_FORCE_RESEND",
+    };
+  }
+
   if (!existingRecord) {
     return {
       send: true,
       reason: isOutSla(ticket) ? "OUT_SLA_REMINDER_TODAY" : "NEW_TODAY",
+    };
+  }
+
+  // Cek apakah tiket dipindahkan ke assignment group lain (misal NOP ACEH -> SQA atau sebaliknya)
+  const previousTarget = resolvePreviousTarget(existingRecord);
+  const currentTarget = resolveEffectiveTarget(ticket);
+
+  if (isCrossAssignmentEscalation(previousTarget, currentTarget)) {
+    ticket.escalated_from = previousTarget;
+    return {
+      send: true,
+      reason: "ESCALATED_REASSIGNMENT",
+      escalated_from: previousTarget,
     };
   }
 
@@ -368,8 +486,19 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
     };
   }
 
+  const isTicketOnlyOrPolling = Boolean(
+    options.ticketOnlyMode || options.pollingMode,
+  );
+
   if (existingSentDate !== today) {
-    if (isInProgress(ticket.business_status)) {
+    if (isTicketOnlyOrPolling) {
+      return {
+        send: false,
+        reason: "DUPLICATE_PREVIOUS_DAY",
+      };
+    }
+
+    if (isInProgress(ticket.business_status) || isReopen(ticket.business_status)) {
       return {
         send: false,
         remind: true,
@@ -391,25 +520,47 @@ function resolveTicketSendDecision(ticket, existingRecord, today) {
   };
 }
 
-// membersihkan riwayat lama, lalu memisahkan tiket yang boleh dikirim dan tiket yang harus dilewati.
-export async function createSentTicketPlan(tickets, now = new Date()) {
-  const rawStore = await readStore();
-  const store = cleanupExpiredRecords(rawStore, now);
-  await writeStore(store);
+export async function createSentTicketPlan(tickets, now = new Date(), options = {}) {
+  let store = options.store;
+  if (!store) {
+    if (shouldUseDatabase(options)) {
+      try {
+        const orderIds = tickets.map((t) => t.order_id).filter(Boolean);
+        const sentMap = await loadSentTicketMap(orderIds);
+        store = { tickets: Object.fromEntries(sentMap.entries()) };
+        // Otomatis bersihkan riwayat pengiriman tiket di DB yang lebih lama dari 14 hari
+        cleanOldSentHistory(getRetentionDays()).catch((err) => {
+          logger.warn("Periodic cleanOldSentHistory failed", { error: err.message });
+        });
+      } catch (error) {
+        logger.warn("Database sent ticket map load failed, falling back to local file store", {
+          error: error.message,
+        });
+        const rawStore = await readStore();
+        store = cleanupExpiredRecords(rawStore, now);
+        await writeStore(store);
+      }
+    } else {
+      const rawStore = await readStore();
+      store = cleanupExpiredRecords(rawStore, now);
+      await writeStore(store);
+    }
+  }
   const today = formatLocalDate(now);
 
   const sendableTickets = [];
   const duplicateTickets = [];
   const outSlaTickets = [];
-  const reopenedTickets = [];
-  const invalidMessageTickets = [];
   const inProgressReminderTickets = [];
   const inSlaReminderTickets = [];
+  const reopenedTickets = [];
+  const escalatedTickets = [];
+  const invalidMessageTickets = [];
 
   for (const ticket of tickets) {
     const orderId = normalizeOrderId(ticket.order_id);
     const existingRecord = store.tickets[orderId];
-    const decision = resolveTicketSendDecision(ticket, existingRecord, today);
+    const decision = resolveTicketSendDecision(ticket, existingRecord, today, options);
 
     logger.info("Sent ticket decision resolved", {
       orderId: ticket.order_id,
@@ -420,17 +571,22 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
       today,
       decision: decision.reason,
       send: decision.send,
+      specialMode: Boolean(options.specialMode),
+      escalatedFrom: decision.escalated_from,
       missingFields: decision.missing_fields,
     });
 
     if (decision.send) {
-      sendableTickets.push(ticket);
-      if (
+      if (decision.reason === "ESCALATED_REASSIGNMENT" && decision.escalated_from) {
+        ticket.escalated_from = decision.escalated_from;
+        escalatedTickets.push(ticket);
+      } else if (
         decision.reason === "REOPEN_AFTER_IN_PROGRESS" ||
         decision.reason === "REOPEN_COUNT_INCREASED"
       ) {
         reopenedTickets.push(ticket);
       }
+      sendableTickets.push(ticket);
       continue;
     }
 
@@ -463,12 +619,14 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     in_sla_reminder_tickets: inSlaReminderTickets,
     in_progress_reminder_tickets: inProgressReminderTickets,
     reopened_tickets: reopenedTickets,
+    escalated_tickets: escalatedTickets,
     invalid_message_tickets: invalidMessageTickets,
     fallback_resolved_tickets: sendableTickets.filter(
       (ticket) => (ticket.fallback_resolutions || []).length > 0,
     ),
     retention_days: getRetentionDays(),
     sent_date: today,
+    special_mode: Boolean(options.specialMode),
   };
 
   logger.info("Sent ticket plan created", {
@@ -479,6 +637,8 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
     inSlaReminder: inSlaReminderTickets.length,
     inProgressReminder: inProgressReminderTickets.length,
     reopened: reopenedTickets.length,
+    escalated: escalatedTickets.length,
+    specialMode: plan.special_mode,
     invalidMessageData: invalidMessageTickets.length,
     fallbackResolved: plan.fallback_resolved_tickets.length,
     sentDate: today,
@@ -488,7 +648,6 @@ export async function createSentTicketPlan(tickets, now = new Date()) {
   return plan;
 }
 
-// mencatat tiket hanya setelah pesan detail berhasil dikirim ke grup target.
 export async function markTicketAsSent(ticket, metadata = {}) {
   const orderId = normalizeOrderId(ticket.order_id);
   if (!orderId || orderId === "-") {
@@ -496,6 +655,25 @@ export async function markTicketAsSent(ticket, metadata = {}) {
       orderId: ticket.order_id,
     });
     return;
+  }
+
+  if (shouldUseDatabase(metadata)) {
+    try {
+      await recordSentTickets([ticket], metadata);
+      logger.info("Ticket marked as sent in PostgreSQL history", {
+        orderId: ticket.order_id,
+        businessStatus: ticket.business_status,
+        slaStatus: ticket.sla_status,
+        effectiveTarget: resolveEffectiveTarget(ticket),
+        targetJid: metadata.targetJid,
+      });
+      return;
+    } catch (error) {
+      logger.warn("Database sent ticket record failed, proceeding with local store fallback", {
+        orderId,
+        error: error.message,
+      });
+    }
   }
 
   const rawStore = await readStore();
@@ -508,41 +686,80 @@ export async function markTicketAsSent(ticket, metadata = {}) {
       ? reopenCountValue
       : 0;
 
+  const existing = store.tickets[orderId] || {};
+  const effectiveTarget = resolveEffectiveTarget(ticket);
+  const isSiteVisit =
+    effectiveTarget === "SITE VISIT" &&
+    (ticket.assignment_type === "SQA" || ticket.assignment_type === "SITE_VISIT" || !ticket.assignment_type);
+
   store.tickets[orderId] = {
     order_id: ticket.order_id,
-    assignment_type: ticket.assignment_type,
+    assignment_type: ticket.assignment_type || existing.assignment_type,
+    assignment_group: ticket.assignment_group || existing.assignment_group || "",
+    cluster_area: ticket.cluster_area || existing.cluster_area || "",
+    effective_target: isSiteVisit ? (existing.effective_target || "SITE VISIT") : effectiveTarget,
     business_status: ticket.business_status,
     sla_status: ticket.sla_status,
-    reopen_count: reopenCount,
-    target_jid: metadata.targetJid || "",
-    source_jid: metadata.sourceJid || "",
-    sent_at: now.toISOString(),
-    sent_date: formatLocalDate(now),
+    reopen_count: Math.max(reopenCount, existing.reopen_count || 0),
+    is_repetitive: Boolean(ticket.is_repetitive || existing.is_repetitive),
+    sent_to_site_visit: Boolean(isSiteVisit || existing.sent_to_site_visit),
+    site_visit_sent_at: isSiteVisit ? now.toISOString() : (existing.site_visit_sent_at || ""),
+    site_visit_target_jid: isSiteVisit ? (metadata.targetJid || "") : (existing.site_visit_target_jid || ""),
+    escalated_from: ticket.escalated_from || existing.escalated_from || "",
+    target_jid: !isSiteVisit ? (metadata.targetJid || existing.target_jid || "") : (existing.target_jid || metadata.targetJid || ""),
+    source_jid: metadata.sourceJid || existing.source_jid || "",
+    sent_at: existing.sent_at || now.toISOString(),
+    sent_date: existing.sent_date || formatLocalDate(now),
   };
 
   logger.info("Marking ticket as sent", {
     orderId: ticket.order_id,
     businessStatus: ticket.business_status,
     slaStatus: ticket.sla_status,
+    effectiveTarget,
+    sentToSiteVisit: store.tickets[orderId].sent_to_site_visit,
     targetJid: metadata.targetJid,
   });
 
   await writeStore(store);
 }
 
+export async function getSentTicketRecord(orderId) {
+  const normalized = normalizeOrderId(orderId);
+  if (!normalized) return null;
+  if (shouldUseDatabase()) {
+    try {
+      const map = await loadSentTicketMap([normalized]);
+      return map.get(normalized) || null;
+    } catch (err) {
+      logger.warn("Database getSentTicketRecord failed, falling back to local store", {
+        orderId: normalized,
+        error: err.message,
+      });
+    }
+  }
+  const store = await readStore();
+  return store.tickets?.[normalized] || null;
+}
+
 export function formatSentTicketPlanReport(plan) {
   const invalidMessageTickets = plan.invalid_message_tickets || [];
   const fallbackResolvedTickets = plan.fallback_resolved_tickets || [];
   const inProgressReminderTickets = plan.in_progress_reminder_tickets || [];
+  const escalatedTickets = plan.escalated_tickets || [];
   const newTickets =
     plan.new_tickets ||
     (plan.sendable_tickets || []).filter(
-      (ticket) => !ticket.use_reopen_message_format,
+      (ticket) => !ticket.use_reopen_message_format && !ticket.escalated_from,
     );
+  const isSpecial = Boolean(plan.special_mode);
   const reportLines = [
-    "📊 Rekapitulasi Tiket",
+    "📊 Rekapitulasi Rencana Pengiriman Tiket",
+    ...(isSpecial ? ["⚡ **Mode: Force Resend (.special)**"] : []),
     "",
-    `🆕 Tiket Baru Terkirim: ${newTickets.length}`,
+    `🆕 Tiket Baru (Akan Dikirim): ${newTickets.length}`,
+    ...(isSpecial ? [`⚡ Tiket Force Resend: ${plan.sendable_tickets.length}`] : []),
+    `🔀 Tiket Escalated Pindah Assignment: ${escalatedTickets.length}`,
     `🔁 Tiket Sudah Pernah Dikirim Hari Ini: ${plan.duplicate_tickets.length}`,
     `⏱️ Tiket OUT SLA (Reminding): ${plan.out_sla_tickets.length}`,
     `🔔 Tiket In Progress Diremind: ${inProgressReminderTickets.length}`,
@@ -555,9 +772,29 @@ export function formatSentTicketPlanReport(plan) {
   if (newTickets.length > 0) {
     reportLines.push(
       "",
-      "🆕 Tiket Baru Terkirim:",
+      "🆕 Tiket Baru yang Masuk Antrian Kirim:",
       "",
       createOrderIdCodeTable(newTickets),
+    );
+  }
+
+  if (escalatedTickets.length > 0) {
+    reportLines.push(
+      "",
+      "🔀 Tiket Escalated Pindah Assignment:",
+      "",
+      createCodeTable(
+        [
+          { key: "orderId", header: "Order ID" },
+          { key: "from", header: "Dari" },
+          { key: "to", header: "Ke" },
+        ],
+        escalatedTickets.map((ticket) => ({
+          orderId: ticket.order_id,
+          from: ticket.escalated_from || "-",
+          to: resolveEffectiveTarget(ticket),
+        })),
+      ),
     );
   }
 
@@ -619,8 +856,13 @@ export function formatSentTicketPlanReport(plan) {
 }
 
 export function formatSqaAreaFollowUpMessage(tickets) {
-  const sqaTickets = tickets.filter(
-    (ticket) => ticket.assignment_type === "SQA",
+  const sqaTickets = (tickets || []).filter(
+    (ticket) =>
+      ticket &&
+      ticket.assignment_type === "SQA" &&
+      ticket.targetGroupKey !== "SITE VISIT" &&
+      ticket.assignment_type !== "SITE_VISIT" &&
+      !ticket.is_site_visit,
   );
   if (sqaTickets.length === 0) {
     return "";
@@ -666,4 +908,121 @@ export function formatSqaAreaFollowUpMessage(tickets) {
     "",
     "Terimakasih sebelumnya 🙏🏻😇",
   ].join("\n");
+}
+
+export function resolveNopDepartmentKey(ticket) {
+  const fields = [
+    ticket?.cluster_area,
+    ticket?.departemen_ns,
+    ticket?.departement_ns,
+    ticket?.assignment_group,
+    ticket?.nsa,
+    ticket?.city,
+  ];
+
+  for (const field of fields) {
+    if (!field) continue;
+    const text = String(field).trim().toUpperCase();
+    if (text.includes("MEDAN") || text.includes("MDN")) return "NOP MEDAN";
+    if (text.includes("ACEH")) return "NOP ACEH";
+    if (text.includes("BINJAI") || text.includes("BJI")) return "NOP BINJAI";
+    if (text.includes("PEMATANG") || text.includes("SIANTAR") || text.includes("PMS")) return "NOP PMS";
+    if (text.includes("RANTAU") || text.includes("RAP")) return "NOP RAP";
+    if (text.includes("SIDEMPUAN") || text.includes("SIDIMPUAN") || text.includes("PSP")) return "NOP PSP";
+  }
+
+  return null;
+}
+
+export function formatNopAreaSummaryMessage(
+  tickets,
+  date = new Date(),
+  options = {},
+) {
+  const targetType = String(options?.assignmentType || "SQA").toUpperCase();
+  const summaryTickets = (tickets || []).filter((ticket) => {
+    if (!ticket) return false;
+    if (
+      ticket.targetGroupKey === "SITE VISIT" ||
+      ticket.assignment_type === "SITE_VISIT" ||
+      ticket.is_site_visit
+    ) {
+      return false;
+    }
+    if (!ticket.assignment_type) return true;
+    return String(ticket.assignment_type).trim().toUpperCase() === targetType;
+  });
+  if (summaryTickets.length === 0) {
+    return "";
+  }
+
+  const counts = {
+    "NOP ACEH": 0,
+    "NOP BINJAI": 0,
+    "NOP MEDAN": 0,
+    "NOP PMS": 0,
+    "NOP RAP": 0,
+    "NOP PSP": 0,
+  };
+
+  for (const ticket of summaryTickets) {
+    const key = resolveNopDepartmentKey(ticket);
+    if (key && counts[key] !== undefined) {
+      counts[key] += 1;
+    }
+  }
+
+  const dateLabel = formatIndonesianDate(date);
+
+  return [
+    `*Summary Tiket CCM NOP ${dateLabel}*`,
+    "",
+    `NOP ACEH : ${counts["NOP ACEH"]}`,
+    `NOP BINJAI : ${counts["NOP BINJAI"]}`,
+    `NOP MEDAN : ${counts["NOP MEDAN"]}`,
+    `NOP PMS : ${counts["NOP PMS"]}`,
+    `NOP RAP : ${counts["NOP RAP"]}`,
+    `NOP PSP : ${counts["NOP PSP"]}`,
+  ].join("\n");
+}
+
+export async function loadSentTicketStoreForImport(rows, options = {}) {
+  if (shouldUseDatabase(options)) {
+    try {
+      const orderIds = (rows || [])
+        .map((r) => r?.["Order ID"] || r?.order_id)
+        .filter(Boolean);
+      const map = await loadSentTicketMap(orderIds);
+      return { tickets: Object.fromEntries(map.entries()) };
+    } catch (err) {
+      logger.warn(
+        "Database loadSentTicketMap for import failed, falling back to file store",
+        {
+          error: err.message,
+        },
+      );
+    }
+  }
+  return await readStore();
+}
+
+export function hasTicketBeenSentToSqa(orderId, store) {
+  if (!orderId || !store) return false;
+  const normalized = normalizeOrderId(orderId);
+  const tickets = store.tickets || store;
+  const record =
+    tickets instanceof Map
+      ? tickets.get(normalized)
+      : typeof tickets.get === "function"
+      ? tickets.get(normalized)
+      : tickets[normalized];
+
+  if (!record) return false;
+  const target = String(
+    record.effective_target ||
+      record.target_destination ||
+      record.assignment_type ||
+      "",
+  ).toUpperCase();
+  return target === "SQA" && Boolean(record.sent_at || record.sent_date);
 }

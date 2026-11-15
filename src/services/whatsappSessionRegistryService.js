@@ -199,7 +199,10 @@ export async function markWhatsAppSessionStatus(sessionId, status) {
   if (["connected", "starting", "reconnecting"].includes(status)) {
     registry.active_session_id = sessionId;
   }
-  if (status === "logged_out" && registry.active_session_id === sessionId) {
+  if (
+    (status === "logged_out" || status === "stopped") &&
+    registry.active_session_id === sessionId
+  ) {
     registry.active_session_id = "";
   }
   await writeRegistry(registry);
@@ -234,6 +237,7 @@ export async function deleteWhatsAppSession(selector) {
 export function formatWhatsAppSessionsList({
   sessions,
   activeSessionId = "",
+  isRunning = undefined,
   title = "📱 Session WhatsApp tersedia",
 }) {
   if (!sessions.length) {
@@ -250,13 +254,24 @@ export function formatWhatsAppSessionsList({
   return [
     `${title}:`,
     "",
-    ...sessions.flatMap((session, index) => [
-      `${index + 1}. ${session.label}`,
-      `   Phone: \`${session.phone}\``,
-      `   Status: ${session.id === activeSessionId ? "Active" : session.status || "Saved"}`,
-      `   Auth: \`${session.auth_dir}\``,
-      "",
-    ]),
+    ...sessions.flatMap((session, index) => {
+      const isCurrentActive = Boolean(
+        activeSessionId && session.id === activeSessionId,
+      );
+      const isCurrentlyConnected =
+        isRunning !== undefined ? isCurrentActive && isRunning : isCurrentActive;
+      const statusText = isCurrentlyConnected
+        ? "Active"
+        : session.status || "Saved";
+
+      return [
+        `${index + 1}. ${session.label}`,
+        `   Phone: \`${session.phone}\``,
+        `   Status: ${statusText}`,
+        `   Auth: \`${session.auth_dir}\``,
+        "",
+      ];
+    }),
     "Jalankan `/login 1` untuk memakai session.",
     "Jalankan `/login nomor_hp` untuk membuat session baru.",
     "Jalankan `/stop 1` untuk mematikan koneksi tanpa hapus credential.",

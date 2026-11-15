@@ -140,3 +140,38 @@ test("formats valid tickets report separated into SQA and NOP tables with Cluste
   assert.match(report, /CC-20260723-00000308/);
   assert.match(report, /CC-20260729-00000887/);
 });
+
+test("formatProcessingReport renders dedicated out-of-region alert section for out-of-region tickets", () => {
+  const report = formatProcessingReport({
+    ok: true,
+    valid_by_assignment_type: {},
+    valid_by_pic: {},
+    skipped_by_reason: { SITE_COVER_NOT_FOUND_IN_NOP_DATA: 1 },
+    skipped_tickets: [
+      {
+        order_id: "CC-20260917-00000005",
+        reason: "SITE_COVER_NOT_FOUND_IN_NOP_DATA",
+        city: "-",
+        assignment_group: "NETWORK OPERATIONS AND PRODUCTIVITY SUMBAGUT",
+        site_id: "-",
+        detected_site: "E_JKT388MT1_Gedungbrantas_MT03",
+        customer_address: "jakarta timur cawang detil itu aja jatinegara",
+        is_out_of_region: true,
+        suspected_region: "Regional Jabotabek (Site Prefix: JKT)",
+        recommendation:
+          "Mohon cek CRM dan eskalasi/reassign ke Regional Jabotabek jika tiket ini salah terlempar ke Sumbagut.",
+      },
+    ],
+    valid_tickets: [],
+  });
+
+  assert.match(
+    report,
+    /🚨 \*\*PERHATIAN: TIKET TERINDIKASI DI LUAR REGIONAL 1 \(SUMBAGUT\)\*\*: \(1 tiket\)/,
+  );
+  assert.match(report, /🚨 `CC-20260917-00000005`/);
+  assert.match(report, /📡 \*\*Site Terdeteksi\*\*: E_JKT388MT1_Gedungbrantas_MT03/);
+  assert.match(report, /📍 \*\*Alamat\/Kota\*\*: jakarta timur cawang detil itu aja jatinegara/);
+  assert.match(report, /🌐 \*\*Dugaan Regional\*\*: \*\*Regional Jabotabek \(Site Prefix: JKT\)\*\*/);
+  assert.match(report, /💡 \*\*Tindakan\*\*: Mohon cek CRM/);
+});

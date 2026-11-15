@@ -19,8 +19,62 @@ const LEVEL_STYLE = {
   ERROR: "\x1b[31m",
 };
 
+// Filter output bising libsignal (dump cryptographic session/buffer internal Baileys)
+const originalConsoleInfo = console.info;
+const originalConsoleWarn = console.warn;
+const originalConsoleLog = console.log;
+const originalConsoleError = console.error;
+
+const NOISY_LIBSIGNAL_PATTERNS = [
+  "Closing session:",
+  "Opening session:",
+  "Removing old closed session:",
+  "Decrypted message with closed session.",
+  "Session already closed",
+  "Session already open",
+  "Closing open session in favor of incoming prekey bundle",
+  "Session error:Error: Bad MAC",
+  "Failed to decrypt message with any known session",
+  "Bad MAC",
+];
+
+function isNoisyLibsignalMessage(args) {
+  const messageStr = args
+    .map((arg) => (typeof arg === "string" ? arg : arg?.message || arg?.stack || ""))
+    .join(" ");
+  return NOISY_LIBSIGNAL_PATTERNS.some((pattern) => messageStr.includes(pattern));
+}
+
+console.info = (...args) => {
+  if (isNoisyLibsignalMessage(args)) return;
+  originalConsoleInfo(...args);
+};
+
+console.warn = (...args) => {
+  if (isNoisyLibsignalMessage(args)) return;
+  originalConsoleWarn(...args);
+};
+
+console.log = (...args) => {
+  if (isNoisyLibsignalMessage(args)) return;
+  originalConsoleLog(...args);
+};
+
+console.error = (...args) => {
+  if (isNoisyLibsignalMessage(args)) return;
+  originalConsoleError(...args);
+};
+
 function timestamp() {
-  return new Date().toISOString();
+  const date = new Date();
+  const tzOffsetMs = date.getTimezoneOffset() * 60000;
+  const localDate = new Date(date.getTime() - tzOffsetMs);
+  const iso = localDate.toISOString().replace("Z", "");
+  const offsetMinutes = -date.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const pad = (n) => String(Math.floor(Math.abs(n))).padStart(2, "0");
+  const offsetStr = `${sign}${pad(offsetMinutes / 60)}:${pad(offsetMinutes % 60)}`;
+  return `${iso}${offsetStr}`;
 }
 
 function shouldUseColor() {

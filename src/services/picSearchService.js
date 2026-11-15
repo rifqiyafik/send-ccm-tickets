@@ -8,7 +8,9 @@ const logger = createLogger("picSearchService");
 
 const CCM_HANDLING_FILE_NAME = "ccm_handling_sqa_region_sumbagut.json";
 
+let _resolvedCcmPath = null;
 function resolveCcmHandlingPath() {
+  if (_resolvedCcmPath) return _resolvedCcmPath;
   const candidates = [
     process.env.CCM_HANDLING_DATA_PATH,
     path.resolve(process.cwd(), "data", CCM_HANDLING_FILE_NAME),
@@ -16,13 +18,12 @@ function resolveCcmHandlingPath() {
   ].filter(Boolean);
 
   const found = candidates.find((candidate) => fs.existsSync(candidate));
-  const filePath = found || candidates[0];
+  _resolvedCcmPath = found || candidates[0];
   logger.info("Resolved CCM handling data path", {
-    filePath,
-    candidates,
+    filePath: _resolvedCcmPath,
     found: Boolean(found),
   });
-  return filePath;
+  return _resolvedCcmPath;
 }
 
 const SQA_ASSIGNMENT_GROUP = "SERVICE QUALITY ASSURANCE SUMBAGUT";
@@ -41,45 +42,31 @@ export const normalizeText = normalizeSearchKey;
 
 // mengambil city dari kolom Kabupaten/Kota(Create Ticket) dalam format search.
 export function getCityFromTicketRow(row) {
-  const city = normalizeText(row?.[CITY_COLUMN]);
-  logger.debug("Read city from ticket row", { city });
-  return city;
+  return normalizeText(row?.[CITY_COLUMN]);
 }
 
 // membersihkan assignment group dari prefix group: dan menyamakan alias area.
 export function normalizeAssignmentGroup(value) {
-  logger.debug("Normalizing assignment group", { value });
   const withoutPrefix = String(value ?? "")
     .trim()
     .replace(/^group\s*:\s*/i, "");
 
   const normalized = normalizeText(withoutPrefix);
-  const result = ASSIGNMENT_ALIASES.get(normalized) || normalized;
-  logger.debug("Assignment group normalized", { result });
-  return result;
+  return ASSIGNMENT_ALIASES.get(normalized) || normalized;
 }
 
 // menentukan apakah assignment masuk SQA, NOP, atau tidak didukung.
 export function getAssignmentType(assignmentGroup) {
   const normalized = normalizeAssignmentGroup(assignmentGroup);
 
-  if (normalized === SQA_ASSIGNMENT_GROUP) {
-    logger.debug("Assignment type detected", { assignmentType: "SQA" });
-    return "SQA";
-  }
-
-  if (normalized.startsWith(NOP_ASSIGNMENT_PREFIX)) {
-    logger.debug("Assignment type detected", { assignmentType: "NOP" });
-    return "NOP";
-  }
-
-  logger.debug("Assignment type detected", { assignmentType: "UNKNOWN" });
+  if (normalized === SQA_ASSIGNMENT_GROUP) return "SQA";
+  if (normalized.startsWith(NOP_ASSIGNMENT_PREFIX)) return "NOP";
   return "UNKNOWN";
 }
 
 // membuat index city -> data CCM handling agar search PIC berbasis kota cepat.
 function buildCityIndex(rows) {
-  logger.info("Building CCM handling city index", { rows: rows.length });
+  logger.debug("Building CCM handling city index", { rows: rows.length });
   return new Map(
     rows
       .filter((row) => row && row.city)
@@ -90,9 +77,8 @@ function buildCityIndex(rows) {
 // membaca database CCM handling yang berisi PIC CCM, PIC SQA, dan PIC NOP per city.
 export function loadCcmHandlingRows(filePath = resolveCcmHandlingPath()) {
   try {
-    logger.info("Loading CCM handling data", { filePath });
+    logger.debug("Loading CCM handling data", { filePath });
     const rows = readJsonArray(filePath, "CCM handling data");
-
     logger.info("CCM handling data loaded", { rows: rows.length });
     return rows;
   } catch (error) {
@@ -127,7 +113,7 @@ export function createPicSearch(options = {}) {
     assignmentGroup,
     descriptionText = "",
   }) {
-    logger.info("Searching PIC by city and assignment", {
+    logger.debug("Searching PIC by city and assignment", {
       city,
       assignmentGroup,
     });
@@ -186,8 +172,23 @@ export function createPicSearch(options = {}) {
       if (fallbackRecord) {
         const prevCity =
           effectiveCityRecord?.city || normalizedCity || "Luar Region";
-        effectiveCityRecord = fallbackRecord;
-        anomalyInfo = `Site/Deskripsi Luar Region (${prevCity}) -> Fallback PIC Default ${fallbackRecord.departement_ns.trim()}`;
+        const prevDept = effectiveCityRecord?.departement_ns
+          ? effectiveCityRecord.departement_ns.trim()
+          : null;
+        const targetDept = fallbackRecord.departement_ns.trim();
+        const originalCity =
+          effectiveCityRecord?.city || normalizedCity || fallbackRecord.city;
+
+        effectiveCityRecord = {
+          ...fallbackRecord,
+          city: originalCity,
+        };
+
+        if (prevDept && prevDept !== targetDept) {
+          anomalyInfo = `Kota ${prevCity} masuk area ${prevDept} (bukan ${targetDept}) -> Fallback PIC Default ${targetDept}`;
+        } else {
+          anomalyInfo = `Lokasi/Site (${prevCity}) di luar area ${targetDept} -> Fallback PIC Default ${targetDept}`;
+        }
       }
     }
 
@@ -220,7 +221,7 @@ export function createPicSearch(options = {}) {
         source: "ccm_handling_sqa_region_sumbagut",
         anomaly_info: anomalyInfo,
       };
-      logger.info("PIC search success for SQA", result);
+      logger.debug("PIC search success for SQA", result);
       return result;
     }
 
@@ -238,7 +239,7 @@ export function createPicSearch(options = {}) {
         source: "ccm_handling_sqa_region_sumbagut",
         anomaly_info: anomalyInfo,
       };
-      logger.info("PIC search success for NOP", result);
+      logger.debug("PIC search success for NOP", result);
       return result;
     }
 
@@ -260,12 +261,9 @@ export function createPicSearch(options = {}) {
 
 export const searchPicByCityAndAssignment = createPicSearch();
 
-export const createPicLookup = createPicSearch;
-export const lookupPicByCityAndAssignment = searchPicByCityAndAssignment;
-
 // adapter untuk search PIC langsung dari row Excel yang sudah punya city dan assignment group.
 export function searchPicFromTicketRow(row) {
-  logger.info("Searching PIC from ticket row", { orderId: row?.["Order ID"] });
+  logger.debug("Searching PIC from ticket row", { orderId: row?.["Order ID"] });
   const descriptionText =
     row?.[
       "Description Fault Sumptomps(Create Ticket_description__fault_symptomps)"
@@ -278,7 +276,5 @@ export function searchPicFromTicketRow(row) {
     descriptionText,
   });
 }
-
-export const lookupPicFromTicketRow = searchPicFromTicketRow;
 
 export { SQA_ASSIGNMENT_GROUP, NOP_ASSIGNMENT_PREFIX };

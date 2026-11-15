@@ -8,6 +8,7 @@ import {
   resolveCityFromTicketRow,
   resolveSiteFromTicketRow,
 } from "./siteSearchService.js";
+import { resolveTsSiteVisit } from "./siteVisitService.js";
 import {
   ASSIGNMENT_GROUP_COLUMN,
   CITY_COLUMN,
@@ -21,6 +22,7 @@ import {
   formatDateTimeValue,
   formatResolveTarget,
   parseDateTime,
+  INDONESIAN_MONTHS_FULL,
 } from "../utils/dateTime.js";
 import {
   cleanMultilineText,
@@ -30,6 +32,11 @@ import {
 import { createCodeBlock, formatAsciiTable } from "../utils/asciiTable.js";
 import { normalizeJid } from "../utils/jid.js";
 import { getMentionContact } from "../config/appConfig.js";
+import { detectSuspectedRegion } from "../utils/regionDetector.js";
+import {
+  loadSentTicketStoreForImport,
+  hasTicketBeenSentToSqa,
+} from "./sentTicketService.js";
 
 const logger = createLogger("ticketImportService");
 
@@ -81,6 +88,11 @@ const COMPLAINT_DESCRIPTION_COLUMNS = [
 ];
 const PROBLEM_ANALYSIS_COLUMN = "Problem Analysis";
 const PROBLEM_ANALYSIS_NSH_COLUMN = "Problem Analysis NSH";
+const RESOLUTION_L2_ASSIGN_COLUMNS = [
+  "Resolution(L2 Assign)",
+  "Resolution (L2 Assign)",
+  "Resolution",
+];
 const REOPEN_NUMBER_COLUMN = "Reopen Number(Confirm Close)";
 const REOPEN_FILLED_CHECK_COLUMNS = [
   "Assign Personal(L2 Assign)",
@@ -119,20 +131,7 @@ const GROUP_OPENING_MESSAGE = [
   "",
   "Terimakasih 🙏🏻",
 ].join("\n");
-const INDONESIAN_MONTHS_FULL = [
-  "Januari",
-  "Februari",
-  "Maret",
-  "April",
-  "Mei",
-  "Juni",
-  "Juli",
-  "Agustus",
-  "September",
-  "Oktober",
-  "November",
-  "Desember",
-];
+
 const NOP_SHORT_NAMES = {
   ACEH: "ACEH",
   BINJAI: "BJI",
@@ -479,7 +478,7 @@ function validateHeaders(headers) {
 }
 
 // membaca sheet pertama file .xlsx dan mengubah setiap baris menjadi object berbasis header Excel.
-async function parseWorkbook(buffer) {
+export async function parseWorkbook(buffer) {
   try {
     logger.info("Parsing Excel workbook", { bytes: buffer.length });
     const signature = inspectWorkbookBuffer(buffer);
@@ -527,10 +526,40 @@ async function parseWorkbook(buffer) {
   }
 }
 
+// menstandarkan nilai SLA Status dari berbagai format kolom raw Excel.
+export function normalizeSlaStatus(status) {
+  if (!status) return "";
+  const s = String(status).trim().toUpperCase();
+  if (s === "-" || s === "UNKNOWN") return "";
+  if (
+    s.includes("OUT") ||
+    s.includes("OVERDUE") ||
+    s.includes("EXCEED") ||
+    s.includes("VIOLAT")
+  ) {
+    return "OUT SLA";
+  }
+  if (s.includes("IN") || s.includes("MEET") || s.includes("ACHIEV")) {
+    return "IN SLA";
+  }
+  return "";
+}
+
 // menghitung target penyelesaian 22 jam dan status IN SLA / OUT SLA.
-function calculateSla(createTime, now = new Date()) {
-  logger.debug("Calculating SLA", { createTime });
-  const createdAt = parseDateTime(createTime);
+export function calculateSla(createTime, now = new Date(), orderId = "") {
+  logger.debug("Calculating SLA", { createTime, orderId });
+  let createdAt = parseDateTime(createTime);
+  if (!createdAt && orderId) {
+    const idMatch = String(orderId).match(/^CC-(\d{4})(\d{2})(\d{2})/i);
+    if (idMatch) {
+      createdAt = new Date(
+        Number(idMatch[1]),
+        Number(idMatch[2]) - 1,
+        Number(idMatch[3]),
+      );
+    }
+  }
+
   if (!createdAt) {
     return {
       sla_status: "UNKNOWN",
@@ -584,6 +613,23 @@ function createFallbackResolution(field, source, missingFields = []) {
   };
 }
 
+const CCH_SUGGESTION_COLUMNS = [
+  "CCH Suggestion(L1 Assign_cch_suggestion)",
+  "cch_suggestion_2(L1 Assign)",
+  "cch_suggestion_3(L1 Assign)",
+  "CCH Suggestion 2(L1 Assign)",
+  "CCH Suggestion 3(L1 Assign)",
+];
+
+function hasReadableSiteOrCell(textInput) {
+  const text = String(textInput ?? "");
+  if (!text) return false;
+  if (/#?\s*site\s*(?:cover|id|name)\s*[:=-]/i.test(text)) return true;
+  if (/\b[EN]_[A-Z]{2,5}\d{2,5}\w*\b/i.test(text)) return true;
+  if (/the site name is\s+[A-Z0-9_-]+/i.test(text)) return true;
+  return false;
+}
+
 // mendeteksi CCH Suggestion kosong/null/invalid agar bisa fallback ke Problem Analysis NSH.
 function isInvalidAnalysisText(value) {
   const text = String(value ?? "").trim();
@@ -602,24 +648,38 @@ function isInvalidAnalysisText(value) {
   );
 }
 
-// memilih teks analisis untuk pesan, prioritas CCH Suggestion lalu fallback Problem Analysis NSH.
+// memilih teks analisis untuk pesan, prioritas CCH Suggestion (1/2/3) yang valid & informatif, fallback Problem Analysis NSH.
 function getAnalysisText(row) {
-  const cchSuggestion = row[CCH_SUGGESTION_COLUMN];
-  if (!isInvalidAnalysisText(cchSuggestion)) {
-    logger.debug("Using CCH Suggestion as analysis text", {
-      orderId: row["Order ID"],
-    });
-    return {
-      text: cleanMultilineText(cchSuggestion),
-      fallback: null,
-    };
+  const candidates = [];
+
+  for (const col of CCH_SUGGESTION_COLUMNS) {
+    if (
+      Object.prototype.hasOwnProperty.call(row, col) ||
+      row[col] !== undefined
+    ) {
+      const val = row[col];
+      if (!isInvalidAnalysisText(val)) {
+        candidates.push({
+          source: col,
+          text: cleanMultilineText(val),
+          hasSite: hasReadableSiteOrCell(val),
+        });
+      }
+    }
   }
 
-  const fallbackText = cleanMultilineText(row[PROBLEM_ANALYSIS_NSH_COLUMN]);
-  if (isInvalidAnalysisText(fallbackText)) {
+  const nshText = row[PROBLEM_ANALYSIS_NSH_COLUMN];
+  if (!isInvalidAnalysisText(nshText)) {
+    candidates.push({
+      source: PROBLEM_ANALYSIS_NSH_COLUMN,
+      text: cleanMultilineText(nshText),
+      hasSite: hasReadableSiteOrCell(nshText),
+    });
+  }
+
+  if (candidates.length === 0) {
     logger.warn("Analysis text fallback is unavailable", {
       orderId: row["Order ID"],
-      cchSuggestion: cleanTableValue(cchSuggestion),
     });
     return {
       text: "",
@@ -627,15 +687,27 @@ function getAnalysisText(row) {
     };
   }
 
-  logger.info("Analysis text fallback used from Problem Analysis NSH", {
+  // Utamakan kandidat yang memiliki nama Site/Cell yang terbaca dibanding hanya angka CGI opaque
+  const preferred = candidates.find((c) => c.hasSite) || candidates[0];
+
+  const isPrimary = preferred.source === CCH_SUGGESTION_COLUMN;
+  if (isPrimary) {
+    logger.debug("Using CCH Suggestion as analysis text", {
+      orderId: row["Order ID"],
+    });
+    return {
+      text: preferred.text,
+      fallback: null,
+    };
+  }
+
+  logger.info("Analysis text fallback used", {
     orderId: row["Order ID"],
+    source: preferred.source,
   });
   return {
-    text: fallbackText,
-    fallback: createFallbackResolution(
-      "analysis_text",
-      PROBLEM_ANALYSIS_NSH_COLUMN,
-    ),
+    text: preferred.text,
+    fallback: createFallbackResolution("analysis_text", preferred.source),
   };
 }
 
@@ -786,7 +858,7 @@ function normalizeTicket(row, picResult, siteResolution) {
     row[ASSIGNMENT_GROUP_COLUMN],
   );
   const assignmentType = getAssignmentType(assignmentGroup);
-  const sla = calculateSla(row["Create Time"]);
+  const sla = calculateSla(row["Create Time"], new Date(), row["Order ID"]);
   const isSqa = assignmentType === "SQA";
   const isNop = assignmentType === "NOP";
   const reopenRule = resolveReopenMessageRule(row);
@@ -816,6 +888,14 @@ function normalizeTicket(row, picResult, siteResolution) {
     pic_sqa: isSqa ? picResult.pic_sqa : "",
     pic_nop: isNop ? picResult.pic_nop : "",
     msisdn: getFirstRowValue(row, CUSTOMER_MSISDN_COLUMNS),
+    raw_description: row[DESCRIPTION_COLUMN] || row["Description"] || "",
+    row_raw: row,
+    ccm_analysis: cleanMultilineText(
+      getFirstRowValue(row, RESOLUTION_L2_ASSIGN_COLUMNS),
+    ),
+    resolution_l2: cleanMultilineText(
+      getFirstRowValue(row, RESOLUTION_L2_ASSIGN_COLUMNS),
+    ),
     notes: notesResult.text,
     analysis_text: analysisResult.text,
     problem_analysis: cleanMultilineText(row[PROBLEM_ANALYSIS_COLUMN]),
@@ -858,8 +938,24 @@ function countBy(items, keyFn) {
   }, {});
 }
 
+function checkHasBeenSentToSqa(ticket, options = {}) {
+  const orderId = String(ticket.order_id || "").trim().toUpperCase();
+  if (!orderId || orderId === "-") return false;
+
+  if (typeof options.hasBeenSentToSqa === "function") {
+    return options.hasBeenSentToSqa(orderId, ticket);
+  }
+
+  const store = options.sentTicketStore || options.store;
+  if (store) {
+    return hasTicketBeenSentToSqa(orderId, store);
+  }
+
+  return false;
+}
+
 // flow utama filterisasi Excel dari validasi, assignment, city/site, PIC, SLA, sampai pemisahan valid/skip.
-export async function processTicketExcel(buffer) {
+export async function processTicketExcel(buffer, options = {}) {
   logger.info("Starting ticket Excel processing");
   let rows;
   try {
@@ -881,10 +977,22 @@ export async function processTicketExcel(buffer) {
 
     throw error;
   }
-  return processTicketRows(rows);
+
+  let sentTicketStore = options.sentTicketStore || options.store;
+  if (!sentTicketStore && !options.hasBeenSentToSqa) {
+    try {
+      sentTicketStore = await loadSentTicketStoreForImport(rows, options);
+    } catch (err) {
+      logger.warn("Failed to load sent ticket store for Excel processing", {
+        error: err.message,
+      });
+    }
+  }
+
+  return processTicketRows(rows, { ...options, sentTicketStore });
 }
 
-export function processTicketRows(rows) {
+export function processTicketRows(rows, options = {}) {
   const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
   const missingColumns = validateHeaders(headers);
 
@@ -926,14 +1034,10 @@ export function processTicketRows(rows) {
     const siteResolution = resolveSiteFromTicketRow(row);
 
     if (assignmentType === "UNKNOWN") {
-      const skipped = {
-        reason: "ASSIGNMENT_GROUP_NOT_SUPPORTED",
-        row_number: rowNumber,
-        order_id: row["Order ID"],
-        ticket_id: row["Ticket Id"],
-        city: row[CITY_COLUMN],
-        assignment_group: assignmentGroup,
-      };
+      const skipped = buildEnrichedSkippedTicket("ASSIGNMENT_GROUP_NOT_SUPPORTED", rowNumber, row, {
+        site_cover: cityResolution.site_id,
+        site_id: siteResolution.site_id,
+      });
       skippedTickets.push(skipped);
       logger.warn("Row skipped: unsupported assignment group", skipped);
       processingLog.push({
@@ -944,16 +1048,10 @@ export function processTicketRows(rows) {
     }
 
     if (!cityResolution.ok) {
-      const skipped = {
-        reason: cityResolution.reason,
-        row_number: rowNumber,
-        order_id: row["Order ID"],
-        ticket_id: row["Ticket Id"],
-        city: row[CITY_COLUMN],
-        assignment_group: assignmentGroup,
+      const skipped = buildEnrichedSkippedTicket(cityResolution.reason, rowNumber, row, {
         site_cover: cityResolution.site_id,
         site_id: siteResolution.site_id,
-      };
+      });
       skippedTickets.push(skipped);
       logger.warn("Row skipped: city resolution failed", skipped);
       processingLog.push({
@@ -972,17 +1070,12 @@ export function processTicketRows(rows) {
 
     const picResult = searchPicFromTicketRow(resolvedRow);
     if (!picResult.ok) {
-      const skipped = {
-        reason: picResult.reason,
-        row_number: rowNumber,
-        order_id: row["Order ID"],
-        ticket_id: row["Ticket Id"],
+      const skipped = buildEnrichedSkippedTicket(picResult.reason, rowNumber, row, {
         city: cityResolution.city,
-        assignment_group: assignmentGroup,
-        city_source: cityResolution.source,
         site_cover: cityResolution.site_id,
         site_id: siteResolution.site_id,
-      };
+        anomaly_info: picResult.anomaly_info,
+      });
       skippedTickets.push(skipped);
       logger.warn("Row skipped: PIC search failed", skipped);
       processingLog.push({
@@ -994,13 +1087,100 @@ export function processTicketRows(rows) {
 
     const ticket = normalizeTicket(resolvedRow, picResult, siteResolution);
     ticket.row_number = rowNumber;
-    ticket.anomaly_info = picResult.anomaly_info || null;
+
+    const businessStatus = String(ticket.business_status || "")
+      .trim()
+      .toLowerCase();
+    const reopenNum = Number(cleanTableValue(ticket.reopen_number));
+    const isReopen =
+      businessStatus === "reopen" ||
+      (Number.isFinite(reopenNum) && reopenNum > 0);
+
+    let siteVisitClone = null;
+    const isSqa = ticket.assignment_type === "SQA";
+    if (isSqa && isReopen && Number.isFinite(reopenNum)) {
+      if (reopenNum > 3) {
+        const hasSent = checkHasBeenSentToSqa(ticket, options);
+        if (!hasSent) {
+          // Tiket BELUM PERNAH dikirim ke SQA sebelumnya:
+          // Wajib dikirim ke SQA terlebih dahulu dengan format tiket lengkap seperti pertama kali dikirim
+          ticket.is_repetitive = false;
+          ticket.targetGroupKey = null;
+          ticket.use_reopen_message_format = false;
+          ticket.anomaly_info = `Tiket ReOpen (${reopenNum}X > 3) Belum Pernah Dikirim ke SQA -> Dikirim ke SQA (Format Lengkap) dan Klon Grup Site Visit`;
+
+          siteVisitClone = {
+            ...ticket,
+            is_repetitive: true,
+            is_site_visit: true,
+            targetGroupKey: "SITE VISIT",
+            ts_site_visit: resolveTsSiteVisit(ticket),
+            anomaly_info: `Tiket ReOpen (${reopenNum}X > 3) Repetitif -> Klon ke Grup Site Visit`,
+          };
+        } else {
+          // ReOpen > 3: Routed EXCLUSIVELY to Site Visit, NOT sent to SQA
+          ticket.is_repetitive = true;
+          ticket.is_site_visit = true;
+          ticket.targetGroupKey = "SITE VISIT";
+          ticket.ts_site_visit = resolveTsSiteVisit(ticket);
+          ticket.anomaly_info = `Tiket ReOpen (${reopenNum}X > 3) Repetitif -> Dialihkan ke Grup Site Visit`;
+        }
+      } else if (reopenNum === 3) {
+        // ReOpen == 3: Sent to SQA as usual AND cloned to Site Visit
+        siteVisitClone = {
+          ...ticket,
+          is_repetitive: true,
+          is_site_visit: true,
+          targetGroupKey: "SITE VISIT",
+          ts_site_visit: resolveTsSiteVisit(ticket),
+          anomaly_info: `Tiket ReOpen (3X) Repetitif -> Dikirim ke SQA dan Grup Site Visit`,
+        };
+      }
+    }
+
+    let anomalyInfo = ticket.anomaly_info || picResult.anomaly_info || null;
+    if (!anomalyInfo) {
+      if (cityResolution.overridden_site) {
+        anomalyInfo = `Site Cover (${cityResolution.overridden_site}) tidak valid/di luar Sumbagut -> Dipulihkan ke site ${ticket.site_id} (${cityResolution.city}) sesuai DB site Sumbagut`;
+      } else if (
+        !siteResolution.ok &&
+        siteResolution.reason === "SITE_ID_NOT_FOUND_IN_NOP_DATA"
+      ) {
+        anomalyInfo = `Site ID (${siteResolution.site_id}) tidak ada di DB site -> Diproses ke PIC Kota ${cityResolution.city}`;
+      } else if (
+        !siteResolution.ok &&
+        siteResolution.reason === "SITE_ID_EMPTY_AND_SITE_COVER_NOT_FOUND"
+      ) {
+        anomalyInfo = `Site ID & Site Cover kosong -> Diproses ke PIC Kota ${cityResolution.city}`;
+      } else if (
+        siteResolution.source === "problem_analysis_nsh" ||
+        siteResolution.source === "extracted_from_row"
+      ) {
+        anomalyInfo = `Site ID (${ticket.site_id}) diekstrak dari teks -> Ditemukan via ${shortenNopName(siteResolution.source)}`;
+      } else if (
+        ticket.fallback_resolutions &&
+        ticket.fallback_resolutions.length > 0
+      ) {
+        const fields = ticket.fallback_resolutions
+          .map((f) => f.field)
+          .join(", ");
+        anomalyInfo = `Data (${fields}) tidak lengkap -> Menggunakan fallback teks alternatif/NSH`;
+      }
+    }
+    ticket.anomaly_info = anomalyInfo;
     validTickets.push(ticket);
+
+    if (siteVisitClone) {
+      validTickets.push(siteVisitClone);
+    }
+
     logger.info("Row marked valid", {
       rowNumber,
       orderId: ticket.order_id,
       assignmentType: ticket.assignment_type,
       pic: ticket.pic,
+      isRepetitive: ticket.is_repetitive,
+      hasClone: Boolean(siteVisitClone),
     });
     processingLog.push({
       status: "VALID",
@@ -1024,7 +1204,34 @@ export function processTicketRows(rows) {
       reopen_filled_columns: ticket.reopen_filled_columns,
       fallback_resolutions: ticket.fallback_resolutions,
       anomaly_info: ticket.anomaly_info,
+      is_repetitive: ticket.is_repetitive,
     });
+    if (siteVisitClone) {
+      processingLog.push({
+        status: "VALID",
+        row_number: rowNumber,
+        order_id: siteVisitClone.order_id,
+        ticket_id: siteVisitClone.ticket_id,
+        city: siteVisitClone.city,
+        assignment_group: siteVisitClone.assignment_group,
+        assignment_type: "SITE_VISIT",
+        sla_status: siteVisitClone.sla_status,
+        pic: siteVisitClone.pic,
+        ccm_handling: siteVisitClone.ccm_handling,
+        nsa: siteVisitClone.nsa,
+        city_source: siteVisitClone.city_source,
+        site_cover: siteVisitClone.site_cover,
+        site_id: siteVisitClone.site_id,
+        vendor: siteVisitClone.vendor,
+        cluster_area: siteVisitClone.cluster_area,
+        use_reopen_message_format: false,
+        reopen_number: siteVisitClone.reopen_number,
+        reopen_filled_columns: siteVisitClone.reopen_filled_columns,
+        fallback_resolutions: siteVisitClone.fallback_resolutions,
+        anomaly_info: siteVisitClone.anomaly_info,
+        is_repetitive: true,
+      });
+    }
   }
 
   const groupedTickets = validTickets.reduce((groups, ticket) => {
@@ -1090,13 +1297,105 @@ export function formatImportSummary(result, options = {}) {
   return lines.join("\n");
 }
 
+// mengekstrak teks alamat pelanggan dari baris tiket/deskripsi
+export function extractAddressFromRow(row) {
+  if (!row) return "";
+  const desc = String(
+    row["Description Fault Sumptomps(Create Ticket_description__fault_symptomps)"] ||
+      row["Description"] ||
+      "",
+  );
+  const m = desc.match(/Lokasi Pelanggan(?:\s*\(alamat\))?\s*:\s*([^\r\n]+)/i);
+  if (m && m[1]) {
+    const addr = m[1].trim();
+    if (addr && addr !== "-") return addr;
+  }
+  const parts = [
+    row["Desa/Kelurahan(Create Ticket)"] || row["Desa/Kelurahan"],
+    row["kecamatan(Create Ticket)"] || row["Kecamatan"],
+    row[CITY_COLUMN] || row["City"],
+  ]
+    .map((p) => String(p ?? "").trim())
+    .filter((p) => p && p !== "-");
+  return parts.join(", ");
+}
+
+export function formatReasonLabel(reason) {
+  switch (reason) {
+    case "SITE_COVER_NOT_FOUND_IN_NOP_DATA":
+      return "Site Cover Tidak Terdaftar di DB Sumbagut";
+    case "CITY_NOT_FOUND":
+      return "Kota Tidak Terdaftar di Sumbagut";
+    case "CITY_EMPTY_AND_SITE_COVER_NOT_FOUND":
+      return "Kota & Site Cover Kosong pada Tiket";
+    case "ASSIGNMENT_GROUP_NOT_SUPPORTED":
+      return "Assignment Group Bukan SQA/NOP Sumbagut";
+    case "PIC_NOT_FOUND":
+      return "PIC Tidak Ditemukan untuk Wilayah Ini";
+    default:
+      return reason || "Alasan Tidak Diketahui";
+  }
+}
+
+export function buildEnrichedSkippedTicket(reason, rowNumber, row, options = {}) {
+  const assignmentGroup = normalizeAssignmentGroup(row[ASSIGNMENT_GROUP_COLUMN]);
+  const detectedSite = options.site_cover || options.site_id || "";
+  const customerAddress = extractAddressFromRow(row);
+  const cityVal = options.city || row[CITY_COLUMN] || "";
+
+  const regionInfo = detectSuspectedRegion({
+    siteId: detectedSite,
+    addressText: customerAddress,
+    cityText: cityVal,
+  });
+
+  return {
+    reason,
+    row_number: rowNumber,
+    order_id: row["Order ID"] || "-",
+    ticket_id: row["Ticket Id"] || "-",
+    city: cityVal,
+    assignment_group: assignmentGroup,
+    assignment_type: getAssignmentType(assignmentGroup),
+    site_cover: options.site_cover || null,
+    site_id: options.site_id || null,
+    detected_site: detectedSite || null,
+    customer_address: customerAddress || null,
+    is_out_of_region: regionInfo.isOutOfRegion,
+    suspected_region: regionInfo.suspectedRegion,
+    matched_by: regionInfo.matchedBy,
+    recommendation: regionInfo.recommendation,
+    anomaly_info: options.anomaly_info || null,
+  };
+}
+
+export function formatOutOfRegionSkippedCard(t) {
+  const ref = getTicketRef(t);
+  const rawGroup = t.assignment_group || t.assignment_type || "NOP";
+  const group = shortenNopName(rawGroup);
+  const site = t.detected_site || t.site_cover || t.site_id || "-";
+  const address = t.customer_address || t.city || "-";
+  const region = t.suspected_region || "Di Luar Regional 1 (Sumbagut)";
+  const matched = t.matched_by ? ` (${t.matched_by})` : "";
+  const reco = t.recommendation || "Segera update/reassign tiket di CRM ke Regional tujuan.";
+
+  return [
+    `🚨 \`${ref}\` (${group})`,
+    `   ├ ⚠️ **Kendala**: ${formatReasonLabel(t.reason)}`,
+    `   ├ 📡 **Site Terdeteksi**: ${site}`,
+    `   ├ 📍 **Alamat/Kota**: ${address}`,
+    `   ├ 🌐 **Dugaan Regional**: **${region}**${matched}`,
+    `   └ 💡 **Tindakan**: ${reco}`,
+  ].join("\n");
+}
+
 function formatSkippedAnomalyDetail(t) {
   if (t.anomaly_info) {
     return `${t.anomaly_info} (${t.reason})`;
   }
 
   const cityVal = t.city && t.city !== "-" ? t.city : "";
-  const siteVal = t.site_id || t.site_cover || "";
+  const siteVal = t.detected_site || t.site_id || t.site_cover || "";
 
   if (cityVal && siteVal) {
     return `Kota ${cityVal} (${siteVal}) di luar Region Sumbagut (${t.reason})`;
@@ -1108,6 +1407,75 @@ function formatSkippedAnomalyDetail(t) {
     return `Site ${siteVal} tidak terdaftar di DB Sumbagut (${t.reason})`;
   }
   return `Kota & Site Cover tidak ditemukan pada tiket (${t.reason})`;
+}
+
+export function shortenNopName(value) {
+  const text = String(value || "")
+    .trim()
+    .replace(/^group\s*:\s*/i, "");
+  if (!text) {
+    return "-";
+  }
+
+  return text
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+PADANG\s+SIDEMPUAN\b/gi, "NOP PSP")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+RANTAU\s+PRAPAT\b/gi, "NOP RAP")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+PEMATANG\s*SIANTAR\b/gi, "NOP PMS")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+BINJAI\b/gi, "NOP BJI")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+MEDAN\b/gi, "NOP MDN")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+BANDA\s+ACEH\b/gi, "NOP ACEH")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+ACEH\b/gi, "NOP ACEH")
+    .replace(/\bNETWORK OPERATIONS? AND PRODUCTIVITY\s+/gi, "NOP ")
+    .replace(/\bNOP\s+PADANG\s+SIDEMPUAN\b/gi, "NOP PSP")
+    .replace(/\bNOP\s+RANTAU\s+PRAPAT\b/gi, "NOP RAP")
+    .replace(/\bNOP\s+PEMATANG\s*SIANTAR\b/gi, "NOP PMS")
+    .replace(/\bNOP\s+BINJAI\b/gi, "NOP BJI")
+    .replace(/\bNOP\s+MEDAN\b/gi, "NOP MDN")
+    .replace(/\bNOP\s+BANDA\s+ACEH\b/gi, "NOP ACEH")
+    .replace(/\bNOP\s+ACEH\b/gi, "NOP ACEH")
+    .replace(/\bSERVICE QUALITY ASSURANCE\s+SUMBAGUT\b/gi, "SQA")
+    .replace(/\bSERVICE QUALITY ASSURANCE\b/gi, "SQA");
+}
+
+export const formatShortGroupName = shortenNopName;
+
+function formatValidAnomalyCard(t) {
+  const ref = getTicketRef(t);
+  const rawGroup = t.assignment_group || t.assignment_type || "-";
+  const group = shortenNopName(rawGroup);
+  const pic = t.pic || "-";
+  const anomalyRaw = String(t.anomaly_info || "").trim();
+
+  let kasus = anomalyRaw;
+  let fallback = "Tetap diproses dengan mapping PIC alternatif";
+
+  if (anomalyRaw.includes(" -> ")) {
+    const [part1, part2] = anomalyRaw.split(" -> ");
+    kasus = part1.trim();
+    fallback = part2.trim();
+  }
+
+  kasus = shortenNopName(kasus);
+  fallback = shortenNopName(fallback);
+
+  return [
+    `📌 \`${ref}\` (${group})`,
+    `   ├ ⚠️ **Anomali**: ${kasus}`,
+    `   ├ 🔄 **Aksi Fallback**: ${fallback}`,
+    `   └ 👤 **PIC**: **${pic}**`,
+  ].join("\n");
+}
+
+function formatSkippedAnomalyCard(t) {
+  const ref = getTicketRef(t);
+  const rawGroup = t.assignment_group || "SQA";
+  const group = shortenNopName(rawGroup);
+  const detail = formatSkippedAnomalyDetail(t);
+
+  return [
+    `❌ \`${ref}\` (${group})`,
+    `   └ ⚠️ **Alasan Skip**: ${shortenNopName(detail)}`,
+  ].join("\n");
 }
 
 // membuat report detail alasan tiket valid/dilewati agar proses filter bisa diaudit dari WhatsApp/Telegram.
@@ -1149,35 +1517,63 @@ export function formatProcessingReport(result) {
     ),
   ];
 
+  const repetitiveTickets = (result.valid_tickets || []).filter(
+    (t) => t.is_repetitive || t.targetGroupKey === "SITE VISIT",
+  );
+  if (repetitiveTickets.length > 0) {
+    lines.push(
+      "",
+      `🔁 **Tiket Repetitif (>3 ReOpen / Site Visit)**: (${repetitiveTickets.length} tiket)`,
+      "ℹ️ *Tiket ini akan dikirimkan ke grup **SITE VISIT** setelah seluruh tiket utama (SQA & NOP) selesai dikirim.*",
+      ...repetitiveTickets.map((t) => {
+        const tsNames =
+          (t.ts_site_visit || []).map((ts) => ts.name).join(", ") || "-";
+        const reopenText = t.reopen_number ? `${t.reopen_number}X` : "-";
+        return [
+          `📌 \`${t.order_id || "-"}\` (ReOpen: ${reopenText})`,
+          `   ├ 📍 Kota/Area: ${t.city || t.cluster_area || "-"}`,
+          `   └ 👷 PIC TS Site Visit: ${tsNames}`,
+        ].join("\n");
+      }),
+    );
+  }
+
   const validAnomalies = (result.valid_tickets || []).filter(
-    (t) => t.anomaly_info,
+    (t) => t.anomaly_info && !t.is_repetitive && t.targetGroupKey !== "SITE VISIT",
   );
   if (validAnomalies.length > 0) {
     lines.push(
       "",
       "⚠️ **Tiket Anomali (Tetap Terkirim ke WA)**:",
-      ...validAnomalies.map(
-        (t) =>
-          `• ${getTicketRef(t)} | ${t.assignment_group || t.assignment_type} | ${t.anomaly_info} | PIC: ${t.pic || "-"}`,
-      ),
+      ...validAnomalies.map((t) => formatValidAnomalyCard(t)),
     );
   }
 
-  const skippedAnomalies = (result.skipped_tickets || []).filter(
-    (t) =>
-      t.anomaly_info ||
-      t.reason === "CITY_NOT_FOUND" ||
-      t.reason === "SITE_COVER_NOT_FOUND_IN_NOP_DATA" ||
-      t.reason === "CITY_EMPTY_AND_SITE_COVER_NOT_FOUND",
+  const outOfRegionSkipped = (result.skipped_tickets || []).filter(
+    (t) => t.is_out_of_region,
   );
-  if (skippedAnomalies.length > 0) {
+  if (outOfRegionSkipped.length > 0) {
+    lines.push(
+      "",
+      `🚨 **PERHATIAN: TIKET TERINDIKASI DI LUAR REGIONAL 1 (SUMBAGUT)**: (${outOfRegionSkipped.length} tiket)`,
+      "ℹ️ *Tiket berikut terindikasi berada di luar Regional Sumbagut. Mohon segera dicek dan direassign di CRM ke Regional tujuan:*",
+      ...outOfRegionSkipped.map((t) => formatOutOfRegionSkippedCard(t)),
+    );
+  }
+
+  const otherSkippedAnomalies = (result.skipped_tickets || []).filter(
+    (t) =>
+      !t.is_out_of_region &&
+      (t.anomaly_info ||
+        t.reason === "CITY_NOT_FOUND" ||
+        t.reason === "SITE_COVER_NOT_FOUND_IN_NOP_DATA" ||
+        t.reason === "CITY_EMPTY_AND_SITE_COVER_NOT_FOUND"),
+  );
+  if (otherSkippedAnomalies.length > 0) {
     lines.push(
       "",
       "⚠️ **Tiket Anomali Dilewati (Tidak Dikirim ke WA)**:",
-      ...skippedAnomalies.map(
-        (t) =>
-          `• ${getTicketRef(t)} | ${t.assignment_group || "SQA"} | ${formatSkippedAnomalyDetail(t)}`,
-      ),
+      ...otherSkippedAnomalies.map((t) => formatSkippedAnomalyCard(t)),
     );
   }
 
@@ -1484,452 +1880,41 @@ function hasRequiredReminderDetailData(ticket) {
   ].every((value) => value && value !== "-");
 }
 
-function hasRequiredNopReminderDetailData(ticket) {
-  return (
-    hasRequiredReminderDetailData(ticket) &&
-    cleanTableValue(ticket.pic_nop) !== "-"
-  );
-}
+export {
+  GROUP_OPENING_MESSAGE,
+  INDONESIAN_MONTHS_FULL,
+  deduplicateTicketsByOrderId,
+  formatSqaReminderMessage,
+  formatNopReminderMessage,
+  formatTargetGroupOpeningMessage,
+  formatUpdateTicketFileName,
+  formatReminderMessagePayload,
+  formatReopenEscalationText,
+  isOutSlaInProgressTicket,
+  formatOutSlaInProgressEscalationText,
+  getReminderAssigneeTag,
+  getInProgressReminderTargetName,
+  parseFormattedDueDate,
+  formatOverdueTime,
+  getInProgressReminderLine,
+  formatInProgressReminderMessagePayload,
+  formatEscalationMessagePayload,
+  formatEscalationMessage,
+  formatRepetitiveEscalationPayload,
+  formatSiteVisitCombinedReminderPayload,
+  extractCustomerDetailsSummary,
+  extractRepetitiveNote,
+  getReopenCount,
+  getReminderSiteId,
+  getpreviousProblemAnalysis,
+  getReminderDepartmentName,
+  getNopReminderName,
+  summarizeSla,
+  hasRequiredReminderDetailData,
+  hasRequiredNopReminderDetailData,
+  getReopenReminderTickets,
+} from "./messageTemplateService.js";
 
-// mengambil tiket ReOpen yang punya data lengkap untuk ditampilkan pada tabel remark reminder.
-function getReopenReminderTickets(tickets, { requirePicNop = false } = {}) {
-  return tickets.filter((ticket) =>
-    requirePicNop
-      ? hasRequiredNopReminderDetailData(ticket)
-      : hasRequiredReminderDetailData(ticket),
-  );
-}
-
-// membuat teks reminder untuk grup SQA sebelum detail tiket dikirim.
-function formatSqaReminderMessage(tickets) {
-  const summary = summarizeSla(tickets);
-  const detailTickets = getReopenReminderTickets(tickets);
-  const lines = [
-    "*Remind Ticket CX Open:*",
-    "",
-    "*Group | Total Ticket | In SLA | Out SLA*",
-    `*SQA | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
-  ];
-
-  if (detailTickets.length > 0) {
-    lines.push(
-      "",
-      "*Wilayah | Nomor Ticket | SITE ID | Count ReOpen | Remark ReOpen*",
-      "*---------------------------------------------------------------------------*",
-      ...detailTickets.flatMap((ticket) => [
-        `*${getReminderDepartmentName(ticket)} | ${cleanTableValue(
-          ticket.order_id,
-        )} | ${getReminderSiteId(ticket)} | ${getReopenCount(
-          ticket,
-        )} | ${getpreviousProblemAnalysis(ticket)}*`,
-        "",
-      ]),
-    );
-  }
-
-  return lines.join("\n");
-}
-
-// membuat teks reminder untuk grup NOP sebelum detail tiket dikirim.
-function formatNopReminderMessage(tickets) {
-  const summary = summarizeSla(tickets);
-  const nopName = getNopReminderName(tickets);
-  const detailTickets = getReopenReminderTickets(tickets, {
-    requirePicNop: true,
-  });
-  const mentionTags = detailTickets.map((ticket) =>
-    resolveMentionTag(ticket.pic_nop),
-  );
-  const lines = [
-    "*Remind ticket CX Open :*",
-    "",
-    "*NOP | Total Ticket | In SLA | Out SLA*",
-    `*${nopName} | ${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
-  ];
-
-  if (detailTickets.length > 0) {
-    lines.push(
-      "",
-      "*PIC NOP | Nomor Ticket | Site ID | Count ReOpen | Remark ReOpen*",
-      "*---------------------------------------------------------------------------*",
-      ...detailTickets.flatMap((ticket, index) => {
-        const tag = mentionTags[index];
-        return [
-          `*${tag?.text || "-"} | ${cleanTableValue(ticket.order_id)} | ${cleanTableValue(
-            getReminderSiteId(ticket),
-          )} | ${getReopenCount(ticket)} | ${getpreviousProblemAnalysis(ticket)}*`,
-          "",
-        ];
-      }),
-    );
-  }
-
-  return {
-    text: lines.join("\n"),
-    mentions: uniqueMentionJids(mentionTags),
-  };
-}
-
-// pesan salam yang dikirim ke grup tujuan sebelum Excel, reminder, dan detail tiket.
-export function formatTargetGroupOpeningMessage() {
-  logger.info("Formatting target group opening message");
-  return GROUP_OPENING_MESSAGE;
-}
-
-// nama file Excel update harian, contoh: Update Ticket 20 Juli Pagi.xlsx.
-export function formatUpdateTicketFileName(now = new Date()) {
-  const period =
-    now.getHours() < 11
-      ? "Pagi"
-      : now.getHours() < 15
-        ? "Siang"
-        : now.getHours() < 18
-          ? "Sore"
-          : "Malam";
-  const fileName = `Update Ticket ${now.getDate()} ${
-    INDONESIAN_MONTHS_FULL[now.getMonth()]
-  } ${period}.xlsx`;
-
-  logger.info("Formatted update ticket file name", { fileName });
-  return fileName;
-}
-
-// membuat payload reminder berdasarkan assignment grup target.
-export function formatReminderMessagePayload(tickets) {
-  const assignmentType = tickets[0]?.assignment_type;
-  logger.info("Formatting reminder message payload", {
-    assignmentType,
-    tickets: tickets.length,
-  });
-
-  if (assignmentType === "SQA") {
-    return {
-      text: formatSqaReminderMessage(tickets),
-      mentions: [],
-    };
-  }
-
-  return formatNopReminderMessage(tickets);
-}
-
-// membuat format khusus untuk Ticket Re-Open yang sudah memiliki data L2/resolution/root cause/site L2.
-function formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag }) {
-  const isSqa = ticket.assignment_type === "SQA";
-  const reopenNumber = getReopenCount(ticket);
-  const reopenLine =
-    reopenNumber === "-"
-      ? "*Ticket Re-Open*"
-      : `*Ticket Re-Open (${reopenNumber}X)*`;
-  const problemAnalysisRemark = cleanMultilineText(ticket.problem_analysis);
-  const remarkLines = problemAnalysisRemark
-    ? ["_Remark Problem Analysis:_", problemAnalysisRemark]
-    : [];
-
-  logger.info("Formatting ReOpen escalation text", {
-    orderId: ticket.order_id,
-    assignmentType: ticket.assignment_type,
-    reopenNumber,
-    hasProblemAnalysisRemark: Boolean(problemAnalysisRemark),
-    filledColumns: ticket.reopen_filled_columns,
-  });
-
-  if (isSqa) {
-    return [
-      `Mohon dibantu pengecekannya kembali ya bang ${ccmTag.text || "-"}`,
-      `*${ticket.order_id || "-"}*`,
-      `CC bang ${sqaTag.text || "-"}`,
-      "",
-      reopenLine,
-      ...remarkLines,
-      `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
-    ].join("\n");
-  }
-
-  return [
-    `Mohon dibantu pengecekannya kembali ya bang ${nopTag.text || "-"}`,
-    `*${ticket.order_id || "-"}*`,
-    "",
-    reopenLine,
-    ...remarkLines,
-    `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
-  ].join("\n");
-}
-
-function isOutSlaInProgressTicket(ticket) {
-  const slaStatus = cleanTableValue(ticket.sla_status).toUpperCase();
-  const businessStatus = cleanTableValue(ticket.business_status)
-    .toUpperCase()
-    .replace(/[\s_-]+/g, "");
-
-  return slaStatus === "OUT SLA" && businessStatus === "INPROGRESS";
-}
-
-function formatOutSlaInProgressEscalationText(ticket, { ccmTag, nopTag }) {
-  const isSqa = ticket.assignment_type === "SQA";
-  const assigneeTag = isSqa ? ccmTag : nopTag;
-
-  logger.info("Formatting OUT SLA In Progress reminder text", {
-    orderId: ticket.order_id,
-    assignmentType: ticket.assignment_type,
-  });
-
-  return [
-    `Mohon dibantu bang ${assigneeTag.text || "-"}`,
-    ticket.order_id || "-",
-    "",
-    `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
-  ].join("\n");
-}
-
-function getReminderAssigneeTag(ticket, options = {}) {
-  if (ticket.assignment_type === "SQA") {
-    const usePicSqa = options.usePicSqa || options.targetGroupKey === "MAIN SQA";
-    return usePicSqa
-      ? resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel")
-      : resolveMentionTag(ticket.ccm_handling, "CCM");
-  }
-  return resolveMentionTag(ticket.pic_nop);
-}
-
-function getInProgressReminderTargetName(tickets) {
-  const assignmentType = tickets[0]?.assignment_type;
-  if (assignmentType === "SQA") {
-    return "SQA SUMBAGUT";
-  }
-
-  return `NOP ${getNopReminderName(tickets)}`;
-}
-
-function parseFormattedDueDate(rawDueDate, ticket) {
-  if (
-    ticket?.resolve_target_22h instanceof Date &&
-    !Number.isNaN(ticket.resolve_target_22h.getTime())
-  ) {
-    return ticket.resolve_target_22h;
-  }
-  if (!rawDueDate || rawDueDate === "-") {
-    return null;
-  }
-  const cleaned = rawDueDate.replace(/^[A-Za-z]+\s*\/\s*/, "").trim();
-  const enFormatted = cleaned
-    .replace(/\bMei\b/i, "May")
-    .replace(/\bAgu\b/i, "Aug")
-    .replace(/\bOkt\b/i, "Oct")
-    .replace(/\bDes\b/i, "Dec");
-  const date = new Date(enFormatted);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatOverdueTime(rawDueDate, ticket, now = new Date()) {
-  const dueDate = parseFormattedDueDate(rawDueDate, ticket);
-  if (!dueDate) return "";
-
-  const diffMs = now.getTime() - dueDate.getTime();
-  if (diffMs <= 0) return "";
-
-  const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-  const diffHours = Math.floor((diffMs / (1000 * 60 * 60)) % 24);
-  const diffMinutes = Math.floor((diffMs / (1000 * 60)) % 60);
-
-  return diffDays > 0
-    ? `Out ${diffDays}d ${diffHours}h ${diffMinutes}m`
-    : `Out ${diffHours}h ${diffMinutes}m`;
-}
-
-function getInProgressReminderLine(ticket, index) {
-  const slaStatus = cleanTableValue(ticket.sla_status).toUpperCase() || "-";
-  const siteId = getReminderSiteId(ticket) || "-";
-  const rawDueDate = cleanTableValue(ticket.resolve_target_22h_text);
-  const businessStatus = cleanTableValue(ticket.business_status)
-    .toUpperCase()
-    .replace(/[\s_-]+/g, "");
-  const reopenCountStr = getReopenCount(ticket);
-  const reopenNum = Number(reopenCountStr);
-  const isReopen = businessStatus === "REOPEN";
-
-  let dueText = "";
-  if (isReopen && Number.isFinite(reopenNum)) {
-    dueText = reopenNum > 1 ? `${reopenNum}X ReOpen` : "ReOpen";
-  } else if (slaStatus === "IN SLA") {
-    dueText = rawDueDate !== "-" ? rawDueDate : "";
-  } else if (slaStatus === "OUT SLA" && businessStatus === "INPROGRESS") {
-    dueText = formatOverdueTime(rawDueDate, ticket);
-  }
-
-  const extraPart = dueText ? ` | ${dueText}` : "";
-  return `${index + 1}. *${cleanTableValue(ticket.order_id)}* | ${slaStatus} | ${siteId}${extraPart}`;
-}
-
-// membuat bubble reminder ringkas untuk tiket In Progress yang sudah pernah dikirim hari sebelumnya.
-export function formatInProgressReminderMessagePayload(tickets, options = {}) {
-  const isReminderCmd = Boolean(
-    options.isReminderCmd || options.includeSummary,
-  );
-  const reminderTickets = isReminderCmd
-    ? tickets
-    : tickets.filter(
-        (ticket) =>
-          cleanTableValue(ticket.business_status)
-            .toUpperCase()
-            .replace(/[\s_-]+/g, "") === "INPROGRESS",
-      );
-
-  if (!reminderTickets || reminderTickets.length === 0) {
-    return {
-      text: "",
-      mentions: [],
-    };
-  }
-
-  const summary = summarizeSla(reminderTickets);
-  const targetName = getInProgressReminderTargetName(reminderTickets);
-  const groupedByPic = new Map();
-
-  for (const ticket of reminderTickets) {
-    const tag = getReminderAssigneeTag(ticket, options);
-    const key = cleanTableValue(tag.label || tag.text || "-").toUpperCase();
-    const group = groupedByPic.get(key) || {
-      tag,
-      tickets: [],
-    };
-    group.tickets.push(ticket);
-    groupedByPic.set(key, group);
-  }
-
-  const mentionTags = [...groupedByPic.values()].map((group) => group.tag);
-  const lines = [
-    "*🔔 REMIND TICKET IN PROGRESS*",
-    "",
-    `Izin mengingatkan, berikut tiket yang masih belum resolve di *${targetName}*.`,
-    "",
-  ];
-
-  if (isReminderCmd) {
-    lines.push(
-      "*📊 Summary:*",
-      `*Total | In SLA | Out SLA*`,
-      `*${summary.total} | ${summary.inSla} | ${summary.outSla}*`,
-      "",
-    );
-  }
-
-  for (const group of [...groupedByPic.values()].sort((a, b) =>
-    cleanTableValue(a.tag?.label).localeCompare(cleanTableValue(b.tag?.label)),
-  )) {
-    lines.push(`👤 ${group.tag?.text || "-"}`);
-    lines.push(
-      ...group.tickets.map((ticket, index) =>
-        getInProgressReminderLine(ticket, index),
-      ),
-      "",
-    );
-  }
-
-  lines.push(
-    "Mohon dibantu update dan resolve tiketnya ya abang-abang.",
-    "Untuk tiket IN SLA mohon dijaga agar tidak masuk OUT SLA.",
-    "",
-    "Terimakasih 🙏",
-  );
-
-  logger.info("In Progress reminder message payload created", {
-    assignmentType: reminderTickets[0]?.assignment_type,
-    tickets: reminderTickets.length,
-    picGroups: groupedByPic.size,
-    isReminderCmd,
-  });
-
-  return {
-    text: lines.join("\n").trim(),
-    mentions: uniqueMentionJids(mentionTags),
-  };
-}
-
-// membuat teks pesan eskalasi dan daftar JID mention yang dikirim ke Baileys.
-export function formatEscalationMessagePayload(ticket) {
-  logger.info("Formatting escalation message", {
-    orderId: ticket.order_id,
-    assignmentType: ticket.assignment_type,
-  });
-  const ccmTag = resolveMentionTag(ticket.ccm_handling, "CCM");
-  const sqaTag = resolveMentionTag(ticket.pic_sqa, "PIC SQA Telkomsel");
-  const nopTag = resolveMentionTag(ticket.pic_nop);
-  const isSqa = ticket.assignment_type === "SQA";
-
-  if (ticket.use_reopen_message_format) {
-    const mentions = uniqueMentionJids(isSqa ? [ccmTag, sqaTag] : [nopTag]);
-    const text = formatReopenEscalationText(ticket, { ccmTag, sqaTag, nopTag });
-
-    logger.info("ReOpen escalation message mention payload created", {
-      orderId: ticket.order_id,
-      mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
-      mentions,
-    });
-
-    return {
-      text,
-      mentions,
-    };
-  }
-
-  if (isOutSlaInProgressTicket(ticket)) {
-    const mentions = uniqueMentionJids(isSqa ? [ccmTag] : [nopTag]);
-    const text = formatOutSlaInProgressEscalationText(ticket, {
-      ccmTag,
-      nopTag,
-    });
-
-    logger.info("OUT SLA In Progress reminder mention payload created", {
-      orderId: ticket.order_id,
-      mentionDetails: isSqa ? [ccmTag] : [nopTag],
-      mentions,
-    });
-
-    return {
-      text,
-      mentions,
-    };
-  }
-
-  const intro = isSqa
-    ? [
-        `Mohon dibantu bang ${ccmTag.text || "-"}`,
-        ticket.order_id || "-",
-        `CC bang ${sqaTag.text || "-"}`,
-      ]
-    : [`Mohon dibantu bang ${nopTag.text || "-"}`, ticket.order_id || "-"];
-  const repeatedOrderId = isSqa ? [ticket.order_id || "-", ""] : [];
-
-  const text = [
-    ...intro,
-    "",
-    ...repeatedOrderId,
-    ticket.notes || "-",
-    "",
-    "====================",
-    "",
-    ticket.analysis_text || "-",
-    "",
-    `SLA DUE DATE 24H : *${ticket.resolve_target_22h_text || "-"}*`,
-  ].join("\n");
-
-  const mentions = uniqueMentionJids(isSqa ? [ccmTag, sqaTag] : [nopTag]);
-  logger.info("Escalation message mention payload created", {
-    orderId: ticket.order_id,
-    mentionDetails: isSqa ? [ccmTag, sqaTag] : [nopTag],
-    mentions,
-  });
-
-  return {
-    text,
-    mentions,
-  };
-}
-
-// membuat format pesan eskalasi final untuk SQA/NOP berdasarkan PIC dan konten notes/analisis.
-export function formatEscalationMessage(ticket) {
-  return formatEscalationMessagePayload(ticket).text;
-}
 
 // membungkus nilai menjadi cell untuk library write-excel-file.
 function excelCell(value) {

@@ -18,6 +18,7 @@ config/telegram.json
 config/whatsapp_sessions.json
 
 data/reference
+reference-data/
 data/registered_user.json
 data/runtime/*
 !data/runtime/.gitkeep

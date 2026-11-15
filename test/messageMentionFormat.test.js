@@ -141,7 +141,7 @@ test("formats NOP ReOpen tickets without SQA CC line", () => {
   context.cleanup();
 });
 
-test("formats OUT SLA In Progress tickets with short reminder message", () => {
+test("formats OUT SLA In Progress tickets with full escalation message", () => {
   const context = setupMentionConfig();
 
   const payload = formatEscalationMessagePayload({
@@ -151,8 +151,8 @@ test("formats OUT SLA In Progress tickets with short reminder message", () => {
     sla_status: "OUT SLA",
     ccm_handling: "Ferry",
     pic_sqa: "Herman",
-    notes: "Long notes should not be included",
-    analysis_text: "Long analysis should not be included",
+    notes: "Notes detail here",
+    analysis_text: "Analysis detail here",
     resolve_target_22h_text: "Rabu / 22 Jul 2026, 11:50:38 PM",
   });
 
@@ -162,10 +162,13 @@ test("formats OUT SLA In Progress tickets with short reminder message", () => {
     payload.text,
     /SLA DUE DATE 24H : \*Rabu \/ 22 Jul 2026, 11:50:38 PM\*/,
   );
-  assert.doesNotMatch(payload.text, /Long notes/);
-  assert.doesNotMatch(payload.text, /Long analysis/);
-  assert.doesNotMatch(payload.text, /CC bang/);
-  assert.deepEqual(payload.mentions, ["35515252351004@lid"]);
+  assert.match(payload.text, /Notes detail here/);
+  assert.match(payload.text, /Analysis detail here/);
+  assert.match(payload.text, /CC bang/);
+  assert.deepEqual(payload.mentions, [
+    "35515252351004@lid",
+    "628136378970@s.whatsapp.net",
+  ]);
 
   context.cleanup();
 });
@@ -197,7 +200,7 @@ test("formats grouped In Progress daily reminder with mentions", () => {
   ];
 
   const dailyPayload = formatInProgressReminderMessagePayload(tickets);
-  assert.match(dailyPayload.text, /REMIND TICKET IN PROGRESS/);
+  assert.match(dailyPayload.text, /Semangat Pagi|REMIND TICKET IN PROGRESS/);
   assert.match(dailyPayload.text, /SQA SUMBAGUT/);
   assert.equal(dailyPayload.text.includes("Total Ticket:"), false);
   assert.match(dailyPayload.text, /@628136378970/);
@@ -207,7 +210,7 @@ test("formats grouped In Progress daily reminder with mentions", () => {
   const cmdPayload = formatInProgressReminderMessagePayload(tickets, {
     isReminderCmd: true,
   });
-  assert.match(cmdPayload.text, /REMIND TICKET IN PROGRESS/);
+  assert.match(cmdPayload.text, /Semangat Pagi|REMIND TICKET IN PROGRESS/);
   assert.match(cmdPayload.text, /\*Total \| In SLA \| Out SLA\*/);
   assert.match(cmdPayload.text, /\*2 \| 1 \| 1\*/);
 
@@ -321,8 +324,8 @@ test("formats MAIN SQA reminder payload using pic_sqa without fallback to ccm_ha
   assert.match(payload.text, /@628136378970/);
   assert.doesNotMatch(payload.text, /@35515252351004/); // Ferry's JID should NOT be tagged
 
-  // Ticket 2 has empty pic_sqa -> should show 👤 - without fallback to Ferry
-  assert.match(payload.text, /👤 -/);
+  // Ticket 2 has empty pic_sqa -> should show Bang - without fallback to Ferry
+  assert.match(payload.text, /Bang -/);
   assert.deepEqual(payload.mentions, ["628136378970@s.whatsapp.net"]);
 
   context.cleanup();

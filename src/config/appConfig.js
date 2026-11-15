@@ -76,4 +76,52 @@ export function getGroupConfig(groupKey) {
   return group;
 }
 
+export function getGroupKeyByJid(jid) {
+  if (!jid) return null;
+  if (String(jid).startsWith("manual:")) {
+    return String(jid).replace(/^manual:/i, "");
+  }
+  const config = getAppConfig();
+  const rawTargetGroups = config.raw.target_groups || {};
+  for (const [key, val] of Object.entries(rawTargetGroups)) {
+    if (val?.jid === jid) {
+      return key;
+    }
+  }
+  return null;
+}
+
+export function getMentionNameByJid(jid) {
+  if (!jid) return null;
+  const config = getAppConfig();
+  const rawMentions = config.raw.mentions || {};
+  for (const [name, val] of Object.entries(rawMentions)) {
+    if (val?.jid === jid) {
+      return val.label || name;
+    }
+  }
+  return null;
+}
+
+export function replaceJidMentionsWithLabels(text) {
+  if (!text || typeof text !== "string") return text;
+  const config = getAppConfig();
+  const rawMentions = config.raw?.mentions || {};
+
+  let result = text;
+  for (const [name, contact] of Object.entries(rawMentions)) {
+    if (!contact?.jid) continue;
+    const phone = String(contact.jid).split("@")[0].trim();
+    if (!phone) continue;
+
+    const label = String(contact.label || name).trim();
+    const tag = label.startsWith("@") ? label : `@${label}`;
+
+    const regex = new RegExp(`@${phone}\\b`, "g");
+    result = result.replace(regex, tag);
+  }
+
+  return result;
+}
+
 export { normalizeKey };

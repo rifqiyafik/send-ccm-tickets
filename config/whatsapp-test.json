@@ -43,6 +43,10 @@
     "NOP PADANG SIDEMPUAN": {
       "jid": "120363029098307479@g.us",
       "label": "Network Operations and Productivity Padang Sidempuan"
+    },
+    "SITE VISIT": {
+      "jid": "20363223022029506@g.us",
+      "label": "CCM Technical Support Site Visit"
     }
   },
   "mentions": {
@@ -58,6 +62,10 @@
       "jid": "62811704400@s.whatsapp.net",
       "label": "Bg Herman PIC SQA Telkomsel"
     },
+    "Ridha": {
+      "jid": "628119191144@s.whatsapp.net",
+      "label": "Bg Ridha PIC SQA Telkomsel"
+    },
     "Fernando Pasaribu": {
       "jid": "628126099949@s.whatsapp.net",
       "label": "Bg Fernando PIC SQA Telkomsel"
@@ -65,6 +73,10 @@
     "Ahsan": {
       "jid": "628111990334@s.whatsapp.net",
       "label": "Bg Ahsan PIC SQA Telkomsel"
+    },
+    "Bagus": {
+      "jid": "628118035472@s.whatsapp.net",
+      "label": "Bg Bagus PIC SQA Telkomsel"
     },
     "Ahmad Faisal": {
       "jid": "62811670020@s.whatsapp.net",
@@ -93,6 +105,10 @@
     "Rizlul Khairi": {
       "jid": "62811613331@s.whatsapp.net",
       "label": "Bg Rizlul Khairi NS Binjai"
+    },
+    "Syahbana": {
+      "jid": "628126078878@s.whatsapp.net",
+      "label": "Bg Syahbana NS Binjai"
     },
     "Jonthala MK Tambunan": {
       "jid": "628118119593@s.whatsapp.net",
@@ -137,6 +153,42 @@
     "Nasrul Amin S": {
       "jid": "62811779182@s.whatsapp.net",
       "label": "Bg Nasrul Amin S NS RAP"
+    },
+    "Willy Panjaitan": {
+      "jid": "6285207769555@s.whatsapp.net",
+      "label": "Willy Site Visit CCM Telkomsel"
+    },
+    "Riski": {
+      "jid": "62811688993@s.whatsapp.net",
+      "label": "Riski Site Visit CCM Telkomsel"
+    },
+    "Pewenri": {
+      "jid": "6285260045597@s.whatsapp.net",
+      "label": "Pewenri Site Visit CCM Telkomsel"
+    },
+    "Dedi": {
+      "jid": "6281214456231@s.whatsapp.net",
+      "label": "Dedi Site Visit CCM Telkomsel"
+    },
+    "Januar": {
+      "jid": "628116103388@s.whatsapp.net",
+      "label": "Januar Site Visit CCM Telkomsel"
+    },
+    "Okis": {
+      "jid": "6281397033246@s.whatsapp.net",
+      "label": "Okis Site Visit CCM Telkomsel"
+    },
+    "Rudi": {
+      "jid": "6282272329397@s.whatsapp.net",
+      "label": "Rudi Site Visit CCM Telkomsel"
+    },
+    "Dedek": {
+      "jid": "6281321111779@s.whatsapp.net",
+      "label": "Dedek Site Visit CCM Telkomsel"
+    },
+    "Jhonson Ambarita": {
+      "jid": "6285211739444@s.whatsapp.net",
+      "label": "Jhonson Ambarita Site Visit CCM Telkomsel"
     }
   }
 }

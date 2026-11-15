@@ -559,7 +559,7 @@ export function createTicketPollingService({
         return { status: "NO_ROWS", newTickets: 0 };
       }
 
-      if (isDatabaseConfigured()) {
+      if (useDb && isDatabaseConfigured()) {
         try {
           await batchUpsertMasterTickets(rawRows);
         } catch (dbErr) {

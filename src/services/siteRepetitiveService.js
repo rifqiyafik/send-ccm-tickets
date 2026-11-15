@@ -252,6 +252,7 @@ export async function detectSiteRepetitiveTickets(tickets, options = {}) {
   for (const item of tickets) {
     const orderStatus =
       item.order_status ||
+      item["Order Status"] ||
       item.row_raw?.order_status ||
       item.row_raw?.["Order Status"];
     if (!isTicketActive(orderStatus)) {
@@ -266,6 +267,8 @@ export async function detectSiteRepetitiveTickets(tickets, options = {}) {
     const ticketDate = parseDateTime(
       item.date ||
         item.create_time ||
+        item.Date ||
+        item["Create Time"] ||
         item.row_raw?.date ||
         item.row_raw?.Date ||
         item.row_raw?.["Create Time"],
@@ -276,6 +279,23 @@ export async function detectSiteRepetitiveTickets(tickets, options = {}) {
 
     validBatchTickets.push({
       ...item,
+      order_id:
+        item.order_id ||
+        item["Order ID"] ||
+        item.ticket_id ||
+        item["Ticket Id"],
+      ticket_id:
+        item.ticket_id ||
+        item["Ticket Id"] ||
+        item.order_id ||
+        item["Order ID"],
+      order_status: orderStatus,
+      create_time:
+        item.create_time ||
+        item["Create Time"] ||
+        item.date ||
+        item.Date,
+      date: item.date || item.Date,
       site_id: siteId,
     });
     candidateSiteIds.add(siteId);
@@ -322,7 +342,9 @@ export async function detectSiteRepetitiveTickets(tickets, options = {}) {
 
   // Timpa/gabungkan dengan tiket batch saat ini
   for (const t of validBatchTickets) {
-    const orderId = String(t.order_id || t.ticket_id || "").trim();
+    const orderId = String(
+      t.order_id || t["Order ID"] || t.ticket_id || t["Ticket Id"] || "",
+    ).trim();
     if (!orderId) continue;
 
     const existing = ticketMap.get(orderId);
@@ -330,20 +352,31 @@ export async function detectSiteRepetitiveTickets(tickets, options = {}) {
       ...existing,
       ...t,
       order_id: orderId,
-      ticket_id: t.ticket_id || existing?.ticket_id || orderId,
+      ticket_id:
+        t.ticket_id ||
+        t["Ticket Id"] ||
+        existing?.ticket_id ||
+        orderId,
       site_id: t.site_id,
-      city: t.city || existing?.city,
+      city:
+        t.city ||
+        t["Kabupaten/Kota(Create Ticket)"] ||
+        t.kabupaten_kota_create_ticket ||
+        existing?.city,
       order_status:
         t.order_status ||
+        t["Order Status"] ||
         t.row_raw?.order_status ||
         existing?.order_status ||
         "running",
-      sla_status: t.sla_status || existing?.sla_status,
+      sla_status:
+        t.sla_status || t["SLA Status"] || existing?.sla_status,
       create_time:
         t.create_time ||
+        t["Create Time"] ||
         t.row_raw?.["Create Time"] ||
         existing?.create_time,
-      date: t.date || t.row_raw?.Date || existing?.date,
+      date: t.date || t.Date || t.row_raw?.Date || existing?.date,
       complaint_detail:
         extractComplaintDetail(t) !== "-"
           ? extractComplaintDetail(t)

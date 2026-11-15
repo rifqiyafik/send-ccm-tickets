@@ -747,6 +747,36 @@ export async function batchUpsertMasterTickets(rows, options = {}) {
     return { total: 0, processed: 0, skipped: 0, inserted: 0, updated: 0 };
   }
 
+  const queryFn = options.queryFn || queryDatabase;
+
+  // Jika database belum terkonfigurasi dan tidak ada queryFn kustom (misal di test/CI offline)
+  if (!isDatabaseConfigured() && !options.queryFn) {
+    logger.warn("Database is not configured, skipping PostgreSQL batch upsert", {
+      rowCount: rows.length,
+    });
+    let skipped = 0;
+    let processed = 0;
+    for (const rawRow of rows) {
+      const orderId = String(rawRow.order_id || rawRow["Order ID"] || "").trim();
+      if (!orderId || orderId === "-") continue;
+
+      if (options.filterAllowedL2Groups) {
+        const assignGroup =
+          rawRow.assign_to_l2_l2_assign ||
+          rawRow["Assign to L2(L2 Assign)"] ||
+          rawRow.assignment_group ||
+          rawRow["assignment_group"] ||
+          rawRow["assign_to_l2"];
+        if (!isAllowedInjectAssignGroup(assignGroup)) {
+          skipped += 1;
+          continue;
+        }
+      }
+      processed += 1;
+    }
+    return { total: rows.length, processed, skipped };
+  }
+
   const schema = options.schema || DEFAULT_SCHEMA;
   const table = options.table || MASTER_TABLE;
   const fullTableName = `"${schema}".${table}`;
@@ -757,7 +787,8 @@ export async function batchUpsertMasterTickets(rows, options = {}) {
     filterAllowedL2Groups: Boolean(options.filterAllowedL2Groups),
   });
 
-  const validColumns = await getValidMasterColumns(schema, table);
+  const validColumns =
+    options.validColumns || (await getValidMasterColumns(schema, table));
   const chunkSize = options.chunkSize || 100;
   let totalProcessed = 0;
   let totalSkipped = 0;
@@ -815,7 +846,7 @@ export async function batchUpsertMasterTickets(rows, options = {}) {
           ${updateSet};
       `;
 
-      await queryDatabase(sql, values);
+      await queryFn(sql, values);
       totalProcessed += 1;
     }
   }

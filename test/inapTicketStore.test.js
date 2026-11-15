@@ -574,14 +574,17 @@ test("batchUpsertMasterTickets skips disallowed groups when filterAllowedL2Group
   };
 
   // Panggil batchUpsertMasterTickets dengan filterAllowedL2Groups: true
-  // Mock validColumns dengan memanggil langsung
+  // Mock validColumns dan queryFn
   const result = await batchUpsertMasterTickets(mockRows, {
     filterAllowedL2Groups: true,
+    queryFn: fakeQueryFn,
+    validColumns: MASTER_TABLE_COLUMNS,
   });
 
   assert.equal(result.total, 3);
   assert.equal(result.skipped, 2); // 1 RTP + 1 NULL
   assert.equal(result.processed, 1); // 1 valid Banda Aceh
+  assert.equal(executedSql.length, 1);
 });
 
 test("sanitizeCellValue preserves text values and handles types accurately", () => {

@@ -38,6 +38,8 @@ jobs:
         run: node --check index.js
 
       - name: Run tests
+        env:
+          APP_ENV: development
         run: npm test
 
   docker:
